@@ -1,24 +1,25 @@
 """
 Author: Rachit Shankar 
-Date of Origination: February, 2022
+Date: February, 2022
 
-Purpose: Build a local database of historical pricing data for a list of specified equities
+PURPOSE
+----------
+Build a local database of historical pricing data for a list of specified equities
 
-----
-# the list of equities
+VARIABLES
+----------
+# The LIST of equities to track history for 
 tickerFilepath = 'tickerList.csv'
 
-# The database
+# The DATABSE where history is saved
 conn = sqlite3.connect('historicalData.db')
 
-# Historical data source
+# The data SOURCE for historcal data 
 Questrade (requires account)
 
 """
-from math import fabs
-from operator import index
-from time import strftime
 from urllib.error import HTTPError, URLError
+
 from qtrade import Questrade 
 from pathlib import Path
 from requests.exceptions import HTTPError
@@ -39,10 +40,10 @@ Returns Questrade object
 """
 def setupConnection():
     try:
-        print("\n trying token yaml \n")
+        print("\n trying token yaml")
         qtrade = Questrade(token_yaml = "access_token.yml")
         w = qtrade.get_quote(['SPY'])
-        print ('%s latest Price: %.2f'%(w['symbol'], w['lastTradePrice'])) 
+        print (' Success! %s latest Price: %.2f \n'%(w['symbol'], w['lastTradePrice'])) 
         
     except(HTTPError, FileNotFoundError, URLError) as err:
         try: 
@@ -70,13 +71,13 @@ def setupConnection():
 """
 Save history to a sqlite3 database
 ###
-uses sqlite3
-connects to db in local directory 
 
 Params
 ------------
 history: [DataFrame]
     pandas dataframe with date and OHLC, volume, interval, and vwap  
+conn: [Sqlite3 connection object]
+    connection to the local db 
 """
 def saveHistoryToDB(history, conn, type='stock'):
     #conn = sqlite3.connect('historicalData.db')
@@ -94,6 +95,7 @@ def saveHistoryToDB(history, conn, type='stock'):
 """
 Save history to a CSV file 
 ### 
+
 Params 
 ------------
 history: [DataFrame]
@@ -114,8 +116,8 @@ saves it to a local database
 
 Params
 -----------
-qtrade: [Questrade] - active questrade object
-ticker: [str] - symbol / ticker
+qtrade: [Questrade] - active questrade connection obj
+ticker: [str] - symbol / tickers
 startDate/endDate: [datetime] - period to look up 
 interval: [str]: time granularity i.e. oneDay, oneHour, etc. 
 """
@@ -146,7 +148,8 @@ def getLatestHistory(qtrade, ticker, startDate, endDate, interval):
 
 """
  Returns the last recorded date with price history 
-#####
+###
+
 Params
 ---------
 sqlConn: [sqlite3.connection]
@@ -182,9 +185,9 @@ update history in the local db
 def updateSymbolHistory(tickerFilepath = 'tickerList.csv'):
     ## setup lookup var defaults
     type = 'stock'
-    interval = 'OneHour'
+    interval = ['FiveMinutes', 'OneHour', 'OneDay', 'OneMonth', 'FifteenMinutes'] #OneHour
     endDate = datetime.datetime.now(tz=None).date()
-    startDate = datetime.datetime.now(tz=None) - datetime.timedelta(5000)
+    startDate = datetime.datetime.now(tz=None) - datetime.timedelta(10000)
 
     ## read in list of tickers
     tickerList = pd.read_csv(tickerFilepath)
@@ -199,27 +202,113 @@ def updateSymbolHistory(tickerFilepath = 'tickerList.csv'):
     ## Update saved data
     for ticker in tickerList.columns: 
         ticker = ticker.strip(' ').upper()
-        print('\n Looking up: %s'%(ticker))
-        lastUpdateDate = getLastUpdateDate(conn, ticker, interval, type) 
+        print('\n Checking...%s'%(ticker))
         
-        ## if not history set start date far back and update
-        if lastUpdateDate == 'n/a':
-            ## get latest history
-            print('Updating history...\n')
-            history = getLatestHistory(qtrade, ticker, startDate.date(), endDate, interval)
-            saveHistoryToDB(history, conn)
-        
-        ## if saved date < 5 days old, skip 
-        elif (lastUpdateDate > datetime.datetime.now(tz=None) - datetime.timedelta(5)):
-            print('No update needed...\n')
-            next
-        
-        ## if saved data exists, but is > 5 days old, set start date 
-        ## to last saved date and update
-        else:
-            print('Updating history...\n')
-            startDate = lastUpdateDate + datetime.timedelta(hours=9)
-            history = getLatestHistory(qtrade, ticker, startDate.date(), endDate, interval)
-            saveHistoryToDB(history, conn)
+        for intvl in interval:
+            ## if not history set start date far back and update
+            lastUpdateDate = getLastUpdateDate(conn, ticker, intvl, type) 
+            if lastUpdateDate == 'n/a': #table doesnt exist 
+                ## get latest history
+                print(' Updating history...\n')
+                startDate = datetime.datetime.now(tz=None) - datetime.timedelta(10000)
+                history = getLatestHistory(qtrade, ticker, startDate.date(), endDate, intvl)
+                saveHistoryToDB(history, conn)
+                print(' History updated!\n')
+
+            ## if saved date < 5 days old, skip 
+            elif (lastUpdateDate > datetime.datetime.now(tz=None) - datetime.timedelta(5)):
+                print(' No update needed...Skipping!\n')
+                next
+            
+            ## if saved data exists, but is > 5 days old, 
+            # set start date to last saved date and update
+            else:
+                print(' Updating history...\n')
+                startDate = lastUpdateDate + datetime.timedelta(hours=9)
+                history = getLatestHistory(qtrade, ticker, startDate.date(), endDate, intvl)
+                saveHistoryToDB(history, conn)
+                print(' History updated!\n')
+
+"""
+Get options historical data
+
+Params
+-----------
+symbol: [string] - e.g. 'AAPL' 
+strike: [int] - strike price 
+date: [str] - YYYY-MM-DD
+
+Returns
+-------
+optionIDs - [List] with strikePrice, callSymbolID, putSymbolID
+    e.g. {'strikePrice': 125, 'callSymbolId': 40444547, 'putSymbolId': 40444581}
+
+Empty list is returned if the option chain does not exist
+
+"""
+def updateOptionHistory(symbol, strike, date):
+    print('\n Getting Options History! \n')
+
+    try:
+        qtrade = setupConnection()
+    except : 
+        print('could not connect to DB/Qtrade!')
+
+    symbolId = qtrade.get_quote('AAPL')['symbolId']
+    print(symbolId)
+    filter =  [
+                    {
+                     "optionType": "Call",
+                     "underlyingId": symbolId,
+                     "expiryDate": date+"T00:00:00.000000-05:00",
+                     "minstrikePrice": strike,
+                     "maxstrikePrice": strike
+                     }
+                 ]
+
+
+    ## get available chains for symbol 
+    optionChains = qtrade.get_option_chain(symbol)
+    """"
+    The structure of optionChains is whacky, heres a reference: 
+
+    > optionChain is a LIST of:
+        > Expiry Dates, which is a list of:
+            > 'Chain Roots' i.e. symbols, which is a list of 
+                > Strike prices, which is a list of:
+                    > [strike, callsymbolID, putSymbolID]
+
+    Shit is whack. Hence the nested for loops 
+
+    """
+    allChains = optionChains['optionChain']
+    optionIDs = list() # return var
+    
+    for chain in allChains:
+        if chain['expiryDate'][:-22] == date:
+            for strikes in chain['chainPerRoot'][0]['chainPerStrikePrice']:
+                if strikes['strikePrice'] == strike:
+                    optionIDs = strikes
+    
+    optionQuote = qtrade.get_option_quotes(option_ids=optionIDs['callSymbolId'], filters=filter)
+    print(optionQuote)
+    
+    #print(optionIDs['callSymbolId'])
+    return optionIDs
+    
+def getQuote():
+    try:
+        qtrade = setupConnection()
+    except : 
+        print('could not connect to DB/Qtrade!')
+
+    quote = qtrade.get_quote('AAPL')
+    print(quote['symbolId'])
+
+#IDs = updateOptionHistory('AAPL', 125, '2022-04-01')
+#print(IDs)
+
 
 updateSymbolHistory()
+
+
