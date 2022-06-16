@@ -7,6 +7,72 @@ import backtrader.indicators as btind
 import pandas as pd
 
 """
+###########
+########### UTIL FUNCTIONS 
+###########
+"""
+
+"""
+Function to load date from CSV 
+
+Params
+---------
+csvFilePath: [str] filepath to csv file containing history 
+
+"""
+def getHistory_CSV(csvFilePath):
+    csvFilePath = 'SOXL_OneHour.csv'
+
+    # Create a Data Feed
+    data = bt.feeds.GenericCSVData(
+        dataname=csvFilePath,
+        nullvalue=0.0,
+
+        dtformat=('%Y-%m-%d'),
+        tmformat=('%H:%M:%S'),
+
+        datetime=0,
+        time=1,
+        high=4,
+        low=3,
+        open=5,
+        close=6,
+        volume=7,
+        openinterest=-1,
+        reverse=True,
+        header=True)
+    
+    return data
+
+"""
+Function to load date from sqlite DB 
+
+Params
+---------
+dbFilePath: [str] filepath to DB file containing history
+symbol: [str] target symbol
+interval: [str] interval that you need (e.g. OneHour, OneDay, etc...)
+
+"""
+def getHistory_SQL(dbFilePath, symbol, interval):
+    
+    conn = sqlite3.connect(dbFilePath)
+    tableName = symbol+'_'+'stock'+'_'+interval
+    sqlStatement = 'SELECT * FROM ' + tableName
+    symbolHistory = pd.read_sql(sqlStatement, conn)
+    
+    symbolHistory['start'] = symbolHistory['start'].astype(str).str[:-7]
+    symbolHistory.drop(['end'], axis=1, inplace=True)
+    symbolHistory['start'] = pd.to_datetime(symbolHistory['start'])
+    symbolHistory.set_index('start', inplace=True)
+    print(symbolHistory.head())
+
+    data = bt.feeds.PandasData(dataname=symbolHistory)
+    
+    # Create a Data Feed
+    return data
+
+"""
 Custom indicator - VWAP
 """
 class VolumeWeightedAveragePrice(bt.Indicator):
@@ -18,8 +84,6 @@ class VolumeWeightedAveragePrice(bt.Indicator):
     lines = ('VWAP',)
     plotlines = dict(VWAP=dict(alpha=0.50, linestyle='-.', linewidth=2.0))
 
-
-
     def __init__(self):
         # Before super to ensure mixins (right-hand side in subclassing)
         # can see the assignment operation and operate on the line
@@ -29,6 +93,20 @@ class VolumeWeightedAveragePrice(bt.Indicator):
         self.lines[0] = cumtypprice / cumvol
 
         super(VolumeWeightedAveragePrice, self).__init__()
+
+"""
+###########
+########### UTIL FUNCTIONS 
+########### /END
+"""
+
+
+
+"""
+##########
+########## STRATEGIES /START 
+##########
+"""
 
 """
 Basic test strategy 
@@ -65,16 +143,7 @@ class testStrategy(bt.Strategy):
         self.vwap = VolumeWeightedAveragePrice(
            self.datas[0], period = self.params.vwapperiod)
 
-        ## Indicators for the plotting show
-        
-        #bt.indicators.ExponentialMovingAverage(self.datas[0], period=25)
-        #bt.indicators.WeightedMovingAverage(self.datas[0], period=25,
-        #                                    subplot=True)
-        #bt.indicators.StochasticSlow(self.datas[0])
-        #bt.indicators.MACDHisto(self.datas[0])
         rsi = bt.indicators.RSI(self.datas[0])
-        #bt.indicators.SmoothedMovingAverage(rsi, period=10)
-        #bt.indicators.ATR(self.datas[0], plot=False)
 
     def notify_order(self, order):
         if order.status in [order.Submitted, order.Accepted]:
@@ -177,98 +246,19 @@ class SMA_CrossOver(bt.Strategy):
             self.buy()
 
 """
-Function to load date from CSV 
-
-Params
----------
-csvFilePath: [str] filepath to csv file containing history 
-
+##########
+########## STRATEGIES /END   
+##########
 """
-def getHistory_CSV(csvFilePath):
-    #modpath = os.path.dirname(os.path.abspath(sys.argv[0]))
-    csvFilePath = 'SOXL_OneHour.csv'
-
-    # Create a Data Feed
-    data = bt.feeds.GenericCSVData(
-        dataname=csvFilePath,
-        nullvalue=0.0,
-
-        dtformat=('%Y-%m-%d'),
-        tmformat=('%H:%M:%S'),
-
-        datetime=0,
-        time=1,
-        high=4,
-        low=3,
-        open=5,
-        close=6,
-        volume=7,
-        openinterest=-1,
-        reverse=True,
-        header=True)
-    
-    return data
-
-"""
-Function to load date from CSV 
-
-Params
----------
-csvFilePath: [str] filepath to csv file containing history 
-
-"""
-def getHistory_SQL(dbFilePath, symbol, interval):
-    #modpath = os.path.dirname(os.path.abspath(sys.argv[0]))
-    #csvFilePath = 'SOXL_OneHour.csv'
-    
-    conn = sqlite3.connect(dbFilePath)
-    tableName = symbol+'_'+'stock'+'_'+interval
-    sqlStatement = 'SELECT * FROM ' + tableName
-    symbolHistory = pd.read_sql(sqlStatement, conn)
-    
-    symbolHistory['start'] = symbolHistory['start'].astype(str).str[:-7]
-    symbolHistory.drop(['end'], axis=1, inplace=True)
-    symbolHistory['start'] = pd.to_datetime(symbolHistory['start'])
-    symbolHistory.set_index('start', inplace=True)
-    print(symbolHistory.head())
-
-    data = bt.feeds.PandasData(dataname=symbolHistory)
-    
-    
-    
-    # Create a Data Feed
-    """
-    data = bt.feeds.GenericCSVData(
-        dataname=dbFilePath,
-        nullvalue=0.0,
-
-        dtformat=('%Y-%m-%d'),
-        tmformat=('%H:%M:%S'),
-
-        datetime=0,
-        time=1,
-        high=4,
-        low=3,
-        open=5,
-        close=6,
-        volume=7,
-        openinterest=-1,
-        reverse=True,
-        header=True)
-    """
-    return data
 
 ## initialize the cerebro engine 
 cr = bt.Cerebro()
 
 # Add the Data Feed to Cerebro
-cr.adddata(getHistory_SQL('historicalData.db', 'AAPL', 'OneHour'))
+cr.adddata(getHistory_SQL('historicalData.db', 'SOXL', 'OneDay'))
 
 ## add a strategy
 cr.addstrategy(testStrategy)
-#strats = cr.optstrategy(
-#    testStrategy,
-#    maperiod=range(10, 30))
 
 ## set cash 
 cr.broker.setcash(2000)
