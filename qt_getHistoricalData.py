@@ -18,7 +18,9 @@ conn = sqlite3.connect('historicalData.db')
 Questrade (requires account)
 
 """
+from tracemalloc import start
 from urllib.error import HTTPError, URLError
+from matplotlib.pyplot import axis
 
 from pytz import timezone, utc
 
@@ -182,51 +184,79 @@ get history of old ones from questrade
 update history in the local db 
 
 """
-def updateSymbolHistory(tickerFilepath = 'tickerList.csv'):
-    ## setup lookup var defaults
+def updateSymbolHistory2(tickerFilepath = 'tickerList.csv'):
+    ## vars for when updating is needed 
     type = 'stock'
-    interval = ['FiveMinutes', 'OneHour', 'OneDay', 'OneMonth', 'FifteenMinutes'] #OneHour
-    endDate = datetime.datetime.now(tz=None).date()
-    startDate = datetime.datetime.now(tz=None) - datetime.timedelta(10000)
-
-    ## read in list of tickers
-    tickerList = pd.read_csv(tickerFilepath)
+    interval = ['FiveMinutes', 'FifteenMinutes', 'OneHour', 'OneDay', 'OneMonth']
     
-    ## initiate connection to the DB & Questrade
-    try:
-        conn = sqlite3.connect('historicalData.db')
-        qtrade = setupConnection()
-    except : 
-        print('could not connect to DB/Qtrade!')
-
-    ## Update saved data
-    for ticker in tickerList.columns: 
-        ticker = ticker.strip(' ').upper()
-        print('\nChecking...%s'%(ticker))
+    # check our DB records that haven't been updated for more than 5 days
+    dbTables = checkRecords()
+    dbTables_ = dbTables.loc[(dbTables['daysSinceLastUpdate'] >= 5)]
+    
+    if dbTables_['daysSinceLastUpdate'].count() > 0: ## we have records thats need updating
+        pd.to_datetime(dbTables_['lastUpdateDate'])
+        print('\nSome records are more than 5 days old. Updating...')
+        try:
+            print(' Connecting with [red]Qtrade & DB [/red]')
+            qtrade = setupConnection()
+            conn = sqlite3.connect('historicalData.db')
+        except : 
+            print('[red]could not connect to DB/Qtrade![/red]')
         
-        for intvl in interval:
-            ## if not history set start date far back and update
-            lastUpdateDate = getLastUpdateDate(conn, ticker, intvl, type) 
-            if lastUpdateDate == 'n/a': #table doesnt exist 
-                ## get latest history
-                
-                startDate = datetime.datetime.now(tz=None) - datetime.timedelta(10000)
-                history = getLatestHistory(qtrade, ticker, startDate.date(), endDate, intvl)
-                saveHistoryToDB(history, conn)
-                print('%s...[red]updated![/red]\n'%(intvl))
+        for index, row in dbTables_.iterrows():            
+            startDate = datetime.datetime.strptime(row['lastUpdateDate'][:10], '%Y-%m-%d') #+ datetime.timedelta(hours=9)
+            history = getLatestHistory(qtrade, row['ticker'], startDate.date(), datetime.datetime.now(tz=None).date(), row['interval'])
+            saveHistoryToDB(history, conn)
+            print('%s-%s...[red]updated![/red]\n'%(row['ticker'], row['interval']))
+          #  print(ticker)
+    else: 
+        print('\n[green]Existing records are up to date...[/green]')
 
-            ## if saved date < 5 days old, skip 
-            elif (lastUpdateDate.replace(tzinfo=None) > datetime.datetime.now(tz=None) - datetime.timedelta(5)):
-                print('%s...No update needed'%(intvl))
-                next
-            
-            ## if saved data exists, but is > 5 days old, 
-            # set start date to last saved date and update
-            else:
-                startDate = lastUpdateDate + datetime.timedelta(hours=9)
-                history = getLatestHistory(qtrade, ticker, startDate.date(), endDate, intvl)
+    # check if there have been any new tickers added to tickerlist.txt
+    tickerList = pd.read_csv(tickerFilepath)
+    myList = pd.DataFrame(tickerList.columns).reset_index(drop=True)
+    myList.rename(columns={0:'ticker'}, inplace=True)
+    myList['ticker'] = myList['ticker'].str.strip(' ')
+    myList['ticker'] = myList['ticker'].str.upper()
+    myList.sort_values(by=['ticker'], inplace=True)
+    
+    # select all unique tickers in the DB 
+    dbTables_3 = dbTables['ticker'].drop_duplicates().reset_index()
+    dbTables_3.drop(['index'], inplace=True, axis=1)
+    dbTables_3.sort_values(by=['ticker'], inplace=True)
+    
+    # compare dbTables_3 with tickerlist.txt to identify new entries
+    newList = myList[~myList['ticker'].isin(dbTables_3['ticker'])]
+    
+    # if there are new entries, update the DB 
+    if newList['ticker'].count() > 0: 
+        print('\n[red]%s new ticker(s) found[/red], adding to db...'%(newList['ticker'].count()))
+        try:
+            print('Connecting with [red]Qtrade & DB [/red]')
+            qtrade = setupConnection()
+            conn = sqlite3.connect('historicalData.db')
+        except : 
+            print('could not connect to DB/Qtrade!')
+
+        # loop through each new entry (i.e. ticker)
+        for ticker in newList['ticker']:
+            startDate = datetime.datetime.now(tz=None) - datetime.timedelta(30000)
+            print('\nAdding [underline]%s[/underline] to the database...'%(ticker))
+
+            # we will update every interval for the ticker             
+            for intvl in interval:
+                # get the latest history from questrade 
+                history = getLatestHistory(qtrade, ticker, startDate.date(), datetime.datetime.now(tz=None).date(), intvl)
+                # save the history to DB 
                 saveHistoryToDB(history, conn)
-                print('%s...[red]updated![/red]\n'%(intvl))
+                print(' %s...[green]added![/green] (%s records)'%(intvl, history['end'].count()))
+        
+        # close the DB connection when done
+        conn.close()
+    else:
+        print('[green]No new tickers to update...[/green]')
+    
+    print('\n[green]All Done.[/green]')
 
 """
 Get options historical data
@@ -304,6 +334,32 @@ def getQuote():
     quote = qtrade.get_quote('AAPL')
     print(quote['symbolId'])
 
-updateSymbolHistory()
+def getDaysSinceLastUpdated(row):
+    conn = sqlite3.connect('historicalData.db')
+    maxtime = pd.read_sql('SELECT MAX(end) FROM '+ row['name'], conn)
+    conn.close()
+    mytime = datetime.datetime.strptime(maxtime['MAX(end)'][0][:10], '%Y-%m-%d')
+    delta = datetime.datetime.now() - mytime
+    #return maxtime['MAX(end)']
+    return delta.days
 
+def getLastUpdateDate(row):
+    conn = sqlite3.connect('historicalData.db')
+    maxtime = pd.read_sql('SELECT MAX(end) FROM '+ row['name'], conn)
+    conn.close()
+    
+    return maxtime['MAX(end)']
+    #return delta.days
 
+def checkRecords():
+    conn = sqlite3.connect('historicalData.db')
+    tables = pd.read_sql('SELECT name FROM sqlite_master WHERE type=\'table\'', conn)
+    conn.close()
+    
+    tables[['ticker', 'type', 'interval']] = tables['name'].str.split('_',expand=True)
+    tables['lastUpdateDate'] = tables.apply(getLastUpdateDate, axis=1)
+    tables['daysSinceLastUpdate'] = tables.apply(getDaysSinceLastUpdated, axis=1)
+
+    return tables
+
+print(updateSymbolHistory2())
