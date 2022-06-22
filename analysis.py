@@ -27,8 +27,9 @@ matplotlib.use('TkAgg')
 global vars
 """
 # symbols and timeframes to analyze
-symbols = ['RFV', 'IJJ', 'IVOV']
-intervals = ['yearByMonth', 'monthByDay', 'weekByDay', 'dayByHour']
+symbols = ['SPY', 'AAPL', 'XLE']
+#intervals = ['yearByMonth', 'monthByDay', 'weekByDay', 'dayByHour']
+intervals = ['monthByDay']
 
 """
 Returns a list of returns for a specific symbol, aggregated over  intervals
@@ -178,27 +179,11 @@ def plotSeasonalReturns(seasonalReturns):
         plt.show()
         plt.close(fig)
 
-def plotSeasonalReturns2(seasonalReturns):
-    numCols = len(intervals)
-    numRows = len(symbols)
-    count = 0
+"""
+plot seasonal returns over most recent time periods
+"""
+def plotSeasonalReturns_recent(seasonalReturns):
+    print('not complete')
+    
 
-    with plt.style.context(("seaborn","ggplot")):
-        
-        fig = plt.figure(constrained_layout=True, figsize=(numCols*5, numRows*3))
-        specs = gridspec.GridSpec(ncols=numCols, nrows=numRows, figure=fig)
-
-        for rtr in seasonalReturns:
-            count += 1
-            intervalLabel = rtr['interval'][0]
-
-            x1 = fig.add_subplot(numRows, numCols, count)
-            
-            rtr['mean'].plot(color='r', kind='bar', title=rtr['symbol'][0]+' - '+intervalLabel, zorder=2)
-            rtr['std'].plot(color='b', kind='bar')
-
-
-        plt.show()
-        plt.close(fig)
-
-plotSeasonalReturns2(getSeasonalReturns())
+plotSeasonalReturns(getSeasonalReturns())
