@@ -3,11 +3,9 @@
 
 """
 
-from datetime import datetime
+import datetime
 from itertools import count
-from pyexpat import features
-from socket import gethostbyaddr
-from symtable import SymbolTableFactory
+from pytz import utc
 from rich import print
 
 import ffn
@@ -27,9 +25,9 @@ matplotlib.use('TkAgg')
 global vars
 """
 # symbols and timeframes to analyze
-symbols = ['SPY', 'AAPL', 'XLE']
+symbols_ = ['SPY', 'AAPL', 'XLE']
 #intervals = ['yearByMonth', 'monthByDay', 'weekByDay', 'dayByHour']
-intervals = ['monthByDay']
+intervals_ = ['monthByDay', 'FifteenMinutes']
 
 """
 Returns a list of returns for a specific symbol, aggregated over  intervals
@@ -44,7 +42,7 @@ Returns a list of returns for a specific symbol, aggregated over  intervals
 4. return aggregated seasonal returns 
 
 """
-def getSeasonalReturns(dbName = 'historicalData.db'):
+def getSeasonalReturns(dbName = 'historicalData.db', intervals = intervals_, symbols=symbols_, lookbackPeriod = 0):
     conn = sqlite3.connect('historicalData.db')
     seasonalReturns = []
     for sym in symbols:
@@ -65,11 +63,15 @@ def getSeasonalReturns(dbName = 'historicalData.db'):
             else:
                 tableName = sym+'_'+'stock'+'_'+int
 
-            sqlStatement = 'SELECT * FROM ' + tableName
+            if lookbackPeriod == 0:
+                sqlStatement = 'SELECT * FROM ' + tableName
+            else:
+                sqlStatement = 'SELECT * FROM ' + tableName
+            
             symbolHistory = pd.read_sql(sqlStatement, conn)
             myReturns = computeReturns(symbolHistory)
             seasonalReturns.append(aggregateSeasonalReturns(myReturns, sym, int))
-
+    print(seasonalReturns)
     return seasonalReturns
 
 """
@@ -156,9 +158,9 @@ seasonalReturns - [list] of [DataFrame] of seasonal returns
 intervals - [array] of intervals being plotted
 symbols - [array] of symbols being plotted
 """
-def plotSeasonalReturns(seasonalReturns):
+def plotSeasonalReturns(seasonalReturns, intervals=intervals_, symbols=symbols_):
     numCols = len(intervals)
-    numRows = len(symbols)
+    numRows = len(symbols, symbols=symbols_)
     count = 0
 
     with plt.style.context(("seaborn","ggplot")):
@@ -180,10 +182,49 @@ def plotSeasonalReturns(seasonalReturns):
         plt.close(fig)
 
 """
-plot seasonal returns over most recent time periods
+plot seasonal returns across various timeperiods
 """
-def plotSeasonalReturns_recent(seasonalReturns):
-    print('not complete')
-    
+def plotSeasonalReturns_timeperiodAnalysis(interval = ['FifteenMinutes'], symbol=['AAPL']):
+    # timperiods to analyse in # days 
+    timeperiods = [20, 60, 120]
 
-plotSeasonalReturns(getSeasonalReturns())
+    # grab OHLC data from the database 
+    tableName = symbol[0]+'_'+'stock'+'_'+interval[0]
+    conn = sqlite3.connect('historicalData.db')
+    sqlStatement = 'SELECT * FROM ' + tableName
+    symbolHistory = pd.read_sql(sqlStatement, conn)
+    symbolHistory['end'] = pd.to_datetime(symbolHistory['end'])
+    
+    # settings for figure
+    fig_numCols = 2
+    fig_numRows = 2
+
+    with plt.style.context(("seaborn", "ggplot")):
+        fig = plt.figure(constrained_layout=True, figsize=(15,9))
+        specs = gridspec.GridSpec(ncols=fig_numCols, nrows = fig_numRows, figure=fig)
+        
+    ## plot returns over the entire ohlc dataset
+        myReturns = aggregateSeasonalReturns(computeReturns(symbolHistory), symbol[0], interval[0])
+        x1 = fig.add_subplot(2,2,1)
+        myReturns['mean'].plot(color='r', kind='bar', title=symbol[0]+' - '+interval[0]+' - Baseline', zorder=2)
+        myReturns['std'].plot(color='b', kind='bar')
+        
+        # loop through list of timeperiods, calculating & plotting returns 
+        count = 2
+        for tp in timeperiods:
+            cutoffDate = datetime.datetime.now(tz=utc) - datetime.timedelta(days=tp)
+
+            myReturns_30 = aggregateSeasonalReturns(computeReturns(symbolHistory.loc[symbolHistory['end'] >= cutoffDate].reset_index()), symbol[0], interval[0])
+
+            x1 = fig.add_subplot(2,2,count)
+            count += 1 
+            myReturns_30['mean'].plot(color='r', kind='bar', title=symbol[0]+' - '+interval[0]+' - '+str(tp)+'d', zorder=2)
+            myReturns_30['std'].plot(color='b', kind='bar')
+
+
+    plt.show()
+    plt.close(fig)
+
+
+#plotSeasonalReturns(getSeasonalReturns())
+plotSeasonalReturns_timeperiodAnalysis(symbol=['ASAN'])
