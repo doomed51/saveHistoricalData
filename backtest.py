@@ -7,7 +7,7 @@ import backtrader.indicators as btind
 import pandas as pd
 
 """
-###########
+###########++++++++++++++++++++
 ########### UTIL FUNCTIONS 
 ###########
 """
@@ -96,14 +96,14 @@ class VolumeWeightedAveragePrice(bt.Indicator):
 
 """
 ###########
-########### UTIL FUNCTIONS 
-########### /END
+########### UTIL FUNCTIONS /END
+########### -------------------
 """
 
 
 
 """
-##########
+##########+++++++++++++++++++++
 ########## STRATEGIES /START 
 ##########
 """
@@ -245,20 +245,120 @@ class SMA_CrossOver(bt.Strategy):
         elif self.buysig > 0:
             self.buy()
 
+
+class SLX_seasonal(bt.Strategy):
+    params = (
+        ('smaperiod', 20),
+        ('printlog', False),
+        ('vwapperiod', 12)
+    )
+    
+    def log(self, txt, dt=None, doprint=True):
+        ''' Logging function for this strategy'''
+        if self.params.printlog or doprint:
+            dt = dt or self.datas[0].datetime.date(0)
+            print('%s, %s' % (dt.isoformat(), txt))
+    
+    def __init__(self):
+        ## keep a reference to the close price in the data[0] dataseries
+        self.dataclose = self.datas[0].close
+
+        ## to keep track of pending orders
+        self.order = None
+        self.buyprice = None
+        self.buycomm = None
+
+        ## Add a MovingAverageSimple indicator
+        self.macd = bt.indicators.MACD(
+            self.datas[0])
+        
+    def notify_order(self, order):
+        if order.status in [order.Submitted, order.Accepted]:
+            # Buy/Sell order submitted/accepted to/by broker - Nothing to do
+            return
+
+        # Check if an order has been completed
+        # Attention: broker could reject order if not enough cash
+        if order.status in [order.Completed]:
+            if order.isbuy():
+                self.log(
+                    'BUY EXECUTED, Price: %.2f, Cost: %.2f, Comm %.2f' %
+                    (order.executed.price,
+                     order.executed.value,
+                     order.executed.comm))
+
+                self.buyprice = order.executed.price
+                self.buycomm = order.executed.comm
+            else:  # Sell
+                self.log('SELL EXECUTED, Price: %.2f, Cost: %.2f, Comm %.2f' %
+                         (order.executed.price,
+                          order.executed.value,
+                          order.executed.comm))
+
+            self.bar_executed = len(self)
+
+        elif order.status in [order.Canceled, order.Margin, order.Rejected]:
+            self.log('Order Canceled/Margin/Rejected')
+
+        self.order = None
+
+    def notify_trade(self, trade):
+        if not trade.isclosed:
+            return
+
+        self.log('OPERATION PROFIT, GROSS %.2f, NET %.2f' %
+                 (trade.pnl, trade.pnlcomm))
+
+    def next(self):
+        # log the closing price
+        #self.log('Close, %.2f, VWAP: %.2f'%(self.dataclose[0], self.vwap[0]))
+
+        # Check if an order is pending ... if yes, we cannot send a 2nd one
+        #dateToGoLong = datetime.datetime.strptime("01-07")
+        #dateToGoShort = 
+
+        if self.order:
+            return
+
+        # Check if we are in the market
+        if not self.position:
+            mydate = self.datetime.date()
+            if (mydate.month == 10):
+                if ( 7 <= mydate.day <= 12 ):
+                    #print ('BUY!!!!!!!!!')
+                    # SELL with all possible default parameters
+                    self.log('SELL Open, %.2f' % self.dataclose[0])
+
+                    # Keep track of the created order to avoid a 2nd order
+                    self.order = self.sell()
+
+        else:
+            mydate = self.datetime.date()
+            if (mydate.month == 12):
+                if ( 24 <= mydate.day ):
+                    # BUY with default parameters
+                    self.log('BUY Open, %.2f' % self.dataclose[0])
+
+                    # Keep track of the created order to avoid a 2nd order
+                    self.order = self.buy()
+
+    def stop(self):
+        self.log('(MA Period %2d) Ending Value %.2f'%(self.params.smaperiod, self.broker.getvalue()), doprint=True)
+
 """
 ##########
 ########## STRATEGIES /END   
-##########
+##########--------------------
 """
 
 ## initialize the cerebro engine 
 cr = bt.Cerebro()
 
 # Add the Data Feed to Cerebro
-cr.adddata(getHistory_SQL('historicalData.db', 'SOXL', 'OneDay'))
+cr.adddata(getHistory_SQL('historicalData.db', 'UNG', 'OneDay'))
 
 ## add a strategy
-cr.addstrategy(testStrategy)
+cr.addstrategy(SLX_seasonal)
 
 ## set cash 
 cr.broker.setcash(2000)
