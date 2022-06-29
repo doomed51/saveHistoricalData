@@ -3,6 +3,7 @@
 
 """
 
+from cgi import test
 import datetime
 from itertools import count
 from pytz import utc
@@ -25,9 +26,10 @@ matplotlib.use('TkAgg')
 global vars
 """
 # symbols and timeframes to analyze
-symbols_ = ['SPY', 'AAPL', 'XLE']
-#intervals = ['yearByMonth', 'monthByDay', 'weekByDay', 'dayByHour']
-intervals_ = ['monthByDay', 'FifteenMinutes']
+symbols_ = ['USO', 'UNG', 'XLE']
+intervals_ = ['yearByMonth', 'monthByDay', 'weekByDay']#, 'dayByHour']
+
+#intervals_ = ['monthByDay', 'FifteenMinutes']
 
 """
 Returns a list of returns for a specific symbol, aggregated over  intervals
@@ -160,7 +162,10 @@ symbols - [array] of symbols being plotted
 """
 def plotSeasonalReturns(seasonalReturns, intervals=intervals_, symbols=symbols_):
     numCols = len(intervals)
-    numRows = len(symbols, symbols=symbols_)
+    if symbols_:
+        numRows = len(symbols_)
+    else:
+        numRows = 1
     count = 0
 
     with plt.style.context(("seaborn","ggplot")):
@@ -193,6 +198,7 @@ def plotSeasonalReturns_timeperiodAnalysis(interval = ['FifteenMinutes'], symbol
     conn = sqlite3.connect('historicalData.db')
     sqlStatement = 'SELECT * FROM ' + tableName
     symbolHistory = pd.read_sql(sqlStatement, conn)
+    conn.close()
     symbolHistory['end'] = pd.to_datetime(symbolHistory['end'])
     
     # settings for figure
@@ -203,7 +209,7 @@ def plotSeasonalReturns_timeperiodAnalysis(interval = ['FifteenMinutes'], symbol
         fig = plt.figure(constrained_layout=True, figsize=(15,9))
         specs = gridspec.GridSpec(ncols=fig_numCols, nrows = fig_numRows, figure=fig)
         
-    ## plot returns over the entire ohlc dataset
+        ## plot returns over the entire ohlc dataset (baseline)
         myReturns = aggregateSeasonalReturns(computeReturns(symbolHistory), symbol[0], interval[0])
         x1 = fig.add_subplot(2,2,1)
         myReturns['mean'].plot(color='r', kind='bar', title=symbol[0]+' - '+interval[0]+' - Baseline', zorder=2)
@@ -221,10 +227,55 @@ def plotSeasonalReturns_timeperiodAnalysis(interval = ['FifteenMinutes'], symbol
             myReturns_30['mean'].plot(color='r', kind='bar', title=symbol[0]+' - '+interval[0]+' - '+str(tp)+'d', zorder=2)
             myReturns_30['std'].plot(color='b', kind='bar')
 
+"""
+plots the distribution of returns for a given interval, and symbol
+"""
+def plotReturnsDist(interval = ['FifteenMinutes'], symbol=['AAPL']):
+
+    # grab OHLC data from the database 
+    tableName = symbol[0]+'_'+'stock'+'_'+interval[0]
+    conn = sqlite3.connect('historicalData.db')
+    sqlStatement = 'SELECT * FROM ' + tableName
+    symbolHistory = pd.read_sql(sqlStatement, conn)
+
+    #myReturns = aggregateSeasonalReturns(computeReturns(symbolHistory), symbol[0], interval[0])
+    myReturns = computeReturns(symbolHistory)
+
+    fig = plt.figure(constrained_layout=True, figsize=(15,9))
+    specs = gridspec.GridSpec(ncols=1, nrows = 1, figure=fig)
+    x1 = fig.add_subplot(1,1,1)
+    print(myReturns)
+    myReturns[symbol].plot(color='r', kind='hist', title=symbol[0]+' - '+interval[0]+' - Returns', zorder=2)    
 
     plt.show()
     plt.close(fig)
 
+"""
+plot symbol, interval close price over last x days
+"""
+def plotPrice(interval = ['FifteenMinutes'], symbol=['AAPL'], numDays = 10): 
+    # grab OHLC data from the database 
+    tableName = symbol[0]+'_'+'stock'+'_'+interval[0]
+    conn = sqlite3.connect('historicalData.db')
+    sqlStatement = 'SELECT * FROM ' + tableName
+    symbolHistory = pd.read_sql(sqlStatement, conn)
+    symbolHistory['start'] = pd.to_datetime(symbolHistory['start']).dt.date
 
-#plotSeasonalReturns(getSeasonalReturns())
-plotSeasonalReturns_timeperiodAnalysis(symbol=['ASAN'])
+    fig = plt.figure(constrained_layout=True, figsize=(15,9))
+    specs = gridspec.GridSpec(ncols=1, nrows = 1, figure=fig)
+    x1 = fig.add_subplot(1,1,1)
+
+    cutoffDate = datetime.datetime.now(tz=utc) - datetime.timedelta(days=numDays+1)
+    symbolHistory = symbolHistory.loc[symbolHistory['start'] >= cutoffDate.date()].reset_index()
+
+    symbolHistory['close'].plot(color='r', kind='line', title=symbol[0]+' - '+interval[0]+' - Close', zorder=2)
+    symbolHistory['VWAP'].plot(color='g', kind='line', title=symbol[0]+' - '+interval[0]+' - vwap', zorder=2)
+
+    print(symbolHistory)
+    plt.show()
+    plt.close(fig)
+
+plotSeasonalReturns(getSeasonalReturns())
+#plotSeasonalReturns_timeperiodAnalysis(symbol=['ASAN'])
+#plotReturnsDist(symbol=['ASAN'])
+#plotPrice(interval=['OneHour'])
