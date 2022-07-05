@@ -2,14 +2,12 @@
 /* A playground for analyzing historical data 
 
 """
-
-from cgi import test
 import datetime
 from itertools import count
 from pytz import utc
 from rich import print
 
-import ffn
+import ffn #needed for to_returns() calc
 import sqlite3
 import tkinter
 import matplotlib
@@ -25,11 +23,12 @@ matplotlib.use('TkAgg')
 """
 global vars
 """
-# symbols and timeframes to analyze
-symbols_ = ['USO', 'UNG', 'XLE']
+# default list of symbols and timeframes to analyze
+symbols_ = ['USO', 'XLE', 'XLU']
 intervals_ = ['yearByMonth', 'monthByDay', 'weekByDay']#, 'dayByHour']
 
-#intervals_ = ['monthByDay', 'FifteenMinutes']
+# global reference list of index symbols 
+index_ = ['VIX']
 
 """
 Returns a list of returns for a specific symbol, aggregated over  intervals
@@ -44,33 +43,42 @@ Returns a list of returns for a specific symbol, aggregated over  intervals
 4. return aggregated seasonal returns 
 
 """
-def getSeasonalReturns(dbName = 'historicalData.db', intervals = intervals_, symbols=symbols_, lookbackPeriod = 0):
-    conn = sqlite3.connect('historicalData.db')
+def getSeasonalReturns(intervals = intervals_, symbols=symbols_, lookbackPeriod = 0):
     seasonalReturns = []
+    dbName = 'historicalData_stock.db'
+
     for sym in symbols:
+        if sym in index_:
+            symbolType = 'index'
+            dbName = 'historicalData_index.db'
+        else: 
+            symbolType = 'stock'
+        
         for int in intervals:
             ## Tablename convention: <symbol>_<stock/opt>_<interval>
             if int == 'yearByMonth':
-                tableName = sym+'_'+'stock'+'_'+'OneMonth'
+                tableName = sym+'_'+symbolType+'_'+'OneMonth'
             
             elif int == 'weekByDay':
-                tableName = sym+'_'+'stock'+'_'+'OneDay'
+                tableName = sym+'_'+symbolType+'_'+'OneDay'
             
             elif int == 'dayByHour':
-                tableName = sym+'_'+'stock'+'_'+'OneHour'
+                tableName = sym+'_'+symbolType+'_'+'OneHour'
             
             elif int == 'monthByDay':
-                tableName = sym+'_'+'stock'+'_'+'OneDay'
+                tableName = sym+'_'+symbolType+'_'+'OneDay'
 
             else:
-                tableName = sym+'_'+'stock'+'_'+int
+                tableName = sym+'_'+symbolType+'_'+int
 
             if lookbackPeriod == 0:
                 sqlStatement = 'SELECT * FROM ' + tableName
             else:
                 sqlStatement = 'SELECT * FROM ' + tableName
             
+            conn = sqlite3.connect(dbName)
             symbolHistory = pd.read_sql(sqlStatement, conn)
+            conn.close()
             myReturns = computeReturns(symbolHistory)
             seasonalReturns.append(aggregateSeasonalReturns(myReturns, sym, int))
     print(seasonalReturns)
@@ -189,13 +197,13 @@ def plotSeasonalReturns(seasonalReturns, intervals=intervals_, symbols=symbols_)
 """
 plot seasonal returns across various timeperiods
 """
-def plotSeasonalReturns_timeperiodAnalysis(interval = ['FifteenMinutes'], symbol=['AAPL']):
+def plotSeasonalReturns_timeperiodAnalysis(interval = ['FifteenMinutes'], symbol=['AAPL'], dbName = 'historicalData.db'):
     # timperiods to analyse in # days 
     timeperiods = [20, 60, 120]
 
     # grab OHLC data from the database 
     tableName = symbol[0]+'_'+'stock'+'_'+interval[0]
-    conn = sqlite3.connect('historicalData.db')
+    conn = sqlite3.connect(dbName)
     sqlStatement = 'SELECT * FROM ' + tableName
     symbolHistory = pd.read_sql(sqlStatement, conn)
     conn.close()
@@ -230,11 +238,11 @@ def plotSeasonalReturns_timeperiodAnalysis(interval = ['FifteenMinutes'], symbol
 """
 plots the distribution of returns for a given interval, and symbol
 """
-def plotReturnsDist(interval = ['FifteenMinutes'], symbol=['AAPL']):
+def plotReturnsDist(interval = ['FifteenMinutes'], symbol=['AAPL'], dbName = 'historicalData.db', type='stock'):
 
     # grab OHLC data from the database 
-    tableName = symbol[0]+'_'+'stock'+'_'+interval[0]
-    conn = sqlite3.connect('historicalData.db')
+    tableName = symbol[0]+'_'+type+'_'+interval[0]
+    conn = sqlite3.connect(dbName)
     sqlStatement = 'SELECT * FROM ' + tableName
     symbolHistory = pd.read_sql(sqlStatement, conn)
 
@@ -253,10 +261,10 @@ def plotReturnsDist(interval = ['FifteenMinutes'], symbol=['AAPL']):
 """
 plot symbol, interval close price over last x days
 """
-def plotPrice(interval = ['FifteenMinutes'], symbol=['AAPL'], numDays = 10): 
+def plotPrice(interval = ['FifteenMinutes'], symbol=['AAPL'], numDays = 10,  dbName = 'historicalData.db', type='stock'): 
     # grab OHLC data from the database 
-    tableName = symbol[0]+'_'+'stock'+'_'+interval[0]
-    conn = sqlite3.connect('historicalData.db')
+    tableName = symbol[0]+'_'+type+'_'+interval[0]
+    conn = sqlite3.connect(dbName)
     sqlStatement = 'SELECT * FROM ' + tableName
     symbolHistory = pd.read_sql(sqlStatement, conn)
     symbolHistory['start'] = pd.to_datetime(symbolHistory['start']).dt.date
