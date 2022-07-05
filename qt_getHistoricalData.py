@@ -12,7 +12,7 @@ VARIABLES
 tickerFilepath = 'tickerList.csv'
 
 # The DATABSE where history is saved
-conn = sqlite3.connect('historicalData.db')
+conn = sqlite3.connect('historicalData_stock.db')
 
 # The data SOURCE for historcal data 
 Questrade (requires account)
@@ -33,6 +33,9 @@ import datetime
 import sqlite3 
 import pandas as pd
 
+## Default DB names 
+_dbName_stock = 'historicalData_stock.db'
+_dbName_index = 'historicalData_index.db'
 """
 Setup connection to Questrade API
 ###
@@ -86,7 +89,6 @@ conn: [Sqlite3 connection object]
     connection to the local db 
 """
 def saveHistoryToDB(history, conn, type='stock'):
-    #conn = sqlite3.connect('historicalData.db')
 
     ## Tablename convention: <symbol>_<stock/opt>_<interval>
     tableName = history['symbol'][0]+'_'+type+'_'+history['interval'][0]
@@ -195,11 +197,11 @@ def updateSymbolHistory2(tickerFilepath = 'tickerList.csv'):
     
     if dbTables_['daysSinceLastUpdate'].count() > 0: ## we have records thats need updating
         pd.to_datetime(dbTables_['lastUpdateDate'])
-        print('\nSome records are more than 5 days old. Updating...')
+        print('\n[red]Some records are more than 5 days old. Updating...[/red]')
         try:
             print(' Connecting with [red]Qtrade & DB [/red]')
             qtrade = setupConnection()
-            conn = sqlite3.connect('historicalData.db')
+            conn = sqlite3.connect(_dbName_stock)
         except : 
             print('[red]could not connect to DB/Qtrade![/red]')
         
@@ -209,6 +211,7 @@ def updateSymbolHistory2(tickerFilepath = 'tickerList.csv'):
             saveHistoryToDB(history, conn)
             print('%s-%s...[red]updated![/red]\n'%(row['ticker'], row['interval']))
           #  print(ticker)
+        conn.close()
     else: 
         print('\n[green]Existing records are up to date...[/green]')
 
@@ -234,7 +237,7 @@ def updateSymbolHistory2(tickerFilepath = 'tickerList.csv'):
         try:
             print('Connecting with [red]Qtrade & DB [/red]')
             qtrade = setupConnection()
-            conn = sqlite3.connect('historicalData.db')
+            conn = sqlite3.connect(_dbName_stock)
         except : 
             print('could not connect to DB/Qtrade!')
 
@@ -335,7 +338,7 @@ def getQuote():
     print(quote['symbolId'])
 
 def getDaysSinceLastUpdated(row):
-    conn = sqlite3.connect('historicalData.db')
+    conn = sqlite3.connect(_dbName_stock)
     maxtime = pd.read_sql('SELECT MAX(end) FROM '+ row['name'], conn)
     conn.close()
     mytime = datetime.datetime.strptime(maxtime['MAX(end)'][0][:10], '%Y-%m-%d')
@@ -344,7 +347,7 @@ def getDaysSinceLastUpdated(row):
     return delta.days
 
 def getLastUpdateDate(row):
-    conn = sqlite3.connect('historicalData.db')
+    conn = sqlite3.connect(_dbName_stock)
     maxtime = pd.read_sql('SELECT MAX(end) FROM '+ row['name'], conn)
     conn.close()
     
@@ -352,7 +355,7 @@ def getLastUpdateDate(row):
     #return delta.days
 
 def checkRecords():
-    conn = sqlite3.connect('historicalData.db')
+    conn = sqlite3.connect(_dbName_stock)
     tables = pd.read_sql('SELECT name FROM sqlite_master WHERE type=\'table\'', conn)
     conn.close()
     
