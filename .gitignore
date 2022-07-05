@@ -139,5 +139,5 @@ token.txt
 access_token.yml
 
 # database file & ticker list
-historicalData.db
-tickerList.csv
+*.db
+*.csv
