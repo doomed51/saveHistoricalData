@@ -4,6 +4,7 @@
 """
 import datetime
 from itertools import count
+from turtle import color
 from pytz import utc
 from rich import print
 
@@ -24,8 +25,8 @@ matplotlib.use('TkAgg')
 global vars
 """
 # default list of symbols and timeframes to analyze
-symbols_ = ['USO', 'XLE', 'XLU']
-intervals_ = ['yearByMonth', 'monthByDay', 'weekByDay']#, 'dayByHour']
+symbols_ = ['SSO', 'SPY']
+intervals_ = ['dayByFive', 'dayByFifteen']#'yearByMonth', 'monthByDay', 'dayByHour', 'dayByFive']
 
 # global reference list of index symbols 
 index_ = ['VIX']
@@ -64,9 +65,18 @@ def getSeasonalReturns(intervals = intervals_, symbols=symbols_, lookbackPeriod 
             
             elif int == 'dayByHour':
                 tableName = sym+'_'+symbolType+'_'+'OneHour'
+
+            elif int == 'dayByThirty':
+                tableName = sym+'_'+symbolType+'_'+'ThirtyMinutes'
+
+            elif int == 'dayByFifteen':
+                tableName = sym+'_'+symbolType+'_'+'FifteenMinutes'
             
             elif int == 'monthByDay':
                 tableName = sym+'_'+symbolType+'_'+'OneDay'
+
+            elif int == 'dayByFive':
+                tableName = sym+'_'+symbolType+'_'+'FiveMinutes'
 
             else:
                 tableName = sym+'_'+symbolType+'_'+int
@@ -75,7 +85,6 @@ def getSeasonalReturns(intervals = intervals_, symbols=symbols_, lookbackPeriod 
                 sqlStatement = 'SELECT * FROM ' + tableName
             else:
                 sqlStatement = 'SELECT * FROM ' + tableName
-            
             conn = sqlite3.connect(dbName)
             symbolHistory = pd.read_sql(sqlStatement, conn)
             conn.close()
@@ -118,10 +127,10 @@ def aggregateSeasonalReturns(returns, symbol, interval):
     returns['startDate'] = pd.to_datetime(returns['startDate'])
     returns.drop(['start'], axis=1, inplace=True)
     
-    if interval in ['FiveMinutes', 'dayByHour', 'FifteenMinutes']:
+    if interval in ['FiveMinutes', 'dayByHour', 'dayByFifteen', 'dayByFive']:
 
         ## drop after and before hours data 
-        returns = returns.loc[(returns['startTime'] >= "09:30:00") & (returns['startTime'] < "16:00:00")]
+        #returns = returns.loc[(returns['startTime'] >= "09:30:00") & (returns['startTime'] < "16:00:00")]
 
         # trim excess time info
         returns['startTime'] = returns['startTime'].astype(str).str[:-7]
@@ -169,13 +178,20 @@ intervals - [array] of intervals being plotted
 symbols - [array] of symbols being plotted
 """
 def plotSeasonalReturns(seasonalReturns, intervals=intervals_, symbols=symbols_):
+    # create a grid of symbols & intervals to draw the plots into 
+    # col x rows : interval x symbol 
     numCols = len(intervals)
     if symbols_:
         numRows = len(symbols_)
     else:
         numRows = 1
-    count = 0
+    
+    ## set as static y-axis max such that symbols can be compared
+    ymin = -0.005
+    ymax = 0.0075
 
+
+    count = 0
     with plt.style.context(("seaborn","ggplot")):
         
         fig = plt.figure(constrained_layout=True, figsize=(numCols*5, numRows*3))
@@ -184,13 +200,47 @@ def plotSeasonalReturns(seasonalReturns, intervals=intervals_, symbols=symbols_)
         for rtr in seasonalReturns:
             count += 1
             intervalLabel = rtr['interval'][0]
-
+            
+            ## clean up the time column for prettier plots 
+            if 'day' in intervalLabel:
+                rtr['startTime'] = rtr['startTime'].str[:5]
+            
+            ## add two plots for mean and std dev. 
             x1 = fig.add_subplot(numRows, numCols, count)
-            rtr['mean'].plot(color='r', kind='bar', title=rtr['symbol'][0]+' - '+intervalLabel, zorder=2)
+            x2 = fig.add_subplot(numRows, numCols, count)
+            
+            x2.bar(
+                rtr['startTime'],
+                rtr['std'],
+                color='blue'
+            )
+            
+            x1.bar(
+                rtr['startTime'],
+                rtr['mean'],
+                color='red'
+            )
 
-            rtr['std'].plot(color='b', kind='bar')
+            x2.set(title=rtr['symbol'][0]+' - '+intervalLabel)
+            x2.set_ylim([ymin, ymax])
+            ## space out x-axis if plotting a particularly granular TimeFrame(TF)
+            if intervalLabel in ['dayByFive']:
+                loc = matplotlib.ticker.MultipleLocator(base=6.0)
+                x1.xaxis.set_major_locator(loc)
 
+            ## rotate x axis for prettier plots 
+            plt.xticks(rotation=45)
+            
+            ## date formatting 
+            #splt.gcf().autofmt_xdate()
+            #timeFormat = matplotlib.dates.DateFormatter('%H:%M')
+            #1.xaxis.set_major_formatter(timeFormat)
 
+            #rtr['mean'].plot(color='r', kind='bar', title=rtr['symbol'][0]+' - '+intervalLabel, zorder=2)
+            #rtr['std'].plot(color='b', kind='bar')
+
+        ## format figure and plot 
+        fig.tight_layout()
         plt.show()
         plt.close(fig)
 
@@ -282,6 +332,13 @@ def plotPrice(interval = ['FifteenMinutes'], symbol=['AAPL'], numDays = 10,  dbN
     print(symbolHistory)
     plt.show()
     plt.close(fig)
+
+def updateSingleTF(intvlToUpdate='FiveMinutes', symbolToUpdate='AAPL'):
+    print('%s interval for %s'%(intvlToUpdate, symbolToUpdate))
+
+    # immediately update if table doesn't exist 
+    # escape if table is already up to date
+
 
 plotSeasonalReturns(getSeasonalReturns())
 #plotSeasonalReturns_timeperiodAnalysis(symbol=['ASAN'])
