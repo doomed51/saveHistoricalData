@@ -25,7 +25,7 @@ matplotlib.use('TkAgg')
 global vars
 """
 # default list of symbols and timeframes to analyze
-symbols_ = ['SSO', 'SPY']
+symbols_ = ['SPY', 'AAPL']
 intervals_ = ['dayByFive', 'dayByFifteen']#'yearByMonth', 'monthByDay', 'dayByHour', 'dayByFive']
 
 # global reference list of index symbols 
@@ -187,14 +187,14 @@ def plotSeasonalReturns(seasonalReturns, intervals=intervals_, symbols=symbols_)
         numRows = 1
     
     ## set as static y-axis max such that symbols can be compared
-    ymin = -0.005
+    ymin = -0.002
     ymax = 0.0075
 
 
     count = 0
     with plt.style.context(("seaborn","ggplot")):
         
-        fig = plt.figure(constrained_layout=True, figsize=(numCols*5, numRows*3))
+        fig = plt.figure(constrained_layout=False, figsize=(numCols*5, numRows*3))
         specs = gridspec.GridSpec(ncols=numCols, nrows=numRows, figure=fig)
 
         for rtr in seasonalReturns:
@@ -207,7 +207,7 @@ def plotSeasonalReturns(seasonalReturns, intervals=intervals_, symbols=symbols_)
             
             ## add two plots for mean and std dev. 
             x1 = fig.add_subplot(numRows, numCols, count)
-            x2 = fig.add_subplot(numRows, numCols, count)
+            x2 = x1
             
             x2.bar(
                 rtr['startTime'],
