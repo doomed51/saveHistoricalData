@@ -7,17 +7,29 @@ import sqlite3
 #global list of index symbols
 _index = ['VIX']
 
+##
+# IBKR API reference: https://interactivebrokers.github.io/tws-api/historical_bars.html
+"""
+    IBKR def'n for [lookback] = [Duration String] = [durationStr]
+    
+    Valid Duration String units
+    Unit	Description
+    S	    Seconds
+    D	    Day
+    W	    Week
+    M	    Month
+    Y	    Year
 
-# connect to IBKR (requires open TWS instance)
-ibkr = IB() 
-ibkr.connect('127.0.0.1', 7496, clientId = 10)
+    if barsize = 5m -> durationStr max = 100
+    if barsize >= 30m -> durationStr max = 365
+"""
 
-def getHistoricalBars(ibkrObj, symbol, currency='USD', endDate='', lookback='10 D', interval='15 mins'):
+def _getHistoricalBars(ibkrObj, symbol, currency, endDate, lookback, interval):
     if symbol in _index:
         # set the contract to look for
         contract = Index(symbol, 'CBOE', currency)
     else:
-        contract = Stock(symbol, 'SMART', currency)
+        contract = Stock(symbol, 'SMART', currency) 
     
     # grab history from IBKR 
     contractHistory = ibkrObj.reqHistoricalData(
@@ -34,7 +46,7 @@ def getHistoricalBars(ibkrObj, symbol, currency='USD', endDate='', lookback='10 
         contractHistory_df = util.df(contractHistory)
         contractHistory_df.drop(['average', 'barCount'], inplace=True, axis=1)
         contractHistory_df['symbol'] = symbol
-        contractHistory_df['interval'] = interval.replace(' ','')
+        #contractHistory_df['interval'] = interval.replace(' ','')
         return contractHistory_df
     
     else: 
@@ -51,7 +63,7 @@ history: [DataFrame]
 conn: [Sqlite3 connection object]
     connection to the local db 
 """
-def saveHistoryToDB(history, dbPath='historicalData_index.db', type='index'):
+def _saveHistoryToDB(history, dbPath='historicalData_index.db', type='index'):
     conn = sqlite3.connect(dbPath)
 
     ## Tablename convention: <symbol>_<stock/opt>_<interval>
@@ -63,9 +75,11 @@ def saveHistoryToDB(history, dbPath='historicalData_index.db', type='index'):
     elif type == 'option':
         print(' saving options to the DB is not yet implemented')
 
-# print to csv
-#contractHistory_df.to_csv(contract.symbol+'.csv', index=False)
-vix = getHistoricalBars(ibkr, 'VIX', lookback='30 D')
-2
-print(vix)
-saveHistoryToDB(vix)
+"""
+Returns [DataFrame] of historical data with...
+    [columns]: date | open | high | low | close | volume | symbol | interval 
+"""
+def getBars(ibkr, symbol='SPX', currency='USD', endDate='', lookback='10 D', interval='15 mins'):
+    bars = _getHistoricalBars(ibkr, symbol, currency, endDate, lookback, interval)
+    
+    return bars
