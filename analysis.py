@@ -24,12 +24,26 @@ matplotlib.use('TkAgg')
 """
 global vars
 """
-# default list of symbols and timeframes to analyze
-symbols_ = ['SPY', 'AAPL']
-intervals_ = ['dayByFive', 'dayByFifteen']#'yearByMonth', 'monthByDay', 'dayByHour', 'dayByFive']
+## default set of intervals 
+## these are different as different APIs are being used for stock (qtrade) and index (ibkr) data
+intervals_stock = ['FiveMinutes', 'FifteenMinutes', 'HalfHour', 'OneHour', 'OneDay', 'OneMonth']
+intervals_index = ['5 mins', '15 mins', '30 mins', '1 day']
+
+## lookup table mapping plots to interval labels for questrade and ibkr respectively 
+intervalLookup = pd.DataFrame(
+    {
+        "timeframe":['yearByMonth', 'monthByDay', 'weekByDay', 'dayByHour', 'dayByThirty', 
+        'dayByFifteen', 'dayByFive'], 
+        "stock":['OneMonth', 'OneDay', 'OneDay', 'OneHour', 'HalfHour', 
+        'FifteenMinutes','FiveMinutes'],
+        'index':['1month', '1day', '1day', '1hour', '30mins', 
+        '15mins', '5mins']
+    }
+)
+
 
 # global reference list of index symbols 
-index_ = ['VIX']
+index_ = ['VIX', 'VIX3M', 'VVIX']
 
 """
 Returns a list of returns for a specific symbol, aggregated over  intervals
@@ -44,7 +58,7 @@ Returns a list of returns for a specific symbol, aggregated over  intervals
 4. return aggregated seasonal returns 
 
 """
-def getSeasonalReturns(intervals = intervals_, symbols=symbols_, lookbackPeriod = 0):
+def getSeasonalReturns(intervals, symbols, lookbackPeriod = 0):
     seasonalReturns = []
     dbName = 'historicalData_stock.db'
 
@@ -57,6 +71,7 @@ def getSeasonalReturns(intervals = intervals_, symbols=symbols_, lookbackPeriod 
         
         for int in intervals:
             ## Tablename convention: <symbol>_<stock/opt>_<interval>
+            """    
             if int == 'yearByMonth':
                 tableName = sym+'_'+symbolType+'_'+'OneMonth'
             
@@ -67,7 +82,7 @@ def getSeasonalReturns(intervals = intervals_, symbols=symbols_, lookbackPeriod 
                 tableName = sym+'_'+symbolType+'_'+'OneHour'
 
             elif int == 'dayByThirty':
-                tableName = sym+'_'+symbolType+'_'+'ThirtyMinutes'
+                tableName = sym+'_'+symbolType+'_'+'HalfHour'
 
             elif int == 'dayByFifteen':
                 tableName = sym+'_'+symbolType+'_'+'FifteenMinutes'
@@ -80,17 +95,17 @@ def getSeasonalReturns(intervals = intervals_, symbols=symbols_, lookbackPeriod 
 
             else:
                 tableName = sym+'_'+symbolType+'_'+int
+            """
+            tableName = sym+'_'+symbolType+'_'+intervalLookup.loc[intervalLookup['timeframe'] == int, [symbolType]].iat[0,0]
 
-            if lookbackPeriod == 0:
-                sqlStatement = 'SELECT * FROM ' + tableName
-            else:
-                sqlStatement = 'SELECT * FROM ' + tableName
+            sqlStatement = 'SELECT * FROM ' + tableName
             conn = sqlite3.connect(dbName)
+
             symbolHistory = pd.read_sql(sqlStatement, conn)
-            conn.close()
+            if symbolType == 'index':
+                symbolHistory.rename(columns={'date':'start'}, inplace=True)
             myReturns = computeReturns(symbolHistory)
             seasonalReturns.append(aggregateSeasonalReturns(myReturns, sym, int))
-    print(seasonalReturns)
     return seasonalReturns
 
 """
@@ -123,17 +138,23 @@ def aggregateSeasonalReturns(returns, symbol, interval):
     symbol = returns.columns[0]
     
     returns = returns.reset_index()
-    returns[['startDate', 'startTime']] = returns['start'].str.split("T", expand=True)
+    if symbol in index_:
+        returns[['startDate', 'startTime']] = returns['start'].str.split(" ", expand=True)
+    else:
+        returns[['startDate', 'startTime']] = returns['start'].str.split("T", expand=True)
+    
     returns['startDate'] = pd.to_datetime(returns['startDate'])
     returns.drop(['start'], axis=1, inplace=True)
     
-    if interval in ['FiveMinutes', 'dayByHour', 'dayByFifteen', 'dayByFive']:
+    
+    if interval in ['FiveMinutes', 'dayByHour', 'dayByFifteen', 'dayByFive', 'dayByThirty']:
 
         ## drop after and before hours data 
         #returns = returns.loc[(returns['startTime'] >= "09:30:00") & (returns['startTime'] < "16:00:00")]
 
         # trim excess time info
-        returns['startTime'] = returns['startTime'].astype(str).str[:-7]
+        if not symbol in index_:
+            returns['startTime'] = returns['startTime'].astype(str).str[:-7]
 
         ## Aggregate by start time, computing mean and SD 
         agg_myReturns = returns.groupby('startTime').agg(
@@ -177,12 +198,12 @@ seasonalReturns - [list] of [DataFrame] of seasonal returns
 intervals - [array] of intervals being plotted
 symbols - [array] of symbols being plotted
 """
-def plotSeasonalReturns(seasonalReturns, intervals=intervals_, symbols=symbols_):
+def plotSeasonalReturns(seasonalReturns, intervals, symbols):
     # create a grid of symbols & intervals to draw the plots into 
     # col x rows : interval x symbol 
     numCols = len(intervals)
     if symbols_:
-        numRows = len(symbols_)
+        numRows = len(symbols)
     else:
         numRows = 1
     
@@ -302,7 +323,6 @@ def plotReturnsDist(interval = ['FifteenMinutes'], symbol=['AAPL'], dbName = 'hi
     fig = plt.figure(constrained_layout=True, figsize=(15,9))
     specs = gridspec.GridSpec(ncols=1, nrows = 1, figure=fig)
     x1 = fig.add_subplot(1,1,1)
-    print(myReturns)
     myReturns[symbol].plot(color='r', kind='hist', title=symbol[0]+' - '+interval[0]+' - Returns', zorder=2)    
 
     plt.show()
@@ -329,18 +349,32 @@ def plotPrice(interval = ['FifteenMinutes'], symbol=['AAPL'], numDays = 10,  dbN
     symbolHistory['close'].plot(color='r', kind='line', title=symbol[0]+' - '+interval[0]+' - Close', zorder=2)
     symbolHistory['VWAP'].plot(color='g', kind='line', title=symbol[0]+' - '+interval[0]+' - vwap', zorder=2)
 
-    print(symbolHistory)
     plt.show()
     plt.close(fig)
 
-def updateSingleTF(intvlToUpdate='FiveMinutes', symbolToUpdate='AAPL'):
-    print('%s interval for %s'%(intvlToUpdate, symbolToUpdate))
 
-    # immediately update if table doesn't exist 
-    # escape if table is already up to date
+def shit():
+    intervalLookup = pd.DataFrame(
+    {
+        "timeframe":['yearByMonth', 'monthByDay', 'weekByDay', 'dayByHour', 'dayByThirty', 
+        'dayByFifteen', 'dayByFive'], 
+        "stock":['OneMonth', 'OneDay', 'OneDay', 'OneHour', 'HalfHour', 
+        'FifteenMinutes','FiveMinutes'],
+        'index':['1 month', '1 day', '1 day', '1 hour', '30 mins', 
+        '15 mins', '5 mins']
+    }
+    )
+    chk = intervalLookup.loc[intervalLookup['timeframe'] == 'yearByMonth', ['index']].iat[0,0]
 
+    print(chk)
 
-plotSeasonalReturns(getSeasonalReturns())
+#shit()
+# symbols and intervals to analyze 
+symbols_ = ['SPY', 'VIX', 'VVIX']
+intervals_ = ['dayByFive', 'dayByFifteen', 'dayByThirty']#'yearByMonth', 'monthByDay', 'dayByHour', 'dayByFive']
+
+plotSeasonalReturns(getSeasonalReturns(intervals_, symbols_), intervals_, symbols_)
+
 #plotSeasonalReturns_timeperiodAnalysis(symbol=['ASAN'])
 #plotReturnsDist(symbol=['ASAN'])
 #plotPrice(interval=['OneHour'])
