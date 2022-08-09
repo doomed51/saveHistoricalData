@@ -48,7 +48,7 @@ intervals_stock = ['FiveMinutes', 'FifteenMinutes', 'HalfHour', 'OneHour', 'OneD
 intervals_index = ['5 mins', '15 mins', '30 mins', '1 day']
 
 ## global vars
-_indexList = ['VIX']
+_indexList = ['VIX', 'VIX3M', 'VVIX']
 _tickerFilepath = 'tickerList.csv'
 
 """
@@ -224,13 +224,14 @@ def updateStockHistory(stocksToUpdate, stocksToAdd):
         qtrade = setupConnection()
         conn = sqlite3.connect(_dbName_stock)
             
-    ## update missing intervals
-    for item in missingIntervals:
-        [_tkr, _intvl] = item.split('-')
-        startDate = datetime.datetime.now(tz=None) - datetime.timedelta(30000)
-        history = getLatestHistory(qtrade, _tkr, startDate.date(), datetime.datetime.now(tz=None).date(), _intvl)
-        saveHistoryToDB(history, conn)
-        print('[red]Missing interval[/red] %s-%s...[red]updated![/red]\n'%(_tkr, _intvl))
+    ## update missing intervals if we have any
+    if len(missingIntervals)>0:
+        for item in missingIntervals:
+            [_tkr, _intvl] = item.split('-')
+            startDate = datetime.datetime.now(tz=None) - datetime.timedelta(30000)
+            history = getLatestHistory(qtrade, _tkr, startDate.date(), datetime.datetime.now(tz=None).date(), _intvl)
+            saveHistoryToDB(history, conn)
+            print('[red]Missing interval[/red] %s-%s...[red]updated![/red]\n'%(_tkr, _intvl))
 
     ## update existing records that are more than 5 days old 
     if not stocksToUpdate.empty:
@@ -247,7 +248,7 @@ def updateStockHistory(stocksToUpdate, stocksToAdd):
         print('\n[green]Existing records are up to date...[/green]')
 
     # Add new records added to the watchlist 
-    if stocksToAdd['ticker'].count() > 0: 
+    if not stocksToAdd.empty: 
         print('\n[blue]%s new ticker(s) found[/blue], adding to db...'%(stocksToAdd['ticker'].count()))
 
         # loop through each new ticker
@@ -272,16 +273,15 @@ update history for indices
 """
 def updateIndexHistory(indicesToUpdate= pd.DataFrame(), indicesToAdd  = pd.DataFrame()):
     print('checking if index records need updating')
-    
-    ## check for missing intervals and update them 
-    missingIntervals = getMissingIntervals(indicesToUpdate, type='index')
-    
-    ## establish connections if updating is needed 
-    if (indicesToUpdate['daysSinceLastUpdate'].count() > 0) or (indicesToAdd['ticker'].count() > 0) or (len(missingIntervals) > 0):
-        
-        ## add lookback column, formatted string for ibkr call 
-        indicesToUpdate['lookback'] =  indicesToUpdate.apply(lambda x: _countWorkdays(datetime.datetime.strptime(x['lastUpdateDate'][:10], '%Y-%m-%d'), datetime.datetime.now()), axis=1) 
 
+    missingIntervals = pd.DataFrame()
+    if not indicesToUpdate.empty:
+        ## check for missing intervals and update them 
+        missingIntervals = getMissingIntervals(indicesToUpdate, type='index')
+
+
+    ## establish connections if updating is needed 
+    if (not indicesToUpdate.empty) or ( not indicesToAdd.empty) or (len(missingIntervals) > 0):
         try:
             print('[red]Connecting with IBKR[/red]\n')
             ibkr = IB() 
@@ -290,38 +290,60 @@ def updateIndexHistory(indicesToUpdate= pd.DataFrame(), indicesToAdd  = pd.DataF
         except:
             print('[red]Could not connect with IBKR![/red]\n')
     
-    ## update missing intervals
-    for item in missingIntervals:
-        [_tkr, _intvl] = item.split('-')
-        print('Updating [red]missing intervals[/red]...')
-        if ( _intvl in ['5 mins', '15 mins']):
-            history = ib.getBars(ibkr, symbol=_tkr,lookback='100 D', interval=_intvl )
-        
-        elif (_intvl in ['30 mins', '1 day']):
-            history = ib.getBars(ibkr, symbol=_tkr,lookback='365 D', interval=_intvl )
+    ## update missing intervals if we have any 
+    if not missingIntervals.empty: 
+        for item in missingIntervals:
+            [_tkr, _intvl] = item.split('-')
+            print('Updating [red]missing intervals[/red]...')
+            if ( _intvl in ['5 mins', '15 mins']):
+                history = ib.getBars(ibkr, symbol=_tkr,lookback='100 D', interval=_intvl )
+            
+            elif (_intvl in ['30 mins', '1 day']):
+                history = ib.getBars(ibkr, symbol=_tkr,lookback='365 D', interval=_intvl )
 
-        saveHistoryToDB(history, conn, 'index')
+            saveHistoryToDB(history, conn, 'index')
 
-        print('[red]Missing interval[/red] %s-%s...[red]updated![/red]\n'%(_tkr, _intvl))
+            print('[red]Missing interval[/red] %s-%s...[red]updated![/red]\n'%(_tkr, _intvl))
 
     ## update existing records that are more than 5 days old 
     if not indicesToUpdate.empty:
         print('\n[blue]Some records are more than 5 days old. Updating...[/blue]')
         pd.to_datetime(indicesToUpdate['lastUpdateDate'])
-        
+
+        ## add lookback column that is a ormatted string used to call IBKR  
+        indicesToUpdate['lookback'] =  indicesToUpdate.apply(lambda x: _countWorkdays(datetime.datetime.strptime(x['lastUpdateDate'][:10], '%Y-%m-%d'), datetime.datetime.now()), axis=1) 
+
         print('Updating [red]>5 day old data[/red]...')
         for index, row in indicesToUpdate.iterrows():            
+            ## get history from ibkr 
             history = ib.getBars(ibkr, symbol=row['ticker'], lookback=row['lookback'], interval=row['interval']) 
-                        
+            
+            ## add interval column for easier lookup 
+            history['interval'] = row['interval']
+
+            ## save history to db 
             saveHistoryToDB(history, conn, 'index')
             print('%s-%s...[red]updated![/red]\n'%(row['ticker'], row['interval']))
-        #conn.close()
     else: 
         print('\n[green]Existing records are up to date...[/green]')
 
     if not indicesToAdd.empty:
-        print('[red][bold] 404: Adding indicies not implemented[/bold][/red]')
-    
+        print('\n[blue]%s new indicies found[/blue], adding to db...'%(indicesToAdd['ticker'].count()))
+
+        # update each symbol w/ list of tracked intervals
+        for idx in indicesToAdd['ticker']:
+            for _intvl in intervals_index:
+                ## get history from ibkr 
+                if ( _intvl in ['5 mins', '15 mins']):
+                    history = ib.getBars(ibkr, symbol=idx,lookback='100 D', interval=_intvl )
+            
+                elif (_intvl in ['30 mins', '1 day']):
+                    history = ib.getBars(ibkr, symbol=idx,lookback='365 D', interval=_intvl )
+
+                ## add interval column for easier lookup 
+                history['interval'] = _intvl
+
+                saveHistoryToDB(history, conn, 'index')
 def getQuote():
     try:
         qtrade = setupConnection()
@@ -404,7 +426,6 @@ def getRecords(type = 'stock'):
        # conn.close()
     except:
         print('no tables!')
-    
     if not tables.empty:
         tables[['ticker', 'type', 'interval']] = tables['name'].str.split('_',expand=True)     
         tables['lastUpdateDate'] = tables.apply(getLastUpdateDate, axis=1)
@@ -434,7 +455,7 @@ def updateRecords():
     index = getRecords(type='index')
     index['type'] = 'index'
     records = pd.concat([stocks, index])
-
+    
     # filter out records that are older than 5 days 
     recordsToUpdate = records.loc[records['daysSinceLastUpdate'] >= 5]
 
@@ -442,10 +463,17 @@ def updateRecords():
     stocksToUpdate = stocks.loc[stocks['daysSinceLastUpdate'] >= 5]
     indicesToUpdate = index.loc[stocks['daysSinceLastUpdate'] >= 5]
     
-    # build a list of stocks and indices that have been added to the watchlist 
+    # build a list of stocks and indices that have been newly added to the watchlist 
     newList = myList[~myList['ticker'].isin(stocks['ticker'])].reset_index(drop=True)
     newList_stocks = newList[~newList['ticker'].isin(_indexList)].reset_index(drop=True)
-    newList_indices = newList[~newList['ticker'].isin(_indexList)].reset_index(drop=True)
+    
+    newList_indices = newList[newList['ticker'].isin(_indexList)].reset_index(drop=True)
+    
+    newList_indices = newList[~newList['ticker'].isin(index['ticker'])].reset_index(drop=True)
+    
+    print(newList_indices)
+    print(newList_stocks)
+
     
     # filter out records that are new (i.e. no records exist)
     newList = myList[~myList['ticker'].isin(records['ticker'])].reset_index(drop=True)

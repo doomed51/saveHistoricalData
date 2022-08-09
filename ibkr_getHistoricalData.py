@@ -5,7 +5,7 @@ import pandas as pd
 import sqlite3
 
 #global list of index symbols
-_index = ['VIX']
+_index = ['VIX', 'VIX3M', 'VVIX']
 
 ##
 # IBKR API reference: https://interactivebrokers.github.io/tws-api/historical_bars.html
