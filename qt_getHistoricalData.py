@@ -119,15 +119,12 @@ def setupConnection():
         print("\n trying token yaml")
         qtrade = Questrade(token_yaml = "access_token.yml")
         w = qtrade.get_quote(['SPY'])
-        #print (' Success! %s latest Price: %.2f \n'%(w['symbol'], w['lastTradePrice'])) 
         
     except:
         try: 
             print("\n Trying Refresh \n")
             qtrade = Questrade(token_yaml = "access_token.yml")
             qtrade.refresh_access_token(from_yaml = True, yaml_path="access_token.yml")
-            #w = qtrade.get_quote(['SPY'])
-            #print ('%s latest Price: %.2f'%(w['symbol'], w['lastTradePrice'])) 
 
         except:
             print("\n Trying Access Code \n")
@@ -335,7 +332,6 @@ def updateIndexHistory(index, indicesToUpdate= pd.DataFrame(), indicesToAdd  = p
                 history = ib.getBars(ibkr, symbol=_tkr,lookback='365 D', interval=_intvl )
 
             history['interval'] = _intvl.replace(' ', '')
-            print(history)
             saveHistoryToDB(history, conn, 'index')
 
             print('[red]Missing interval[/red] %s-%s...[red]updated![/red]\n'%(_tkr, _intvl))
@@ -480,13 +476,8 @@ def updateRecords():
     
     newList_indices = newList[~newList['ticker'].isin(index['ticker'])].reset_index(drop=True)
     
-    print(newList_indices)
-    print(newList_stocks)
-
-    
     # filter out records that are new (i.e. no records exist)
     newList = myList[~myList['ticker'].isin(records['ticker'])].reset_index(drop=True)
-    #print(newList)
     
     ## update stocks
     updateStockHistory(stocks, stocksToUpdate, newList_stocks)
@@ -562,12 +553,3 @@ def updateOptionHistory(symbol, strike, date):
     return optionIDs
 
 updateRecords()
-
-def shit():
-    split = '4 adf'
-    print(split.replace(' ', ''))
-
-shit()
-#bla = getRecords('index')
-#blu = getMissingIntervals(bla, 'index')
-#print(blu)
