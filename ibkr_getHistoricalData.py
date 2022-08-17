@@ -24,7 +24,7 @@ _index = ['VIX', 'VIX3M', 'VVIX']
     if barsize >= 30m -> durationStr max = 365
 """
 
-def _getHistoricalBars(ibkrObj, symbol, currency, endDate, lookback, interval):
+def _getHistoricalBars(ibkrObj, symbol, currency, endDate, lookback, interval, whatToShow):
     if symbol in _index:
         # set the contract to look for
         contract = Index(symbol, 'CBOE', currency)
@@ -37,7 +37,7 @@ def _getHistoricalBars(ibkrObj, symbol, currency, endDate, lookback, interval):
         endDateTime = endDate,
         durationStr=lookback,
         barSizeSetting=interval,
-        whatToShow='TRADES',
+        whatToShow=whatToShow,
         useRTH=True,
         formatDate=1)
 
@@ -79,7 +79,7 @@ def _saveHistoryToDB(history, dbPath='historicalData_index.db', type='index'):
 Returns [DataFrame] of historical data with...
     [columns]: date | open | high | low | close | volume | symbol | interval 
 """
-def getBars(ibkr, symbol='SPX', currency='USD', endDate='', lookback='10 D', interval='15 mins'):
-    bars = _getHistoricalBars(ibkr, symbol, currency, endDate, lookback, interval)
+def getBars(ibkr, symbol='SPX', currency='USD', endDate='', lookback='10 D', interval='15 mins', whatToShow='TRADES'):
+    bars = _getHistoricalBars(ibkr, symbol, currency, endDate, lookback, interval, whatToShow)
     
     return bars
