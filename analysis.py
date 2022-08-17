@@ -27,7 +27,7 @@ global vars
 ## default set of intervals 
 ## these are different as different APIs are being used for stock (qtrade) and index (ibkr) data
 intervals_stock = ['FiveMinutes', 'FifteenMinutes', 'HalfHour', 'OneHour', 'OneDay', 'OneMonth']
-intervals_index = ['5 mins', '15 mins', '30 mins', '1 day']
+intervals_index = ['5 mins', '15 mins', '30 mins', '1 day', '1 month']
 
 ## lookup table mapping plots to interval labels for questrade and ibkr respectively 
 intervalLookup = pd.DataFrame(
@@ -71,31 +71,6 @@ def getSeasonalReturns(intervals, symbols, lookbackPeriod = 0):
         
         for int in intervals:
             ## Tablename convention: <symbol>_<stock/opt>_<interval>
-            """    
-            if int == 'yearByMonth':
-                tableName = sym+'_'+symbolType+'_'+'OneMonth'
-            
-            elif int == 'weekByDay':
-                tableName = sym+'_'+symbolType+'_'+'OneDay'
-            
-            elif int == 'dayByHour':
-                tableName = sym+'_'+symbolType+'_'+'OneHour'
-
-            elif int == 'dayByThirty':
-                tableName = sym+'_'+symbolType+'_'+'HalfHour'
-
-            elif int == 'dayByFifteen':
-                tableName = sym+'_'+symbolType+'_'+'FifteenMinutes'
-            
-            elif int == 'monthByDay':
-                tableName = sym+'_'+symbolType+'_'+'OneDay'
-
-            elif int == 'dayByFive':
-                tableName = sym+'_'+symbolType+'_'+'FiveMinutes'
-
-            else:
-                tableName = sym+'_'+symbolType+'_'+int
-            """
             tableName = sym+'_'+symbolType+'_'+intervalLookup.loc[intervalLookup['timeframe'] == int, [symbolType]].iat[0,0]
 
             sqlStatement = 'SELECT * FROM ' + tableName
@@ -117,7 +92,7 @@ symbolHistory - [dataframe] raw timeseries OHLC data for a symbol
 """
 def computeReturns(symbolHist):
     symbol = symbolHist['symbol'][1]
-    symbolHist = symbolHist[['start', 'close']]
+    symbolHist = symbolHist[['start', 'close']] ## start date of interval, and close px 
     symbolHist = symbolHist.set_index('start')
     symbolHist.rename(columns={'close':symbol}, inplace=True)
 
@@ -148,9 +123,6 @@ def aggregateSeasonalReturns(returns, symbol, interval):
     
     
     if interval in ['FiveMinutes', 'dayByHour', 'dayByFifteen', 'dayByFive', 'dayByThirty']:
-
-        ## drop after and before hours data 
-        #returns = returns.loc[(returns['startTime'] >= "09:30:00") & (returns['startTime'] < "16:00:00")]
 
         # trim excess time info
         if not symbol in index_:
@@ -208,8 +180,8 @@ def plotSeasonalReturns(seasonalReturns, intervals, symbols):
         numRows = 1
     
     ## set as static y-axis max such that symbols can be compared
-    ymin = -0.002
-    ymax = 0.0075
+    ymin = -0.005
+    ymax = 0.02
 
 
     count = 0
@@ -251,14 +223,6 @@ def plotSeasonalReturns(seasonalReturns, intervals, symbols):
 
             ## rotate x axis for prettier plots 
             plt.xticks(rotation=45)
-            
-            ## date formatting 
-            #splt.gcf().autofmt_xdate()
-            #timeFormat = matplotlib.dates.DateFormatter('%H:%M')
-            #1.xaxis.set_major_formatter(timeFormat)
-
-            #rtr['mean'].plot(color='r', kind='bar', title=rtr['symbol'][0]+' - '+intervalLabel, zorder=2)
-            #rtr['std'].plot(color='b', kind='bar')
 
         ## format figure and plot 
         fig.tight_layout()
@@ -370,10 +334,10 @@ def shit():
 
 #shit()
 # symbols and intervals to analyze 
-symbols_ = ['SPY', 'VIX', 'VVIX']
+symbols_ = ['VIX', 'VIX3M', 'VVIX']
 intervals_ = ['dayByFive', 'dayByFifteen', 'dayByThirty']#'yearByMonth', 'monthByDay', 'dayByHour', 'dayByFive']
 
-plotSeasonalReturns(getSeasonalReturns(intervals_, symbols_), intervals_, symbols_)
+#plotSeasonalReturns(getSeasonalReturns(intervals_, symbols_), intervals_, symbols_)
 
 #plotSeasonalReturns_timeperiodAnalysis(symbol=['ASAN'])
 #plotReturnsDist(symbol=['ASAN'])

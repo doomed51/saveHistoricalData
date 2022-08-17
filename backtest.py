@@ -260,7 +260,7 @@ class seasonal(bt.Strategy):
     def log(self, txt, dt=None, doprint=True):
         ''' Logging function for this strategy'''
         if self.params.printlog or doprint:
-            dt = dt or self.datas[0].datetime.date(0)
+            dt = dt or self.datas[0].datetime.datetime(0)
             print('%s, %s' % (dt.isoformat(), txt))
     
     def __init__(self):
@@ -326,24 +326,24 @@ class seasonal(bt.Strategy):
 
         # Check if we are in the market
         if not self.position:
-            mydate = self.datetime.date()
-            if (mydate.month == 4):
-                #if (self.rsi <= 30):
-                # BUY with default parameters
-                self.log('BUY Open, %.2f' % self.dataclose[0])
-
-                # Keep track of the created order to avoid a 2nd order
-                self.order = self.buy()
-
-        else:
-            mydate = self.datetime.date()
-            if (6<=mydate.month<=9):
+            mydate = self.datetime.datetime()
+            if (mydate.hour == 9 and mydate.minute == 30):
                 #if (self.rsi >= 70):
                 # SELL with all possible default parameters
                 self.log('SELL Open, %.2f' % self.dataclose[0])
 
                 # Keep track of the created order to avoid a 2nd order
                 self.order = self.sell()
+
+        else:
+            mydate = self.datetime.datetime()
+            if (mydate.hour==10 and mydate.minute == 0):
+                #if (self.rsi <= 30):
+                # BUY with default parameters
+                self.log('BUY Open, %.2f' % self.dataclose[0])
+
+                # Keep track of the created order to avoid a 2nd order
+                self.order = self.buy()
                 
 
     def stop(self):
@@ -455,10 +455,10 @@ class basicMomentum(bt.Strategy):
 """
 
 ## initialize the cerebro engine 
-cr = bt.Cerebro()
+cr = bt.Cerebro(stdstats=True)
 
 # Add the Data Feed to Cerebro
-cr.adddata(getHistory_SQL(_dbName_stock, 'XLE', 'OneDay'))
+cr.adddata(getHistory_SQL(_dbName_stock, 'AAPL', 'fiveMinutes'))
 
 ## add a strategy
 cr.addstrategy(seasonal)
@@ -467,10 +467,10 @@ cr.addstrategy(seasonal)
 cr.broker.setcash(10000)
 
 # Add a FixedSize sizer according to the stake
-cr.addsizer(bt.sizers.FixedSize, stake=50)
+cr.addsizer(bt.sizers.FixedSize, stake=4)
 
 # Set the commission - 0.1% ... divide by 100 to remove the %
-cr.broker.setcommission(commission=0.01)
+cr.broker.setcommission(commission=0.001)
 
 print('Starting Portfolio Value: %.2f' % cr.broker.getvalue())
 
