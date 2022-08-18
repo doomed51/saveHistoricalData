@@ -1,3 +1,7 @@
 pandas
 qtrade
-sqlite3
+ib_insync
+rich
+ffn
+pytz
+seaborn
