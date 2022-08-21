@@ -91,9 +91,11 @@ def _constructTableName(symbol, interval):
     if symbol.upper() in index_list:
         type_ = 'index'
 
-    tableName = symbol+'_'+type_+'_'+intervalMappings.loc[intervalMappings['label'] == interval][type_]
+    tableName = symbol+'_'+type_+'_'+intervalMappings.loc[intervalMappings['label'] == interval][type_].values[0]
 
-    return tableName[0]
+    print(tableName)
+
+    return tableName
 
 """
 establishes a connection to the appropriate DB based on type of symbol passed in. 
@@ -111,7 +113,3 @@ def _connectToDb(symbol):
         conn = sqlite3.connect(dbname_stocks)
 
     return conn
-
-print(getPriceHistory('aapl', '5m'))
-
-#print(_constructTableName('vix', '5m'))
