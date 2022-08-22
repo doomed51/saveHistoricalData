@@ -18,6 +18,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import seaborn as sns
+import localDbInterface as dbInt 
 
 matplotlib.use('TkAgg')
 
@@ -30,17 +31,26 @@ intervals_stock = ['FiveMinutes', 'FifteenMinutes', 'HalfHour', 'OneHour', 'OneD
 intervals_index = ['5 mins', '15 mins', '30 mins', '1 day', '1 month']
 
 ## lookup table mapping plots to interval labels for questrade and ibkr respectively 
-intervalLookup = pd.DataFrame(
+
+"""intervalMappings = pd.DataFrame(
     {
-        "timeframe":['yearByMonth', 'monthByDay', 'weekByDay', 'dayByHour', 'dayByThirty', 
+        "label":['yearByMonth', 'monthByDay', 'weekByDay', 'dayByHour', 'dayByThirty', 
         'dayByFifteen', 'dayByFive'], 
         "stock":['OneMonth', 'OneDay', 'OneDay', 'OneHour', 'HalfHour', 
         'FifteenMinutes','FiveMinutes'],
         'index':['1month', '1day', '1day', '1hour', '30mins', 
         '15mins', '5mins']
     }
-)
+)"""
 
+intervalMappings = pd.DataFrame(
+    {
+        "analysisTimeframe":['yearByMonth', 'monthByDay', 'weekByDay', 'dayByHour', 'dayByThirty', 
+        'dayByFifteen', 'dayByFive'], 
+        "lookup":['1m', '1d', '1d', '1h', '30m', 
+        '15m','5m']
+    }
+)
 
 # global reference list of index symbols 
 index_ = ['VIX', 'VIX3M', 'VVIX']
@@ -60,26 +70,16 @@ Returns a list of returns for a specific symbol, aggregated over  intervals
 """
 def getSeasonalReturns(intervals, symbols, lookbackPeriod = 0):
     seasonalReturns = []
-    dbName = 'historicalData_stock.db'
-
     for sym in symbols:
-        if sym in index_:
-            symbolType = 'index'
-            dbName = 'historicalData_index.db'
-        else: 
-            symbolType = 'stock'
-        
         for int in intervals:
-            ## Tablename convention: <symbol>_<stock/opt>_<interval>
-            tableName = sym+'_'+symbolType+'_'+intervalLookup.loc[intervalLookup['timeframe'] == int, [symbolType]].iat[0,0]
-
-            sqlStatement = 'SELECT * FROM ' + tableName
-            conn = sqlite3.connect(dbName)
-
-            symbolHistory = pd.read_sql(sqlStatement, conn)
-            if symbolType == 'index':
-                symbolHistory.rename(columns={'date':'start'}, inplace=True)
+        
+            ## get raw history dataframe
+            symbolHistory = dbInt.getPriceHistory(sym, intervalMappings[intervalMappings['analysisTimeframe'] == int ]['lookup'].values[0])
+            
+            ## compute returns 
             myReturns = computeReturns(symbolHistory)
+        
+            ## aggregate returns across the timeseries
             seasonalReturns.append(aggregateSeasonalReturns(myReturns, sym, int))
     return seasonalReturns
 
@@ -121,7 +121,7 @@ def aggregateSeasonalReturns(returns, symbol, interval):
     returns['startDate'] = pd.to_datetime(returns['startDate'])
     returns.drop(['start'], axis=1, inplace=True)
     
-    
+    print(returns)
     if interval in ['FiveMinutes', 'dayByHour', 'dayByFifteen', 'dayByFive', 'dayByThirty']:
 
         # trim excess time info
@@ -334,10 +334,12 @@ def shit():
 
 #shit()
 # symbols and intervals to analyze 
-symbols_ = ['VIX', 'VIX3M', 'VVIX']
+symbols_ = ['VIX', 'VIX3M', 'AAPL']
 intervals_ = ['dayByFive', 'dayByFifteen', 'dayByThirty']#'yearByMonth', 'monthByDay', 'dayByHour', 'dayByFive']
 
-#plotSeasonalReturns(getSeasonalReturns(intervals_, symbols_), intervals_, symbols_)
+plotSeasonalReturns(getSeasonalReturns(intervals_, symbols_), intervals_, symbols_)
+
+
 
 #plotSeasonalReturns_timeperiodAnalysis(symbol=['ASAN'])
 #plotReturnsDist(symbol=['ASAN'])
