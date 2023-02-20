@@ -52,27 +52,26 @@ _indexList = ['VIX', 'VIX3M', 'VVIX']
 _tickerFilepath = 'tickerList.csv'
 
 """
-#####################################################################################
+######################################################
 
-##################  Lambda functions for dataframe processing   #####################
+##################  Lambda functions for dataframe processing 
 
-#####################################################################################
+######################################################
 """
 
 ## adda space between num and alphabet
 def _addspace(myStr): 
     return re.sub("[A-Za-z]+", lambda elm: " "+elm[0],myStr )
 
-## count weekdays between two dates
-def _countWorkdays(startDate, endDate, excluded=(6,7)):
-    days = []
-    while startDate.date() < endDate.date():
-        if startDate.isoweekday() not in excluded: 
-            days.append(startDate)
-        startDate += datetime.timedelta(days=1)
-    return '%s D'%(len(days)-1)
+""" returns number of work/business days 
+    between two provided datetimes 
+""" 
+def _countWorkdays(startDate, endDate, x, excluded=(6,7)):
+    return len(pd.bdate_range(startDate, endDate))
 
-
+"""
+lambda function returns numbers of business days since a DBtable was updated
+"""
 def _getDaysSinceLastUpdated(row):
     if row['ticker'] in _indexList:
         conn = sqlite3.connect(_dbName_index)
@@ -84,7 +83,10 @@ def _getDaysSinceLastUpdated(row):
         mytime = datetime.datetime.strptime(maxtime['MAX(end)'][0][:10], '%Y-%m-%d')
     
     delta = datetime.datetime.now() - mytime
-    return delta.days
+    ## calculate business days since last update
+    numDays = len( pd.bdate_range(mytime, datetime.datetime.now() ))
+
+    return numDays
 
 def _getLastUpdateDate(row):
     if row['ticker'] in _indexList:
@@ -116,18 +118,20 @@ Returns Questrade object
 """
 def setupConnection():
     try:
-        print("\n trying token yaml")
+        print("\nTrying Token YAML")
         qtrade = Questrade(token_yaml = "access_token.yml")
-        w = qtrade.get_quote(['SPY'])
+        sw = qtrade.get_quote(['SPY'])
         
     except:
+        print("[red] FAILED![/red]\n")
         try: 
-            print("\n Trying Refresh \n")
+            print("Trying Refresh")
             qtrade = Questrade(token_yaml = "access_token.yml")
             qtrade.refresh_access_token(from_yaml = True, yaml_path="access_token.yml")
 
         except:
-            print("\n Trying Access Code \n")
+            print("[red] FAILED![/red]\n")
+            print("Trying Access Code")
             
             try:
                 with open("token.txt") as f:
@@ -136,9 +140,10 @@ def setupConnection():
                     w = qtrade.get_quote(['SPY'])
                     print ('%s latest Price: %.2f'%(w['symbol'], w['lastTradePrice'])) 
             
-            except(HTTPError, FileNotFoundError) as err:
-                print("\n Might neeed new access code from Questrade \n")
-                print(err)
+            except:
+                print("[red] FAILED![/red]")
+                print("[yellow] Might neeed new access code from Questrade[/yellow] \n")
+                ##print(err)
                 quit() 
     return qtrade
 
@@ -163,7 +168,7 @@ def saveHistoryToDB(history, conn, type='stock'):
     
     elif type == 'index':
         history.to_sql(f"{tableName}", conn, index=False, if_exists='append')
-
+        
     elif type == 'option':
         print(' saving options to the DB is not yet implemented')
 
@@ -264,7 +269,7 @@ def updateStockHistory(stocks, stocksToUpdate, stocksToAdd):
             startDate = datetime.datetime.now(tz=None) - datetime.timedelta(30000)
             history = getLatestHistory(qtrade, _tkr, startDate.date(), datetime.datetime.now(tz=None).date(), _intvl)
             saveHistoryToDB(history, conn)
-            print('[red]Missing interval[/red] %s-%s...[red]updated![/red]\n'%(_tkr, _intvl))
+            print('[red]Missing interval[/red] %s-%s...[green]updated![/green]\n'%(_tkr, _intvl))
 
     ## update existing records that are more than 5 days old 
     if not stocksToUpdate.empty:
@@ -309,7 +314,7 @@ def updateIndexHistory(index, indicesToUpdate= pd.DataFrame(), indicesToAdd  = p
 
     missingIntervals = pd.DataFrame()
     missingIntervals = getMissingIntervals(index, type='index')
-
+ 
     ## establish connections if updating is needed 
     if (not indicesToUpdate.empty) or ( not indicesToAdd.empty) or (len(missingIntervals) > 0):
         try:
@@ -338,23 +343,56 @@ def updateIndexHistory(index, indicesToUpdate= pd.DataFrame(), indicesToAdd  = p
 
     ## update existing records that are more than 5 days old 
     if not indicesToUpdate.empty:
-        print('\n[blue]Some records are more than 5 days old. Updating...[/blue]')
+        print('\n[yellow]Some records are more than 5 days old. Updating...[/yellow]')
         pd.to_datetime(indicesToUpdate['lastUpdateDate'])
-
-        ## add lookback column that is a ormatted string used to call IBKR  
-        indicesToUpdate['lookback'] =  indicesToUpdate.apply(lambda x: _countWorkdays(datetime.datetime.strptime(x['lastUpdateDate'][:10], '%Y-%m-%d'), datetime.datetime.now()), axis=1) 
-
-        print('Updating [red]>5 day old data[/red]...')
+        
         for index, row in indicesToUpdate.iterrows():            
-            ## get history from ibkr 
-            history = ib.getBars(ibkr, symbol=row['ticker'], lookback=row['lookback'], interval=row['interval']) 
+            
+
+            """ 
+            in the case we need more than 100 days of data, 
+            split up the IBKR calls into multiple, individual 100 day
+            requests for history 
+            This is done due to the 100d max imposed by IBKR 
+
+            ## if lookback > 100 
+            ##  set endDate = lastUpdateDate + 100 days 
+            ##  for (lookback % 100) loops: 
+            ##      append history.getbars() 
+            ##      set endDate = endDate + 100 days 
+            """
+            # initiate 'enddate from the last time history was updated
+            endDate = datetime.datetime.strptime(row['lastUpdateDate'][:10], '%Y-%m-%d')+pd.offsets.BDay(105)
+            i=0
+
+            ## set intial lookback to the maximum of 100 days 
+            _lookback = 100
+
+            ## initiate the history datafram that will hold the retrieved bars 
+            history = pd.DataFrame()
+
+            ## append records to history dataframe while days to update remain
+            while i < -(row['daysSinceLastUpdate']//-100):
+                i+=1
+                ## concatenate history retrieved from ibkr 
+                history = pd.concat([history, ib.getBars(ibkr, symbol=row['ticker'], lookback='%s D'%_lookback, interval=row['interval'], endDate=endDate)], ignore_index=True)
+                
+                ## update enddate for the next iteration
+                endDate = endDate + pd.offsets.BDay(105)
+                ## if the endddate is in the future, reset it to current date 
+                if endDate > datetime.datetime.today():
+                    endDate = datetime.datetime.today()
+                    _lookback = row['daysSinceLastUpdate']%100 
             
             ## add interval column for easier lookup 
             history['interval'] = row['interval'].replace(' ', '')
 
             ## save history to db 
             saveHistoryToDB(history, conn, 'index')
-            print('%s-%s...[red]updated![/red]\n'%(row['ticker'], row['interval']))
+            
+            ## print logging info & reset history df 
+            print('%s-%s...[green]updated![/green]\n'%(row['ticker'], row['interval']))
+            history = pd.DataFrame()
     else: 
         print('\n[green]Existing records are up to date...[/green]')
 

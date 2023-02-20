@@ -30,7 +30,6 @@ def _getHistoricalBars(ibkrObj, symbol, currency, endDate, lookback, interval, w
         contract = Index(symbol, 'CBOE', currency)
     else:
         contract = Stock(symbol, 'SMART', currency) 
-    
     # grab history from IBKR 
     contractHistory = ibkrObj.reqHistoricalData(
         contract, 
@@ -38,8 +37,10 @@ def _getHistoricalBars(ibkrObj, symbol, currency, endDate, lookback, interval, w
         durationStr=lookback,
         barSizeSetting=interval,
         whatToShow=whatToShow,
-        useRTH=True,
+        useRTH=False,
         formatDate=1)
+    
+    ##ibkrObj.reqHistoricalData()
 
     if contractHistory: 
         # converting to dataframe for ease of use 
@@ -83,3 +84,19 @@ def getBars(ibkr, symbol='SPX', currency='USD', endDate='', lookback='10 D', int
     bars = _getHistoricalBars(ibkr, symbol, currency, endDate, lookback, interval, whatToShow)
     
     return bars
+
+def getEarliestTimeStamp(ibkr, symbol='SPX', currency='USD', exchange='SMART'):
+    contract = Index(symbol, exchange, currency)
+    earliestTS = ibkr.reqHeadTimeStamp(contract, useRTH=False, whatToShow='TRADES')
+    print(earliestTS)
+    history = _getHistoricalBars(ibkr, symbol, currency, '', 100,'5 mins','TRADES' )
+    #print(history)
+
+
+    """def reqHeadTimeStamp(
+            self, contract: Contract, whatToShow: str,
+            useRTH: bool, formatDate: int = 1) -> datetime.datetime:
+            
+            def _getHistoricalBars(ibkrObj, symbol, currency, endDate, lookback, interval, whatToShow):
+    if symbol in _index:
+        """
