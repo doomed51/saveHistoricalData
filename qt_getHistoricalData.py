@@ -36,6 +36,7 @@ import datetime
 import sqlite3 
 import pandas as pd
 import re
+import time
 
 import ibkr_getHistoricalData as ib
 
@@ -66,7 +67,7 @@ def _addspace(myStr):
 """ returns number of work/business days 
     between two provided datetimes 
 """ 
-def _countWorkdays(startDate, endDate, x, excluded=(6,7)):
+def _countWorkdays(startDate, endDate, excluded=(6,7)):
     return len(pd.bdate_range(startDate, endDate))
 
 """
@@ -100,6 +101,23 @@ def _getLastUpdateDate(row):
 
     return maxtime
 
+def _getFirstRecordDate(row):
+    if row['ticker'] in _indexList:
+        conn = sqlite3.connect(_dbName_index)
+        mintime = pd.read_sql('SELECT MIN(date) FROM '+ row['name'], conn)
+        mintime = mintime['MIN(date)']
+    else:
+        conn = sqlite3.connect(_dbName_stock)
+        mintime = pd.read_sql('SELECT MAX(end) FROM '+ row['name'], conn)
+        mintime = mintime['MAX(end)']
+    return mintime
+
+def _getEarliestAvailableRecordDate(row):
+    if row['type'] == 'index':
+        earliestTimeStamp = ib.getEarliestTimeStamp(ibkr, symbol=row['ticker'], currency='USD', exchange='CBOE')
+    elif row['type'] == 'stock':
+        print('na')##earliestTimeStamp = ib.getEarliestTimeStamp(ibkrObj, row['ticker'], 'USD', 'SMART')
+    return earliestTimeStamp
 """
 ################################################################
 ########################### END ################################
@@ -183,8 +201,8 @@ history: [DataFrame]
 """
 def saveHistoryToCSV(history, type='stock'):
     if not history.empty:
-        filepath = Path('output/'+history['symbol'][0]+'_'+history['interval'][0]+'_'+history['end'][0]+'.csv')
-        print('Saving %s interval data for %s'%(interval, ticker))
+        filepath = Path('output/'+history['symbol'][0]+'_'+history['interval'][0]+'.csv')
+        print('Saving %s interval data for %s'%(history['interval'], history['symbol']))
         filepath.parent.mkdir(parents=True, exist_ok=True)
         history.to_csv(filepath, index=False)
 
@@ -347,19 +365,17 @@ def updateIndexHistory(index, indicesToUpdate= pd.DataFrame(), indicesToAdd  = p
         pd.to_datetime(indicesToUpdate['lastUpdateDate'])
         
         for index, row in indicesToUpdate.iterrows():            
-            
-
             """ 
             in the case we need more than 100 days of data, 
             split up the IBKR calls into multiple, individual 100 day
             requests for history 
             This is done due to the 100d max imposed by IBKR 
 
-            ## if lookback > 100 
-            ##  set endDate = lastUpdateDate + 100 days 
-            ##  for (lookback % 100) loops: 
-            ##      append history.getbars() 
-            ##      set endDate = endDate + 100 days 
+             if lookback > 100 
+              set endDate = lastUpdateDate + 100 days 
+              for (lookback % 100) loops: 
+                  append history.getbars() 
+                  set endDate = endDate + 100 days 
             """
             # initiate 'enddate from the last time history was updated
             endDate = datetime.datetime.strptime(row['lastUpdateDate'][:10], '%Y-%m-%d')+pd.offsets.BDay(105)
@@ -478,8 +494,86 @@ def getRecords(type = 'stock'):
         tables['daysSinceLastUpdate'] = tables.apply(_getDaysSinceLastUpdated, axis=1)
         if type == 'index': 
             tables['interval'] = tables.apply(lambda x: _addspace(x['interval']), axis=1)
+            tables['firstRecordDate'] = tables.apply(_getFirstRecordDate, axis=1)
         
     return tables
+
+""""
+Saves <lookback> number of days of historical data to local db 
+__
+function is kinda half assed, but it does the job of grabbing missing older data 
+"""
+def update200():
+    print('updating 200!\n')
+    
+    ## get local index records DF 
+    index = getRecords(type='index')
+    lookback = 30
+
+    try:
+            ibkr = IB() 
+            ibkr.connect('127.0.0.1', 7496, clientId = 10)
+            conn = sqlite3.connect(_dbName_index)
+    except:
+        print('[red]Could not connect with IBKR![/red]\n')
+
+    ## get earliest available dates for list of indices 
+    pf = pd.DataFrame({'ticker':_indexList}) ## convert series into DF 
+    pf['firstAvailableRecord'] = pf.apply(lambda x: ib.getEarliestTimeStamp(ibkr, x['ticker'], 'USD', 'CBOE'), axis=1)
+
+    ## add the earliest record dates to the records DF  
+    merged = pd.merge(index, pf, how='left', on = 'ticker')
+    merged['workdays'] = merged.apply(lambda x: _countWorkdays(x['firstAvailableRecord'], x['firstRecordDate']), axis=1)
+    index = merged
+
+    for index, row in index.iterrows():
+
+        ## skip if theres enough local history already 
+        if row['workdays'] < lookback:
+            continue
+
+        ## manual throttling of api requests 
+        if index > 0:
+            print('Pausing before next round....%s-%s\n'%(row['ticker'], row['interval']))
+            time.sleep(45)
+        
+        print('%s-%s[yellow]....Updating[/yellow]'%(row['ticker'], row['interval']))
+
+        # initiate 'enddate from the last time history was updated
+        endDate = datetime.datetime.strptime(row['firstRecordDate'][:10], '%Y-%m-%d')-pd.offsets.BDay(1)
+        endDate = endDate.replace(hour = 20)
+        i=0
+
+        ## initiate the history datafram that will hold the retrieved bars 
+        history = pd.DataFrame()
+
+        ## append records to history dataframe while days to update remain
+        while i < 4:
+            i+=1
+            ## concatenate history retrieved from ibkr 
+            history = pd.concat([history, ib.getBars(ibkr, symbol=row['ticker'], lookback='%s D'%lookback, interval=row['interval'], endDate=endDate)], ignore_index=True)
+            
+            ## update enddate for the next iteration
+            endDate = endDate - pd.offsets.BDay(lookback - 1)
+            endDate = endDate.replace(hour = 20)
+            
+            ## manual throttling of api requests 
+            time.sleep(5)
+        
+        ## add interval column for easier lookup 
+        history['interval'] = row['interval'].replace(' ', '')
+
+        ## save history to db 
+        saveHistoryToDB(history, conn, 'index')
+        
+        ## print logging info & reset history df 
+        print(' %s-%s[green]...Updated![/green]'%(row['ticker'], row['interval']))
+        print(' from %s to %s\n'%(history['date'].min(), history['date'].max()))
+        history = pd.DataFrame()
+        
+
+    ibkr.disconnect()
+
 
 """
 Root function to update all records 
@@ -509,9 +603,7 @@ def updateRecords():
     # build a list of stocks and indices that have been newly added to the watchlist 
     newList = myList[~myList['ticker'].isin(stocks['ticker'])].reset_index(drop=True)
     newList_stocks = newList[~newList['ticker'].isin(_indexList)].reset_index(drop=True)
-    
     newList_indices = newList[newList['ticker'].isin(_indexList)].reset_index(drop=True)
-    
     newList_indices = newList[~newList['ticker'].isin(index['ticker'])].reset_index(drop=True)
     
     # filter out records that are new (i.e. no records exist)
@@ -590,4 +682,35 @@ def updateOptionHistory(symbol, strike, date):
     optionQuote = qtrade.get_option_quotes(option_ids=optionIDs['callSymbolId'], filters=filter)
     return optionIDs
 
-updateRecords()
+#updateRecords()
+
+
+## section below is to update older data and view index records + date range available 
+"""masterloop = 0
+
+while masterloop < 2:
+    print('[green]Sstarting iteration...%s[/green]\n'%(masterloop))
+    #update200()
+    masterloop += 1
+    #time.sleep(300)
+
+try:
+        ibkr = IB() 
+        ibkr.connect('127.0.0.1', 7496, clientId = 10)
+        conn = sqlite3.connect(_dbName_index)
+except:
+    print('[red]Could not connect with IBKR![/red]\n')
+
+index = getRecords(type='index')
+
+# get earliest available dates for list of indices 
+pf = pd.DataFrame({'ticker':_indexList})
+pf['firstAvailableRecord'] = pf.apply(lambda x: ib.getEarliestTimeStamp(ibkr, x['ticker'], 'USD', 'CBOE'), axis=1)
+#pf['firstAvailableRecord'] = pf.apply(lambda x: x)
+
+merged = pd.merge(index, pf, how='left', on = 'ticker')
+merged['workdays'] = merged.apply(lambda x: _countWorkdays(x['firstAvailableRecord'], x['firstRecordDate']), axis=1)
+
+print(index)
+print(pf)
+print(merged)"""
