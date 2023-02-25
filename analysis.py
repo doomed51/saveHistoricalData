@@ -71,16 +71,16 @@ Returns a list of returns for a specific symbol, aggregated over  intervals
 def getSeasonalReturns(intervals, symbols, lookbackPeriod = 0):
     seasonalReturns = []
     for sym in symbols:
-        for int in intervals:
-        
-            ## get raw history dataframe
+        for int in intervals:   
+            ## get raw px history
             symbolHistory = dbInt.getPriceHistory(sym, intervalMappings[intervalMappings['analysisTimeframe'] == int ]['lookup'].values[0])
             
-            ## compute returns 
+            ## compute returns on the timeseries
             myReturns = computeReturns(symbolHistory)
         
             ## aggregate returns across the timeseries
             seasonalReturns.append(aggregateSeasonalReturns(myReturns, sym, int))
+    
     return seasonalReturns
 
 """
