@@ -77,8 +77,11 @@ def _saveHistoryToDB(history, dbPath='historicalData_index.db', type='index'):
         print(' saving options to the DB is not yet implemented')
 
 """
-Returns [DataFrame] of historical data with...
-    [columns]: date | open | high | low | close | volume | symbol | interval 
+Returns [DataFrame] of historical data from IBKR with...
+    inputs:
+        ibkr connection object, ..,.., end date of lookup, nbr of days to look back, ..,..
+    outputs:
+        [columns]: date | open | high | low | close | volume | symbol | interval 
 """
 def getBars(ibkr, symbol='SPX', currency='USD', endDate='', lookback='10 D', interval='15 mins', whatToShow='TRADES'):
     bars = _getHistoricalBars(ibkr, symbol, currency, endDate, lookback, interval, whatToShow)
