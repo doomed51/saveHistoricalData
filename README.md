@@ -1,7 +1,9 @@
 # saveHistoricalData
 
-A simple set of scripts to download, analyze, and backtest equities 
+A simple set of scripts to download and store historical data from ibkr and questrade
 
-1. Download and store OHLC data to local (pulls from questrade) 
-2. Analyze various stocks (seasonal analysis across various timeframes) 
-3. Backtest potential strategies (utilizes backtrader.py)
+Requires ibkr and questrade accounts. 
+
+Data is stored in SQLite. 
+
+tickerList.csv -> list of symbols to store data for
