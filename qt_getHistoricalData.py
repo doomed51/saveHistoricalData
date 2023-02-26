@@ -44,8 +44,12 @@ import ibkr_getHistoricalData as ib
 _dbName_stock = 'historicalData_stock.db'
 _dbName_index = 'historicalData_index.db'
 
-## default set of intervals to be saved for each ticker 
+"""Tracked intervals for stocks
+    Note: String format is specific to questrade""" 
 intervals_stock = ['FiveMinutes', 'FifteenMinutes', 'HalfHour', 'OneHour', 'OneDay', 'OneMonth']
+
+"""Tracked intervals for indices
+    Note: String format is specific to questrade"""
 intervals_index = ['5 mins', '15 mins', '30 mins', '1 day']
 
 ## global vars
@@ -242,21 +246,19 @@ def getLatestHistory(qtrade, ticker, startDate, endDate, interval):
     return history
 
 """
- Returns the last recorded date with price history 
-###
-
-Params
----------
-sqlConn: [sqlite3.connection]
-symbol: [str] lookup symbol
-interval: [str] oneday, hour, etc
-type: [str] stock, or option
----------
-Returns [dateTime] or [str]:n/a if table is not found in the DB 
+ Returns the ealiest stored record for a particular symbol-interval combo
+    INPUTS
+    ---------
+    sqlConn: [sqlite3.connection]
+    symbol: [str] lookup symbol
+    interval: [str] oneday, hour, etc
+    type: [str] stock, or option
+    ---------
+    RETURNS [dateTime] or [str]:empty string if table is not found in the DB 
 
 """
 def getLastUpdateDate(sqlConn, symbol, interval, type):
-    lastDate = 'n/a'
+    lastDate = ''
     sql = 'SELECT * FROM ' + symbol + '_' + type + '_' + interval
     history = pd.DataFrame()
 
@@ -264,7 +266,7 @@ def getLastUpdateDate(sqlConn, symbol, interval, type):
         history = pd.read_sql(sql, sqlConn)
         history['end'] = pd.to_datetime(history['end'], dayfirst=False)
         lastDate = history['end'].max()
-    except :
+    except:
         next
 
     return lastDate
@@ -461,7 +463,7 @@ def getMissingIntervals(records, type = 'stock'):
     symbolsWithMissingIntervals = numRecordsPerSymbol.loc[
         numRecordsPerSymbol['name'] < len(myIntervals)].reset_index()['ticker'].unique()
 
-    ## find missing symbol-interval combos and put them in a DF
+    ## find missing symbol-interval combos
     missingCombos = []
     for symbol in symbolsWithMissingIntervals:
         for interval in myIntervals:
@@ -471,6 +473,7 @@ def getMissingIntervals(records, type = 'stock'):
             if myRecord.empty:
                 missingCombos.append(symbol+'-'+interval)
     
+    ## return the missing symbol-interval combos
     return missingCombos
 
 
@@ -576,44 +579,59 @@ def update200():
 
 
 """
-Root function to update all records 
+Core function that will update all records in the local db
+--
+inputs: 
+    tickerlist.csv -> list of tickers to keep track of(Note: only for adding new symbols 
+        to keep track of. existing records will be kept up to date by default) 
+    updateThresholdDays.int -> number of days before records are updated
 """
-def updateRecords():
+def updateRecords(updateThresholdDays = 5):
     print('checking for updates')
 
     #### check for new tickers 
     # read in tickerlist.txt
-    tickerList = pd.read_csv(_tickerFilepath)
-    myList = pd.DataFrame(tickerList.columns).reset_index(drop=True)
-    myList.rename(columns={0:'ticker'}, inplace=True)
-    myList['ticker'] = myList['ticker'].str.strip(' ').str.upper()
-    myList.sort_values(by=['ticker'], inplace=True)
+    symbolList = pd.read_csv(_tickerFilepath)
+
+    ## convert to dataframe, and cleanup  
+    symbolList = pd.DataFrame(symbolList.columns).reset_index(drop=True)
+    symbolList.rename(columns={0:'ticker'}, inplace=True)
+    symbolList['ticker'] = symbolList['ticker'].str.strip(' ').str.upper()
+    symbolList.sort_values(by=['ticker'], inplace=True)
     
-    # get existing tickers and when they were last updated
+    # get existing stock records
     stocks = getRecords()
     stocks['type'] = 'stock'
+
+    # get existing index records
     index = getRecords(type='index')
     index['type'] = 'index'
-    records = pd.concat([stocks, index])
 
-    # build a list of stocks and indices that need to be updated
-    stocksToUpdate = stocks.loc[stocks['daysSinceLastUpdate'] >= 5]
-    indicesToUpdate = index.loc[index['daysSinceLastUpdate'] >= 5]
+    # merge into master records list 
+    #records = pd.concat([stocks, index])
+
+    # Build a list of stocks and indices that have not been udpated 
+    # for the Threshold amount of days 
+    stocksWithOutdatedData = stocks.loc[stocks['daysSinceLastUpdate'] >= updateThresholdDays]
+    indicesWithOutdatedData = index.loc[index['daysSinceLastUpdate'] >= updateThresholdDays]
     
-    # build a list of stocks and indices that have been newly added to the watchlist 
-    newList = myList[~myList['ticker'].isin(stocks['ticker'])].reset_index(drop=True)
-    newList_stocks = newList[~newList['ticker'].isin(_indexList)].reset_index(drop=True)
-    newList_indices = newList[newList['ticker'].isin(_indexList)].reset_index(drop=True)
-    newList_indices = newList[~newList['ticker'].isin(index['ticker'])].reset_index(drop=True)
+
+    # Build a list of symbols that have been newly added to the watchlist csv 
+    newlyAddedSymbols = symbolList[~symbolList['ticker'].isin(stocks['ticker'])].reset_index(drop=True)     
+    newlyAddedStocks = newlyAddedSymbols[~newlyAddedSymbols['ticker'].isin(_indexList)].reset_index(drop=True)
+
+    # Build a list of indices that have been newly added to the watchlist csv 
+    newlyAddedIndices = newlyAddedSymbols[newlyAddedSymbols['ticker'].isin(_indexList)].reset_index(drop=True)
+    newlyAddedIndices = newlyAddedSymbols[~newlyAddedSymbols['ticker'].isin(index['ticker'])].reset_index(drop=True)
     
     # filter out records that are new (i.e. no records exist)
-    newList = myList[~myList['ticker'].isin(records['ticker'])].reset_index(drop=True)
+    #newList = symbolList[~symbolList['ticker'].isin(records['ticker'])].reset_index(drop=True)
     
     ## update stocks
-    updateStockHistory(stocks, stocksToUpdate, newList_stocks)
+    updateStockHistory(stocks, stocksWithOutdatedData, newlyAddedStocks)
     
     ## update indicies 
-    updateIndexHistory(index, indicesToUpdate, newList_indices)
+    updateIndexHistory(index, indicesWithOutdatedData, newlyAddedIndices)
 
 """
 Get options historical data
@@ -682,8 +700,27 @@ def updateOptionHistory(symbol, strike, date):
     optionQuote = qtrade.get_option_quotes(option_ids=optionIDs['callSymbolId'], filters=filter)
     return optionIDs
 
-#updateRecords()
 
+symbolList = pd.read_csv(_tickerFilepath)
+print(symbolList)
+## cleanup dataframe 
+symbolList = pd.DataFrame(symbolList.columns).reset_index(drop=True)
+symbolList.rename(columns={0:'ticker'}, inplace=True)
+symbolList['ticker'] = symbolList['ticker'].str.strip(' ').str.upper()
+symbolList.sort_values(by=['ticker'], inplace=True)
+print('\n')
+print(symbolList)
+"""updateRecords()
+try:
+        ibkr = IB() 
+        ibkr.connect('127.0.0.1', 7496, clientId = 10)
+        conn = sqlite3.connect(_dbName_index)
+except:
+    print('[red]Could not connect with IBKR![/red]\n')
+
+tlt = ib.getBars(ibkr=ibkr, symbol='SPY', interval = '5 mins')
+print(tlt)
+print(ib.getEarliestTimeStamp(ibkr=ibkr, symbol='SPY'))"""
 
 ## section below is to update older data and view index records + date range available 
 """masterloop = 0
