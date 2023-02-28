@@ -54,29 +54,6 @@ def _getHistoricalBars(ibkrObj, symbol, currency, endDate, lookback, interval, w
         print('\nNo history found for...%s!'%(symbol))
 
 """
-Save history to a sqlite3 database
-###
-
-Params
-------------
-history: [DataFrame]
-    pandas dataframe with date and OHLC, volume, interval, and vwap  
-conn: [Sqlite3 connection object]
-    connection to the local db 
-"""
-def _saveHistoryToDB(history, dbPath='historicalData_index.db', type='index'):
-    conn = sqlite3.connect(dbPath)
-
-    ## Tablename convention: <symbol>_<stock/opt>_<interval>
-    tableName = history['symbol'][0]+'_'+type+'_'+history['interval'][0]
-    
-    if type == 'index':
-        history.to_sql(f"{tableName}", conn, index=False, if_exists='append')
-    
-    elif type == 'option':
-        print(' saving options to the DB is not yet implemented')
-
-"""
 Returns [DataFrame] of historical data from IBKR with...
     inputs:
         ibkr connection object, ..,.., end date of lookup, nbr of days to look back, ..,..
