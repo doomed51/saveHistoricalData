@@ -10,7 +10,6 @@ Delete - 0
 """
 
 import sqlite3
-
 import pandas as pd
 
 """ Global vars """
@@ -40,19 +39,30 @@ history: [DataFrame]
 conn: [Sqlite3 connection object]
     connection to the local db 
 """
-def saveHistoryToDB(history, conn, type='stock'):
-
-    ## Tablename convention: <symbol>_<stock/opt>_<interval>
+def saveHistoryToDB(history, conn):
+    
+    ## set type to index if the symbol is in the index list 
+    if history['symbol'][0] in index_list:
+        type = 'index'
+    else: 
+        type='stock'
+    
     tableName = history['symbol'][0]+'_'+type+'_'+history['interval'][0]
-    
-    if type == 'stock':
-        history.to_sql(f"{tableName}", conn, index=False, if_exists='append')
-    
-    elif type == 'index':
-        history.to_sql(f"{tableName}", conn, index=False, if_exists='append')
+    ## remove any duplicate records 
+    # get 
 
-    elif type == 'option':
-        print(' saving options to the DB is not yet implemented')
+    history.to_sql(f"{tableName}", conn, index=False, if_exists='append')
+    
+    ## Update the symbolRecord lookup table 
+    # table name: 00-lookup_symbolRecords
+    # query db for tablename 
+    #   if no record
+    #       add record
+    #       add record.earliestTimestamp_ibkr
+    #   if record is there 
+    #       if record.startDate > history.min 
+    #           update startDate -> history.min
+    #           update numMissingBusDays to  
 
 """
 Returns dataframe of px from database 
@@ -76,6 +86,17 @@ def getPriceHistory(symbol, interval):
     
     return pxHistory
 
+"""
+establishes a connection to the appropriate DB based on type of symbol passed in. 
+
+Returns sqlite connection object 
+
+Params
+========
+symbol - [str] 
+"""
+def _connectToDb():
+    return sqlite3.connect(dbname_index)
 
 """
 constructs the appropriate tablename to call local DB 
@@ -93,23 +114,24 @@ def _constructTableName(symbol, interval):
 
     tableName = symbol+'_'+type_+'_'+intervalMappings.loc[intervalMappings['label'] == interval][type_].values[0]
 
-    print(tableName)
-
     return tableName
 
 """
-establishes a connection to the appropriate DB based on type of symbol passed in. 
-
-Returns sqlite connection object 
+utility - remove duplicate records from table
 
 Params
-========
-symbol - [str] 
+==========
+tablename - [str]
 """
-def _connectToDb(symbol):
-    if symbol in index_list:
-        conn = sqlite3.connect(dbname_index)
-    else:
-        conn = sqlite3.connect(dbname_stocks)
+def _removeDuplicates(tablename):
+    conn = _connectToDb()
+    
+    sqlStatement = 'SELECT date, COUNT(date) FROM %s GROUP BY date HAVING COUNT(date) > 1'%(tablename)
 
-    return conn
+    duplicates = pd.read_sql(sqlStatement, conn)
+
+    print(duplicates)
+
+_removeDuplicates('VIX_index_5mins')
+
+
