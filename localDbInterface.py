@@ -47,12 +47,13 @@ def saveHistoryToDB(history, conn):
     else: 
         type='stock'
     
+    # Write the dataframe to the database with the correct table name
     tableName = history['symbol'][0]+'_'+type+'_'+history['interval'][0]
-    ## remove any duplicate records 
-    # get 
-
     history.to_sql(f"{tableName}", conn, index=False, if_exists='append')
     
+    #make sure there are no duplicates in the resulting table
+    _removeDuplicates(tableName)
+
     ## Update the symbolRecord lookup table 
     # table name: 00-lookup_symbolRecords
     # query db for tablename 
