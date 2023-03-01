@@ -117,20 +117,22 @@ def _constructTableName(symbol, interval):
     return tableName
 
 """
-utility - remove duplicate records from table
+utility - remove duplicate records from ohlc table
 
 Params
 ==========
 tablename - [str]
 """
 def _removeDuplicates(tablename):
-    conn = _connectToDb()
-    
-    sqlStatement = 'SELECT date, COUNT(date) FROM %s GROUP BY date HAVING COUNT(date) > 1'%(tablename)
+    conn = _connectToDb() # connect to DB
 
-    duplicates = pd.read_sql(sqlStatement, conn)
+    ## group on date & select the min row IDs; then delete all the ROWIDs not in the selected list
+    sql_selectMinId = 'DELETE FROM %s WHERE ROWID NOT IN (SELECT MIN(ROWID) FROM %s GROUP BY date)'%(tablename, tablename)
 
-    print(duplicates)
+    ## run the query 
+    cursor = conn.cursor()
+    cursor.execute(sql_selectMinId)
+
 
 _removeDuplicates('VIX_index_5mins')
 
