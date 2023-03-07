@@ -40,7 +40,6 @@ import ibkr_getHistoricalData as ib
 import localDbInterface as db
 
 ## Default DB names 
-_dbName_stock = 'historicalData_stock.db'
 _dbName_index = 'historicalData_index.db'
 
 """Tracked intervals for indices
