@@ -66,15 +66,6 @@ def getBars(ibkr, symbol='SPX', currency='USD', endDate='', lookback='10 D', int
 """
 Returns [datetime] of earliest datapoint available 
 """
-<<<<<<< HEAD
-def getEarliestTimeStamp(ibkr, symbol='SPX', currency='USD', exchange='SMART'):
-    if symbol in _index:
-        contract = Index(symbol, exchange, currency)
-    else:
-        contract = Stock(symbol, exchange, currency)
-    earliestTS = ibkr.reqHeadTimeStamp(contract, useRTH=False, whatToShow='TRADES')
-    return earliestTS
-=======
 def getEarliestTimeStamp(ibkr, symbol='SPX', currency='USD'):
     if symbol in _index:
         contract = Index(symbol, 'CBOE', currency)
@@ -82,4 +73,3 @@ def getEarliestTimeStamp(ibkr, symbol='SPX', currency='USD'):
         contract = Stock(symbol, 'SMART', currency)
     earliestTS = ibkr.reqHeadTimeStamp(contract, useRTH=False, whatToShow='TRADES')
     return earliestTS
->>>>>>> ibkr-transition
