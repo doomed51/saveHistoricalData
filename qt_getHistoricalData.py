@@ -16,7 +16,6 @@ tickerFilepath = 'tickerList.csv'
 'historicalData_index.db'
 
 # The data sources for historcal data 
-Questrade 
 IBKR
 
 """
@@ -27,7 +26,6 @@ from numpy import histogram, indices, true_divide
 from pytz import timezone, utc
 
 from pathlib import Path
-from qtrade import Questrade 
 from requests.exceptions import HTTPError
 from rich import print
 from urllib.error import HTTPError, URLError
@@ -45,12 +43,8 @@ import localDbInterface as db
 _dbName_stock = 'historicalData_stock.db'
 _dbName_index = 'historicalData_index.db'
 
-"""Tracked intervals for stocks
-    Note: String format is specific to questrade""" 
-intervals_stock = ['FiveMinutes', 'FifteenMinutes', 'HalfHour', 'OneHour', 'OneDay', 'OneMonth']
-
 """Tracked intervals for indices
-    Note: String format is specific to questrade"""
+    Note: String format is specific to ibkr"""
 intervals_index = ['5 mins', '15 mins', '30 mins', '1 day']
 
 ## global vars
@@ -83,14 +77,9 @@ def _countWorkdays(startDate, endDate, excluded=(6,7)):
 lambda function returns numbers of business days since a DBtable was updated
 """
 def _getDaysSinceLastUpdated(row):
-    #if row['ticker'] in _indexList:
     conn = sqlite3.connect(_dbName_index)
     maxtime = pd.read_sql('SELECT MAX(date) FROM '+ row['name'], conn)
     mytime = datetime.datetime.strptime(maxtime['MAX(date)'][0][:10], '%Y-%m-%d')
-    """    else:
-    conn = sqlite3.connect(_dbName_stock)
-    maxtime = pd.read_sql('SELECT MAX(end) FROM '+ row['name'], conn)
-    mytime = datetime.datetime.strptime(maxtime['MAX(end)'][0][:10], '%Y-%m-%d')"""
     
     ## calculate business days since last update
     numDays = len( pd.bdate_range(mytime, datetime.datetime.now() )) - 1
@@ -98,19 +87,13 @@ def _getDaysSinceLastUpdated(row):
     return numDays
 
 def _getLastUpdateDate(row):
-    #if row['ticker'] in _indexList:
     conn = sqlite3.connect(_dbName_index)
     maxtime = pd.read_sql('SELECT MAX(date) FROM '+ row['name'], conn)
     maxtime = maxtime['MAX(date)']
-    """else:
-    conn = sqlite3.connect(_dbName_stock)
-    maxtime = pd.read_sql('SELECT MAX(end) FROM '+ row['name'], conn)
-    maxtime = maxtime['MAX(end)']"""
 
     return maxtime
 
 def _getFirstRecordDate(row):
-    #if row['ticker'] in _indexList:
     conn = sqlite3.connect(_dbName_index)
     mintime = pd.read_sql('SELECT MIN(date) FROM '+ row['name'], conn)
     mintime = mintime['MIN(date)']
@@ -131,14 +114,10 @@ def _getFirstRecordDate(row):
 """
 
 """
-Setup connection to Questrade API
+Setup connection to ibkr
 ###
-first try the yaml file
- if yaml fails, try a refresh
- if that fails try the token (i.e. a new token will 
-   need to be manually updated from the qt API )
 --
-Returns Questrade object 
+Returns ibkr connection object 
 """
 def setupConnection():
     ## connect with IBKR
@@ -168,40 +147,6 @@ def saveHistoryToCSV(history, type='stock'):
         filepath.parent.mkdir(parents=True, exist_ok=True)
         history.to_csv(filepath, index=False)
 
-
-"""
-Retrieves history from questrade and 
-saves it to a local database 
-###
-
-Params
------------
-qtrade: [Questrade] - active questrade connection obj
-ticker: [str] - symbol / tickers
-startDate/endDate: [datetime] - period to look up 
-interval: [str]: time granularity i.e. oneDay, oneHour, etc. 
-"""
-def getLatestHistory(qtrade, ticker, startDate, endDate, interval):
-    ## Retrieve historical data  
-    history = pd.DataFrame()
-    try:
-        ## Retrieve data from questrade
-        history = pd.DataFrame(qtrade.get_historical_data(ticker, startDate, endDate, interval))
-
-        ## cleanup timestamp formatting
-        history['start'] = history['start'].astype(str).str[:-6]
-        
-        ## add some columns for easier reference later
-        history['interval'] = interval  
-        history['symbol'] = ticker
-
-    except(HTTPError, FileNotFoundError) as err:
-        print ('ERROR History not retrieved\n')
-        print(err)
-        print('\n')
-
-    #saveHistoryToDB(history)
-    return history
 
 """
  Returns the ealiest stored record for the specified symbol-interval combo
@@ -536,25 +481,6 @@ def refreshLookupTable():
         
         ## save to db replacing existing (outdated) records 
         merged.to_sql(f"{lookupTableName}", db._connectToDb(), index=False, if_exists='replace')
-    
-
-"""    if not stocks.empty:
-        stocksWithOutdatedData = stocks.loc[stocks['daysSinceLastUpdate'] >= updateThresholdDays]
-        newlyAddedSymbols = symbolList[~symbolList['ticker'].isin(stocks['ticker'])].reset_index(drop=True)
-        newlyAddedStocks = newlyAddedSymbols[~newlyAddedSymbols['ticker'].isin(_indexList)].reset_index(drop=True)
-    elif stocks.empty: ## database is empty 
-        newlyAddedStocks = symbolList
-
-    if not index.empty:
-        indicesWithOutdatedData = index.loc[index['daysSinceLastUpdate'] >= updateThresholdDays]
-    
-        # Build a list of indices that have been newly added to the watchlist csv 
-        newlyAddedSymbols = symbolList[~symbolList['ticker'].isin(index['ticker'])].reset_index(drop=True)
-        newlyAddedIndices = newlyAddedSymbols[newlyAddedSymbols['ticker'].isin(_indexList)].reset_index(drop=True)
-        newlyAddedIndices = newlyAddedSymbols[newlyAddedSymbols['ticker'].isin(index['ticker'])].reset_index(drop=True)
-    
-    elif index.empty: ##no indices stored in the db
-        newlyAddedIndices = symbolList"""
 
 #updateRecords()
 refreshLookupTable()
