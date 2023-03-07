@@ -73,7 +73,11 @@ def _addspace(myStr):
     between two provided datetimes 
 """ 
 def _countWorkdays(startDate, endDate, excluded=(6,7)):
-    return len(pd.bdate_range(startDate, endDate))
+    ## handle negatives when endDate > startDate 
+    if startDate > endDate:
+        return (len(pd.bdate_range(endDate, startDate)) * -1)
+    else:
+        return len(pd.bdate_range(startDate, endDate))
 
 """
 lambda function returns numbers of business days since a DBtable was updated
@@ -110,18 +114,16 @@ def _getFirstRecordDate(row):
     conn = sqlite3.connect(_dbName_index)
     mintime = pd.read_sql('SELECT MIN(date) FROM '+ row['name'], conn)
     mintime = mintime['MIN(date)']
-    """else:
-    conn = sqlite3.connect(_dbName_stock)
-    mintime = pd.read_sql('SELECT MAX(end) FROM '+ row['name'], conn)
-    mintime = mintime['MAX(end)']"""
+
+    ## convert to datetime handling cases where there is 
+    ## only a date and no time (e.g. 1day interval data)
+    if len(mintime.iloc[0]) > 10: 
+        mintime = datetime.datetime.strptime(mintime.iloc[0], '%Y-%m-%d %H:%M:%S')
+    else:
+        mintime = datetime.datetime.strptime(mintime.iloc[0], '%Y-%m-%d')
+    
     return mintime
 
-def _getEarliestAvailableRecordDate(row):
-    if row['type'] == 'index':
-        earliestTimeStamp = ib.getEarliestTimeStamp(ibkr, symbol=row['ticker'], currency='USD', exchange='CBOE')
-    elif row['type'] == 'stock':
-        print('na')##earliestTimeStamp = ib.getEarliestTimeStamp(ibkrObj, row['ticker'], 'USD', 'SMART')
-    return earliestTimeStamp
 """
 ################################################################
 ########################### END ################################
@@ -139,35 +141,16 @@ first try the yaml file
 Returns Questrade object 
 """
 def setupConnection():
+    ## connect with IBKR
     try:
-        print("\nTrying Token YAML")
-        qtrade = Questrade(token_yaml = "access_token.yml")
-        sw = qtrade.get_quote(['SPY'])
-        
+        print('[yellow] Connecting with IBKR...[/yellow]\n')
+        ibkr = IB() 
+        ibkr.connect('127.0.0.1', 7496, clientId = 10)
+        print('[green]  Success![/green]\n')
     except:
-        print("[red] FAILED![/red]\n")
-        try: 
-            print("Trying Refresh")
-            qtrade = Questrade(token_yaml = "access_token.yml")
-            qtrade.refresh_access_token(from_yaml = True, yaml_path="access_token.yml")
+        print('[red]  Could not connect with IBKR![/red]\n')
 
-        except:
-            print("[red] FAILED![/red]\n")
-            print("Trying Access Code")
-            
-            try:
-                with open("token.txt") as f:
-                    ac = f.read().strip()
-                    qtrade = Questrade(access_code = ac)
-                    w = qtrade.get_quote(['SPY'])
-                    print ('%s latest Price: %.2f'%(w['symbol'], w['lastTradePrice'])) 
-            
-            except:
-                print("[red] FAILED![/red]")
-                print("[yellow] Might neeed new access code from Questrade[/yellow] \n")
-                ##print(err)
-                quit() 
-    return qtrade
+    return ibkr
 
 """
 Save history to a CSV file 
@@ -221,7 +204,7 @@ def getLatestHistory(qtrade, ticker, startDate, endDate, interval):
     return history
 
 """
- Returns the ealiest stored record for a particular symbol-interval combo
+ Returns the ealiest stored record for the specified symbol-interval combo
     INPUTS
     ---------
     sqlConn: [sqlite3.connection]
@@ -245,61 +228,6 @@ def getLastUpdateDate(sqlConn, symbol, interval, type):
 
     return lastDate
 
-def updateStockHistory(stocks, stocksToUpdate, stocksToAdd):
-
-    # check for missing intervals 
-    missingIntervals = getMissingIntervals(stocksToUpdate)
-    
-    ## establish connections if updating is needed 
-    if (stocksToUpdate['daysSinceLastUpdate'].count() > 0) or (stocksToAdd['ticker'].count() > 0) or (len(missingIntervals) > 0):
-        print(' Connecting with [red]Qtrade & DB [/red]')
-        qtrade = setupConnection()
-        conn = sqlite3.connect(_dbName_stock)
-            
-    ## update missing intervals if we have any
-    if len(missingIntervals)>0:
-        for item in missingIntervals:
-            [_tkr, _intvl] = item.split('-')
-            startDate = datetime.datetime.now(tz=None) - datetime.timedelta(30000)
-            history = getLatestHistory(qtrade, _tkr, startDate.date(), datetime.datetime.now(tz=None).date(), _intvl)
-            saveHistoryToDB(history, conn)
-            print('[red]Missing interval[/red] %s-%s...[green]updated![/green]\n'%(_tkr, _intvl))
-
-    ## update existing records that are more than 5 days old 
-    if not stocksToUpdate.empty:
-        print('\n[blue]Some records are more than 5 days old. Updating...[/blue]')
-        pd.to_datetime(stocksToUpdate['lastUpdateDate'])
-
-        for index, row in stocksToUpdate.iterrows():            
-            startDate = datetime.datetime.strptime(row['lastUpdateDate'][:10], '%Y-%m-%d') #+ datetime.timedelta(hours=9)
-            history = getLatestHistory(qtrade, row['ticker'], startDate.date(), datetime.datetime.now(tz=None).date(), row['interval'])
-            saveHistoryToDB(history, conn)
-            print('%s-%s...[red]updated![/red]\n'%(row['ticker'], row['interval']))
-        #conn.close()
-    else: 
-        print('\n[green]Existing records are up to date...[/green]')
-
-    # Add new records added to the watchlist 
-    if not stocksToAdd.empty: 
-        print('\n[blue]%s new ticker(s) found[/blue], adding to db...'%(stocksToAdd['ticker'].count()))
-
-        # loop through each new ticker
-        for ticker in stocksToAdd['ticker']:
-            startDate = datetime.datetime.now(tz=None) - datetime.timedelta(30000)
-            print('\nAdding [underline]%s[/underline] to the database...'%(ticker))
-
-            # we will update every interval for the ticker             
-            for intvl in intervals_stock:
-                # get the latest history from questrade 
-                history = getLatestHistory(qtrade, ticker, startDate.date(), datetime.datetime.now(tz=None).date(), intvl)
-                # save the history to DB 
-                saveHistoryToDB(history, conn)
-                print(' %s...[green]added![/green] (%s records)'%(intvl, history['end'].count()))
-    else:
-        print('[green]No new tickers added to watchlist...[/green]')
-    
-    print('\n[green]All Done![/green]\n')
-
 """
 update history for indices
  updateIndexHistory(index, indicesWithOutdatedData, newlyAddedIndices)
@@ -313,28 +241,22 @@ def updateIndexHistory(index, indicesWithOutdatedData= pd.DataFrame(), newlyAdde
  
     ## if we have any missing data to update, establish connection with IBKR  
     if (not indicesWithOutdatedData.empty) or ( not newlyAddedIndices.empty) or (len(missingIntervals) > 0):
-        
+        print('[yellow]Updates pending...[/yellow]\n')
+
         ## connect with IBKR
-        try:
-            print('[yellow]Records need updating...[/yellow]\n')
-            print('[yellow] Connecting with IBKR...[/yellow]\n')
-            ibkr = IB() 
-            ibkr.connect('127.0.0.1', 7496, clientId = 10)
-            print('[green]  Success![/green]\n')
-        except:
-            print('[red]  Could not connect with IBKR![/red]\n')
-        
+        ibkr = setupConnection()
+
         ## connect with local DB 
         try:
-            print('[yellow] Connecting with the local DB...[/yellow]')
+            print('[yellow] Connecting with the local DB..."%s"[/yellow]'%(_dbName_index))
             conn = sqlite3.connect(_dbName_index)
             print('[green]  Success![/green]\n')
         except:
-            print('[red]  Could not connect with local DB![/red]\n')
+            print('[red]  Could not connect with local DB "%s"![/red]\n'%(_dbName_index))
     
     ## update missing intervals if we have any 
     if len(missingIntervals) > 0: 
-        print('[yellow]Some records are missing intervals, Updating...[/yellow]')
+        print('[yellow]Some records have missing intervals, updating...[/yellow]')
         for item in missingIntervals:
             [_tkr, _intvl] = item.split('-')
             if ( _intvl in ['5 mins', '15 mins']):
@@ -344,11 +266,15 @@ def updateIndexHistory(index, indicesWithOutdatedData= pd.DataFrame(), newlyAdde
                 history = ib.getBars(ibkr, symbol=_tkr,lookback='365 D', interval=_intvl )
 
             history['interval'] = _intvl.replace(' ', '')
-            db.saveHistoryToDB(history, conn)
+
+            ## get earliest record available froms ibkr
+            earliestTimestamp = ib.getEarliestTimeStamp(ibkr, symbol=newIndex)
+            
+            db.saveHistoryToDB(history, conn, earliestTimestamp=earliestTimestamp)
 
             print('[red]Missing interval[/red] %s-%s...[red]updated![/red]\n'%(_tkr, _intvl))
 
-    ## update the existing records that are outdated 
+    ## update symbols with outdated records 
     if not indicesWithOutdatedData.empty:
         print('\n[yellow]Outdated records found. Updating...[/yellow]')
         pd.to_datetime(indicesWithOutdatedData['lastUpdateDate'])
@@ -380,11 +306,12 @@ def updateIndexHistory(index, indicesWithOutdatedData= pd.DataFrame(), newlyAdde
     else: 
         print('\n[green]Existing records are up to date...[/green]')
 
+    ## add records for symbols newly added to the watchlist 
     if not newlyAddedIndices.empty:
         print('\n[blue]%s new indicies found[/blue], adding to db...'%(newlyAddedIndices['ticker'].count()))
 
-        # update each symbol w/ list of tracked intervals
         for newIndex in newlyAddedIndices['ticker']:
+            ## add records for each tracked interval 
             for _intvl in intervals_index:
                 
                 ## set lookback based on interval
@@ -394,30 +321,19 @@ def updateIndexHistory(index, indicesWithOutdatedData= pd.DataFrame(), newlyAdde
                 elif (_intvl in ['30 mins', '1 day']):
                     lookback = 300
                 
-                ## lookup history 
+                ## get history from ibkr 
                 print('%s - %s - %s'%(newIndex, _intvl, lookback))
-                history = ib.getBars(ibkr, symbol=newIndex,lookback='%s D'%(lookback), interval=_intvl )
+                history = ib.getBars(ibkr, symbol=newIndex,lookback='%s D'%(lookback), interval=_intvl)
                 
+                ## get earliest record available for ibkr
+                earliestTimestamp = ib.getEarliestTimeStamp(ibkr, symbol=newIndex)
+
                 ## add interval column for easier lookup 
                 history['interval'] = _intvl.replace(' ', '')
-                db.saveHistoryToDB(history, conn)
+                db.saveHistoryToDB(history, conn, earliestTimestamp=earliestTimestamp)
 
                 print(' New record Added for %s-%s..from %s to %s'%(newIndex, _intvl, history['date'].min(), history['date'].max()))
                 
-
-"""
-get quote from questrade
-"""
-def getQuote(smbl='AAPL'):
-    try:
-        qtrade = setupConnection()
-    except : 
-        print('could not connect to DB/Qtrade!')
-
-    quote = qtrade.get_quote(smbl)
-    print(quote['symbolId'])
-    
-
 """
 Returns a list of symbol-interval combos that are missing from the local database 
 ----------
@@ -466,9 +382,8 @@ def getRecords():
         tables[['ticker', 'type', 'interval']] = tables['name'].str.split('_',expand=True)     
         tables['lastUpdateDate'] = tables.apply(_getLastUpdateDate, axis=1)
         tables['daysSinceLastUpdate'] = tables.apply(_getDaysSinceLastUpdated, axis=1)
-        if type == 'index': 
-            tables['interval'] = tables.apply(lambda x: _addspace(x['interval']), axis=1)
-            tables['firstRecordDate'] = tables.apply(_getFirstRecordDate, axis=1)
+        tables['interval'] = tables.apply(lambda x: _addspace(x['interval']), axis=1)
+        tables['firstRecordDate'] = tables.apply(_getFirstRecordDate, axis=1)
     return tables
 
 """"
@@ -482,13 +397,11 @@ def update200():
     ## get local index records DF 
     index = getRecords(type='index')
     lookback = 30
-
+    ibkr = setupConnection()
     try:
-            ibkr = IB() 
-            ibkr.connect('127.0.0.1', 7496, clientId = 10)
             conn = sqlite3.connect(_dbName_index)
     except:
-        print('[red]Could not connect with IBKR![/red]\n')
+        print('[red]Could not connect to DB![/red]\n')
 
     ## get earliest available dates for list of indices 
     pf = pd.DataFrame({'ticker':_indexList}) ## convert series into DF 
@@ -580,6 +493,51 @@ def updateRecords(updateThresholdDays = 5):
 
     print(records)
 
+"""
+Refreshes the lookup_symbolRecords table with the latest data 
+uses live api connection 
+"""
+def refreshLookupTable(): 
+    print('\n[yellow]Refreshing lookup table[/yellow]')
+    
+    ibkr = setupConnection() ## to get earliest available timestamt
+    lookupTableName = '00-lookup_symbolRecords' ##lookup table name in db 
+    records = getRecords() ## latest local records to compare against 
+    
+    ## select unique symbols and get the earliest available timestamp from ibkr 
+    uniqueRecordSymbols = pd.DataFrame({'ticker':records['ticker'].unique()})
+    uniqueRecordSymbols['earliestAvailableTimestamp'] = uniqueRecordSymbols['ticker'].apply(lambda x: ib.getEarliestTimeStamp(ibkr, x))
+
+    ## merge with records table... 
+    records_withEarliestAvailableDate = pd.merge(records, uniqueRecordSymbols, how='left', on='ticker')
+    
+    ## compute the number of missing records in num days 
+    records_withEarliestAvailableDate['numMissingBusinessDays'] =  records_withEarliestAvailableDate.apply(lambda x: _countWorkdays(x['earliestAvailableTimestamp'], x['firstRecordDate']), axis=1)
+    
+    ## select columns to match the records table in the db 
+    records_forInput = records_withEarliestAvailableDate[['name', 'ticker', 'interval', 'firstRecordDate', 'numMissingBusinessDays']]
+
+    ## format col names etc to abide by db naming & interval formatting conventions
+    records_forInput = records_forInput.rename({'ticker':'symbol'}, axis=1)
+    records_forInput['interval'] = records_forInput['interval'].str.replace(' ', '')
+
+    symbolRecords = db.getLookup_symbolRecords()
+
+    ## merge them 
+    merged = pd.merge(records_forInput, symbolRecords[['name', 'numMissingBusinessDays']], how='outer', on='name')
+    
+    ## select just the records that don't match
+    merged = merged.loc[merged['numMissingBusinessDays_x'] != merged['numMissingBusinessDays_y']].reset_index(drop=True)  
+
+    if not merged.empty:
+        ## drop unneeded col's and rename cols following db table conventions 
+        merged.drop(inplace=True, columns=['numMissingBusinessDays_y'])
+        merged.rename(columns={'numMissingBusinessDays_x':'numMissingBusinessDays'}, inplace=True)
+        
+        ## save to db replacing existing (outdated) records 
+        merged.to_sql(f"{lookupTableName}", db._connectToDb(), index=False, if_exists='replace')
+    
+
 """    if not stocks.empty:
         stocksWithOutdatedData = stocks.loc[stocks['daysSinceLastUpdate'] >= updateThresholdDays]
         newlyAddedSymbols = symbolList[~symbolList['ticker'].isin(stocks['ticker'])].reset_index(drop=True)
@@ -598,74 +556,8 @@ def updateRecords(updateThresholdDays = 5):
     elif index.empty: ##no indices stored in the db
         newlyAddedIndices = symbolList"""
 
-"""
-Get options historical data
-
-## !!!!!     !!!!!!!
-## NOT FUNCTIONAL !! 
-## !!!!!     !!!!!!!
-
-Params
------------
-symbol: [string] - e.g. 'AAPL' 
-strike: [int] - strike price 
-date: [str] - YYYY-MM-DD
-
-Returns
--------
-optionIDs - [List] with strikePrice, callSymbolID, putSymbolID
-    e.g. {'strikePrice': 125, 'callSymbolId': 40444547, 'putSymbolId': 40444581}
-
-Empty list is returned if the option chain does not exist
-
-"""
-def updateOptionHistory(symbol, strike, date):
-    print('\n Getting Options History! \n')
-
-    try:
-        qtrade = setupConnection()
-    except : 
-        print('could not connect to DB/Qtrade!')
-
-    symbolId = qtrade.get_quote('AAPL')['symbolId']
-    filter =  [
-                    {
-                     "optionType": "Call",
-                     "underlyingId": symbolId,
-                     "expiryDate": date+"T00:00:00.000000-05:00",
-                     "minstrikePrice": strike,
-                     "maxstrikePrice": strike
-                     }
-                 ]
-
-
-    ## get available chains for symbol 
-    optionChains = qtrade.get_option_chain(symbol)
-    """"
-    The structure of optionChains is whacky, heres a reference: 
-
-    > optionChain is a LIST of:
-        > Expiry Dates, which is a list of:
-            > 'Chain Roots' i.e. symbols, which is a list of 
-                > Strike prices, which is a list of:
-                    > [strike, callsymbolID, putSymbolID]
-
-    Shit is whack. Hence the nested for loops 
-
-    """
-    allChains = optionChains['optionChain']
-    optionIDs = list() # return var
-    
-    for chain in allChains:
-        if chain['expiryDate'][:-22] == date:
-            for strikes in chain['chainPerRoot'][0]['chainPerStrikePrice']:
-                if strikes['strikePrice'] == strike:
-                    optionIDs = strikes
-    
-    optionQuote = qtrade.get_option_quotes(option_ids=optionIDs['callSymbolId'], filters=filter)
-    return optionIDs
-
-updateRecords()
+#updateRecords()
+refreshLookupTable()
 
 """updateRecords()
 try:
