@@ -127,11 +127,7 @@ history: [DataFrame]
 conn: [Sqlite3 connection object]
     connection to the local db 
 """
-<<<<<<< HEAD
-def saveHistoryToDB(history, conn):
-=======
 def saveHistoryToDB(history, conn, earliestTimestamp=''):
->>>>>>> ibkr-transition
     
     ## set type to index if the symbol is in the index list 
     if history['symbol'][0] in index_list:
@@ -139,23 +135,16 @@ def saveHistoryToDB(history, conn, earliestTimestamp=''):
     else: 
         type='stock'
     
-<<<<<<< HEAD
-    # Write the dataframe to the database with the correct table name
-=======
     # Write the dataframe to the database with the correctly formatted table name
->>>>>>> ibkr-transition
     tableName = history['symbol'][0]+'_'+type+'_'+history['interval'][0]
     history.to_sql(f"{tableName}", conn, index=False, if_exists='append')
     
     #make sure there are no duplicates in the resulting table
     _removeDuplicates(tableName)
 
-<<<<<<< HEAD
-=======
     ## make sure the records lookup table is kept updated
     _updateLookup_symbolRecords(conn, tableName, earliestTimestamp=earliestTimestamp)
 
->>>>>>> ibkr-transition
     ## Update the symbolRecord lookup table 
     # table name: 00-lookup_symbolRecords
     # query db for tablename 
@@ -204,46 +193,6 @@ def _connectToDb():
 """ 
 Returns the lookup table fo records history as df 
 """
-<<<<<<< HEAD
-constructs the appropriate tablename to call local DB 
-
-Params
-===========
-symbol - [str]
-interval - [str] (must match with intervalMappings global var)
-
-"""
-def _constructTableName(symbol, interval):
-    type_ = 'stock'
-    if symbol.upper() in index_list:
-        type_ = 'index'
-
-    tableName = symbol+'_'+type_+'_'+intervalMappings.loc[intervalMappings['label'] == interval][type_].values[0]
-
-    return tableName
-
-"""
-utility - remove duplicate records from ohlc table
-
-Params
-==========
-tablename - [str]
-"""
-def _removeDuplicates(tablename):
-    conn = _connectToDb() # connect to DB
-
-    ## group on date & select the min row IDs; then delete all the ROWIDs not in the selected list
-    sql_selectMinId = 'DELETE FROM %s WHERE ROWID NOT IN (SELECT MIN(ROWID) FROM %s GROUP BY date)'%(tablename, tablename)
-
-    ## run the query 
-    cursor = conn.cursor()
-    cursor.execute(sql_selectMinId)
-
-
-_removeDuplicates('VIX_index_5mins')
-
-
-=======
 def getLookup_symbolRecords():
     conn = _connectToDb()
 
@@ -252,4 +201,3 @@ def getLookup_symbolRecords():
     symbolRecords = pd.read_sql(sqlStatement_selectRecordsTable, conn)
 
     return symbolRecords
->>>>>>> ibkr-transition
