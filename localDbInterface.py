@@ -90,13 +90,14 @@ def _updateLookup_symbolRecords(conn, tablename, numMissingDays = 5, earliestTim
     minDate_symbolHistory = pd.read_sql(sql_minDate_symbolHistory, conn)
     
     ## get the earliest date from the lookup table for the matching symbol 
-    sql_minDate_recordsTable = 'SELECT earliestRecordDate FROM \'%s\' WHERE symbol = \'%s\' and interval = \'%s\''%('00-lookup_symbolRecords', minDate_symbolHistory['symbol'][0], minDate_symbolHistory['interval'][0])
+    sql_minDate_recordsTable = 'SELECT firstRecordDate FROM \'%s\' WHERE symbol = \'%s\' and interval = \'%s\''%(lookupTablename, minDate_symbolHistory['symbol'][0], minDate_symbolHistory['interval'][0])
     minDate_recordsTable = pd.read_sql(sql_minDate_recordsTable, conn)
     
     ## add a new record entry in the lookup table since none are there 
     if minDate_recordsTable.empty:
         ## compute the number of missing business days 
-        ## since this is a new record, we expect a timestamp to have been passed on the call to write history to the db 
+        ## since this is a new record, we expect a timestamp to have been 
+        ## passed on the call to write history to the db 
         if not earliestTimestamp:
             ## set missing business days to the difference between the earliest available date in ibkr and the earliest date in the local db  
             print(minDate_symbolHistory.iloc[0]['MIN(date)'])
@@ -108,13 +109,15 @@ def _updateLookup_symbolRecords(conn, tablename, numMissingDays = 5, earliestTim
         minDate_symbolHistory['name'] = tablename
         
         ## rename columns to match db table columns 
-        minDate_symbolHistory.rename(columns={'MIN(date)':'earliestRecordDate'}, inplace=True)
+        minDate_symbolHistory.rename(columns={'MIN(date)':'firstRecordDate'}, inplace=True)
         minDate_symbolHistory = minDate_symbolHistory.iloc[:,[4,1,2,0,3]]
       
         ## save record to db
         minDate_symbolHistory.to_sql(f"{lookupTablename}", conn, index=False, if_exists='append')
     
     ## otherwise update the existing record 
+    else: 
+        print('poot!')
 
 """
 Save history to a sqlite3 database
@@ -144,17 +147,6 @@ def saveHistoryToDB(history, conn, earliestTimestamp=''):
 
     ## make sure the records lookup table is kept updated
     _updateLookup_symbolRecords(conn, tableName, earliestTimestamp=earliestTimestamp)
-
-    ## Update the symbolRecord lookup table 
-    # table name: 00-lookup_symbolRecords
-    # query db for tablename 
-    #   if no record
-    #       add record
-    #       add record.earliestTimestamp_ibkr
-    #   if record is there 
-    #       if record.startDate > history.min 
-    #           update startDate -> history.min
-    #           update numMissingBusDays to  
 
 """
 Returns dataframe of px from database 
