@@ -183,7 +183,7 @@ def updateIndexHistory(index, indicesWithOutdatedData= pd.DataFrame(), newlyAdde
     missingIntervals = pd.DataFrame()
     missingIntervals = getMissingIntervals(index, type='index')
  
-    ## if we have any missing data to update, establish connection with IBKR  
+    ## if we have any missing data to update, establish connection with IBKR and local db
     if (not indicesWithOutdatedData.empty) or ( not newlyAddedIndices.empty) or (len(missingIntervals) > 0):
         print('[yellow]Updates pending...[/yellow]\n')
 
@@ -198,7 +198,9 @@ def updateIndexHistory(index, indicesWithOutdatedData= pd.DataFrame(), newlyAdde
         except:
             print('[red]  Could not connect with local DB "%s"![/red]\n'%(_dbName_index))
     
+    ##
     ## update missing intervals if we have any 
+    ##
     if len(missingIntervals) > 0: 
         print('[yellow]Some records have missing intervals, updating...[/yellow]')
         for item in missingIntervals:
@@ -217,8 +219,10 @@ def updateIndexHistory(index, indicesWithOutdatedData= pd.DataFrame(), newlyAdde
             db.saveHistoryToDB(history, conn, earliestTimestamp=earliestTimestamp)
 
             print('[red]Missing interval[/red] %s-%s...[red]updated![/red]\n'%(_tkr, _intvl))
-
+    
+    ##
     ## update symbols with outdated records 
+    ##
     if not indicesWithOutdatedData.empty:
         print('\n[yellow]Outdated records found. Updating...[/yellow]')
         pd.to_datetime(indicesWithOutdatedData['lastUpdateDate'])
@@ -226,7 +230,6 @@ def updateIndexHistory(index, indicesWithOutdatedData= pd.DataFrame(), newlyAdde
         ## regex to add a space between any non-digit and digit (adds a space to interval column)
         indicesWithOutdatedData['interval'] = indicesWithOutdatedData['interval'].apply(lambda x: re.sub(r'(?<=\d)(?=[a-z])', ' ', x))
 
-        print(indicesWithOutdatedData)
         # Iterate through records with missing data and update the local 
         # database with the latest available data from ibkr
         for index, row in indicesWithOutdatedData.iterrows():            
@@ -239,18 +242,15 @@ def updateIndexHistory(index, indicesWithOutdatedData= pd.DataFrame(), newlyAdde
             history['interval'] = row['interval'].replace(' ', '')
             
             ## save history to db 
-            #db.saveHistoryToDB(history, conn)
-            print(history['date'].min())
-            print(history['date'].max())
-            print(row['daysSinceLastUpdate'])
-            print(row['lastUpdateDate'])
-            print(history)
-            print('%s-%s...[red]updated![/red]\n'%(row['ticker'], row['interval']))
+            db.saveHistoryToDB(history, conn)
+            print('%s-%s...[green]updated![/green]\n'%(row['ticker'], row['interval']))
                 
     else: 
         print('\n[green]Existing records are up to date...[/green]')
 
+    ##
     ## add records for symbols newly added to the watchlist 
+    ##
     if not newlyAddedIndices.empty:
         print('\n[blue]%s new indicies found[/blue], adding to db...'%(newlyAddedIndices['ticker'].count()))
 
@@ -435,7 +435,7 @@ def updateRecords(updateThresholdDays = 5):
     # update history in local DB 
     updateIndexHistory(records, symbolsWithOutdatedData, newlyAddedSymbols)
 
-    print(records)
+    print(getRecords())
 
 """
 Refreshes the lookup_symbolRecords table with the latest data 
@@ -481,8 +481,8 @@ def refreshLookupTable():
         ## save to db replacing existing (outdated) records 
         merged.to_sql(f"{lookupTableName}", db._connectToDb(), index=False, if_exists='replace')
 
-#updateRecords()
-refreshLookupTable()
+updateRecords()
+#refreshLookupTable()
 
 """updateRecords()
 try:
