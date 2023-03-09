@@ -13,3 +13,7 @@ Basic structure:
  - localDbInterface: manages connections and operations on the local store of symbol data 
  - ibkr_gethistoricalData: manages operations on the ibkr api 
  - qt_getHistoricalData: core script that keeps locally available data up-to-date
+ 
+ Functions in progress: 
+ - analysis: seasonal analysis plots 
+ - backtest: early experimentation of backtesting functionality 
