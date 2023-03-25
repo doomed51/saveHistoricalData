@@ -82,7 +82,7 @@ Params
 tablename: table that needs to be updated 
 numMissingDays: number of days we do not have locally  
 """
-def _updateLookup_symbolRecords(conn, tablename, numMissingDays = 5, earliestTimestamp = ''):
+def _updateLookup_symbolRecords(conn, tablename, earliestTimestamp, numMissingDays = 5):
     lookupTablename = '00-lookup_symbolRecords'
     
     ## get the earliest record date saved for the target symbol 
@@ -101,8 +101,7 @@ def _updateLookup_symbolRecords(conn, tablename, numMissingDays = 5, earliestTim
         if not earliestTimestamp:
             ## set missing business days to the difference between the earliest available date in ibkr and the earliest date in the local db  
             print(minDate_symbolHistory.iloc[0]['MIN(date)'])
-            print(earliestTimestamp)
-            defaultNumMissingDays = len(pd.bdate_range(earliestTimestamp, minDate_symbolHistory.iloc[0]['MIN(date)']))
+            numMissingDays = len(pd.bdate_range(earliestTimestamp, minDate_symbolHistory.iloc[0]['MIN(date)']))
 
         ## add missing columns 
         minDate_symbolHistory['numMissingBusinessDays'] = numMissingDays
@@ -146,7 +145,8 @@ def saveHistoryToDB(history, conn, earliestTimestamp=''):
     _removeDuplicates(tableName)
 
     ## make sure the records lookup table is kept updated
-    _updateLookup_symbolRecords(conn, tableName, earliestTimestamp=earliestTimestamp)
+    if earliestTimestamp:
+        _updateLookup_symbolRecords(conn, tableName, earliestTimestamp=earliestTimestamp)
 
 """
 Returns dataframe of px from database 
