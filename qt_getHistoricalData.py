@@ -173,15 +173,50 @@ def getLastUpdateDate(sqlConn, symbol, interval, type):
     return lastDate
 
 """
-update history for indices
- updateIndexHistory(index, indicesWithOutdatedData, newlyAddedIndices)
+Root function that will check the the watchlist and update all records in the local db
+--
+inputs: 
+    tickerlist.csv -> list of tickers to keep track of(Note: only for adding new symbols 
+        to keep track of. existing records will be kept up to date by default) 
+    updateThresholdDays.int -> only updates records that are older than this number of days
 """
-def updateIndexHistory(index, indicesWithOutdatedData= pd.DataFrame(), newlyAddedIndices  = pd.DataFrame()):
-    print('checking if index records need updating')
+def updateRecords(updateThresholdDays = 5):
+
+    #### check for new tickers 
+    # read in tickerlist.txt
+    symbolList = pd.read_csv(_tickerFilepath)
+
+    ## convert to dataframe, and cleanup  
+    symbolList = pd.DataFrame(symbolList.columns).reset_index(drop=True)
+    symbolList.rename(columns={0:'ticker'}, inplace=True)
+    symbolList['ticker'] = symbolList['ticker'].str.strip(' ').str.upper()
+    symbolList.sort_values(by=['ticker'], inplace=True)
+
+    # merge into master records list 
+    records = getRecords()
+
+    if not records.empty: ## if database contains some records, check if any need to be updated
+        symbolsWithOutdatedData = records.loc[records['daysSinceLastUpdate'] >= updateThresholdDays]
+        newlyAddedSymbols = symbolList[~symbolList['ticker'].isin(records['ticker'])]
+
+    # update history in local DB 
+    updateRecordHistory(records, symbolsWithOutdatedData, newlyAddedSymbols)
+
+    print(getRecords())
+
+"""
+Updates record history managing multiple scenarios:
+    1. New symbols added to tickerlist.csv
+    2. Existing symbols in tickerlist.csv that have not been updated in a while
+    3. Existing symbols in tickerlist.csv that have missing intervals
+ 
+"""
+def updateRecordHistory(records, indicesWithOutdatedData= pd.DataFrame(), newlyAddedIndices  = pd.DataFrame()):
+    print('checking if records records need updating')
 
     ## get a list of missing intervals if any 
     missingIntervals = pd.DataFrame()
-    missingIntervals = getMissingIntervals(index, type='index')
+    missingIntervals = getMissingIntervals(records, type='index')
  
     ## if we have any missing data to update, establish connection with IBKR and local db
     if (not indicesWithOutdatedData.empty) or ( not newlyAddedIndices.empty) or (len(missingIntervals) > 0):
@@ -198,56 +233,6 @@ def updateIndexHistory(index, indicesWithOutdatedData= pd.DataFrame(), newlyAdde
         except:
             print('[red]  Could not connect with local DB "%s"![/red]\n'%(_dbName_index))
     
-    ##
-    ## update missing intervals if we have any 
-    ##
-    if len(missingIntervals) > 0: 
-        print('[yellow]Some records have missing intervals, updating...[/yellow]')
-        for item in missingIntervals:
-            [_tkr, _intvl] = item.split('-')
-            if ( _intvl in ['5 mins', '15 mins']):
-                history = ib.getBars(ibkr, symbol=_tkr,lookback='100 D', interval=_intvl )
-            
-            elif (_intvl in ['30 mins', '1 day']):
-                history = ib.getBars(ibkr, symbol=_tkr,lookback='365 D', interval=_intvl )
-
-            history['interval'] = _intvl.replace(' ', '')
-
-            ## get earliest record available froms ibkr
-            earliestTimestamp = ib.getEarliestTimeStamp(ibkr, symbol=newIndex)
-            
-            db.saveHistoryToDB(history, conn, earliestTimestamp=earliestTimestamp)
-
-            print('[red]Missing interval[/red] %s-%s...[red]updated![/red]\n'%(_tkr, _intvl))
-    
-    ##
-    ## update symbols with outdated records 
-    ##
-    if not indicesWithOutdatedData.empty:
-        print('\n[yellow]Outdated records found. Updating...[/yellow]')
-        pd.to_datetime(indicesWithOutdatedData['lastUpdateDate'])
-
-        ## regex to add a space between any non-digit and digit (adds a space to interval column)
-        indicesWithOutdatedData['interval'] = indicesWithOutdatedData['interval'].apply(lambda x: re.sub(r'(?<=\d)(?=[a-z])', ' ', x))
-
-        # Iterate through records with missing data and update the local 
-        # database with the latest available data from ibkr
-        for index, row in indicesWithOutdatedData.iterrows():            
-            ## Add column with number of business days that need updating (curr date - last record)
-            
-            ## get history from ibkr 
-            history = ib.getBars(ibkr, symbol=row['ticker'], lookback='%s D'%(row['daysSinceLastUpdate']), interval=row['interval']) 
-            
-            ## add interval column for easier lookup 
-            history['interval'] = row['interval'].replace(' ', '')
-            
-            ## save history to db 
-            db.saveHistoryToDB(history, conn)
-            print('%s-%s...[green]updated![/green]\n'%(row['ticker'], row['interval']))
-                
-    else: 
-        print('\n[green]Existing records are up to date...[/green]')
-
     ##
     ## add records for symbols newly added to the watchlist 
     ##
@@ -277,6 +262,57 @@ def updateIndexHistory(index, indicesWithOutdatedData= pd.DataFrame(), newlyAdde
                 db.saveHistoryToDB(history, conn, earliestTimestamp=earliestTimestamp)
 
                 print(' New record Added for %s-%s..from %s to %s'%(newIndex, _intvl, history['date'].min(), history['date'].max()))
+
+    ##
+    ## update symbols with outdated records 
+    ##
+    if not indicesWithOutdatedData.empty:
+        print('\n[yellow]Outdated records found. Updating...[/yellow]')
+        pd.to_datetime(indicesWithOutdatedData['lastUpdateDate'])
+
+        ## regex to add a space between any non-digit and digit (adds a space to interval column)
+        indicesWithOutdatedData['interval'] = indicesWithOutdatedData['interval'].apply(lambda x: re.sub(r'(?<=\d)(?=[a-z])', ' ', x))
+
+        # Iterate through records with missing data and update the local 
+        # database with the latest available data from ibkr
+        for index, row in indicesWithOutdatedData.iterrows():            
+            ## Add column with number of business days that need updating (curr date - last record)
+            
+            ## get history from ibkr 
+            history = ib.getBars(ibkr, symbol=row['ticker'], lookback='%s D'%(row['daysSinceLastUpdate']), interval=row['interval']) 
+            
+            ## add interval column for easier lookup 
+            history['interval'] = row['interval'].replace(' ', '')
+            
+            ## save history to db 
+            db.saveHistoryToDB(history, conn)
+            print('%s-%s...[green]updated![/green]\n'%(row['ticker'], row['interval']))
+
+    ##
+    ## update missing intervals if we have any 
+    ##
+    if len(missingIntervals) > 0: 
+        print('[yellow]Some records have missing intervals, updating...[/yellow]')
+        for item in missingIntervals:
+            [_tkr, _intvl] = item.split('-')
+            if ( _intvl in ['5 mins', '15 mins']):
+                history = ib.getBars(ibkr, symbol=_tkr,lookback='100 D', interval=_intvl )
+            
+            elif (_intvl in ['30 mins', '1 day']):
+                history = ib.getBars(ibkr, symbol=_tkr,lookback='365 D', interval=_intvl )
+
+            history['interval'] = _intvl.replace(' ', '')
+
+            ## get earliest record available froms ibkr
+            earliestTimestamp = ib.getEarliestTimeStamp(ibkr, symbol=newIndex)
+            
+            db.saveHistoryToDB(history, conn, earliestTimestamp=earliestTimestamp)
+
+            print('[red]Missing interval[/red] %s-%s...[red]updated![/red]\n'%(_tkr, _intvl))
+                
+    else: 
+        print('\n[green]Existing records are up to date...[/green]')
+
                 
 """
 Returns a list of symbol-interval combos that are missing from the local database 
@@ -286,20 +322,16 @@ records: [Dataframe] of getRecords()
 """
 def getMissingIntervals(records, type = 'stock'):
     
-    if type == 'stock':
-        myIntervals = intervals_stock
-    elif type == 'index':
-        myIntervals=intervals_index
     numRecordsPerSymbol = records.groupby(by='ticker').count()
 
     # each symbol where count < interval.count
     symbolsWithMissingIntervals = numRecordsPerSymbol.loc[
-        numRecordsPerSymbol['name'] < len(myIntervals)].reset_index()['ticker'].unique()
+        numRecordsPerSymbol['name'] < len(intervals_index)].reset_index()['ticker'].unique()
 
     ## find missing symbol-interval combos
     missingCombos = []
     for symbol in symbolsWithMissingIntervals:
-        for interval in myIntervals:
+        for interval in intervals_index:
             myRecord = records.loc[
                 (records['ticker'] == symbol) & (records['interval'] == interval)
             ]
@@ -403,39 +435,6 @@ def update200():
         
 
     ibkr.disconnect()
-
-
-"""
-Core function that will update all records in the local db
---
-inputs: 
-    tickerlist.csv -> list of tickers to keep track of(Note: only for adding new symbols 
-        to keep track of. existing records will be kept up to date by default) 
-    updateThresholdDays.int -> number of days before records are updated
-"""
-def updateRecords(updateThresholdDays = 5):
-
-    #### check for new tickers 
-    # read in tickerlist.txt
-    symbolList = pd.read_csv(_tickerFilepath)
-
-    ## convert to dataframe, and cleanup  
-    symbolList = pd.DataFrame(symbolList.columns).reset_index(drop=True)
-    symbolList.rename(columns={0:'ticker'}, inplace=True)
-    symbolList['ticker'] = symbolList['ticker'].str.strip(' ').str.upper()
-    symbolList.sort_values(by=['ticker'], inplace=True)
-
-    # merge into master records list 
-    records = getRecords()
-
-    if not records.empty: ## if database contains some records, check if any need to be updated
-        symbolsWithOutdatedData = records.loc[records['daysSinceLastUpdate'] >= updateThresholdDays]
-        newlyAddedSymbols = symbolList[~symbolList['ticker'].isin(records['ticker'])]
-
-    # update history in local DB 
-    updateIndexHistory(records, symbolsWithOutdatedData, newlyAddedSymbols)
-
-    print(getRecords())
 
 """
 Refreshes the lookup_symbolRecords table with the latest data 
