@@ -201,11 +201,20 @@ def updateRecords(updateThresholdDays = 5):
 
     # update history in local DB 
     updateRecordHistory(records, symbolsWithOutdatedData, newlyAddedSymbols)
+    
+    update200()
 
-    print(getRecords())
+    # print updated records
+    updatedRecords = getRecords()
+    updatedRecords['numYearsOfHistory'] = updatedRecords.apply(lambda x: _countWorkdays(pd.to_datetime(x['firstRecordDate']), pd.to_datetime(x['lastUpdateDate']))/260, axis=1)
+    updatedRecords.drop(columns=['firstRecordDate', 'name'], inplace=True)
+
+    print('[green]---------------------------------- CURRENT RECORDS ----------------------------------[/green]')
+    print(updatedRecords)
+    print('[green]-------------------------------------------------------------------------------------[/green]')
 
 """
-Updates record history managing multiple scenarios:
+Updates record history handling the following scenarios:
     1. New symbols added to tickerlist.csv
     2. Existing symbols in tickerlist.csv that have not been updated in a while
     3. Existing symbols in tickerlist.csv that have missing intervals
@@ -368,52 +377,64 @@ __
 function is kinda half assed, but it does the job of grabbing missing older data 
 """
 def update200():
-    print('updating 200!\n')
+    print('')
+    print('[yellow]Updating pre-history...[/yellow]')
     
-    ## get local index records DF 
-    index = getRecords(type='index')
-    lookback = 30
+    ## get the lookup table
+    lookupTable = db.getLookup_symbolRecords()
+
+    # select records that have numMissingBusinessDays > 5 
+    index = lookupTable.loc[lookupTable['numMissingBusinessDays'] > 5].reset_index(drop=True)
+    if index.empty:
+        print('No records to update')
+        return
+
+    ## add a space in the interval column 
+    index['interval'] = index.apply(lambda x: _addspace(x['interval']), axis=1)
+    lookback = 30 # number of days to look back
+
+    ## connect to ibkr
     ibkr = setupConnection()
+
+    if not ibkr.isConnected():
+        print('[red]  Exiting!\n[/red]')
+        return
+    
+    ## connect to db
     try:
             conn = sqlite3.connect(_dbName_index)
     except:
         print('[red]Could not connect to DB![/red]\n')
 
-    ## get earliest available dates for list of indices 
-    pf = pd.DataFrame({'ticker':_indexList}) ## convert series into DF 
-    pf['firstAvailableRecord'] = pf.apply(lambda x: ib.getEarliestTimeStamp(ibkr, x['ticker'], 'USD', 'CBOE'), axis=1)
-
-    ## add the earliest record dates to the records DF  
-    merged = pd.merge(index, pf, how='left', on = 'ticker')
-    merged['workdays'] = merged.apply(lambda x: _countWorkdays(x['firstAvailableRecord'], x['firstRecordDate']), axis=1)
-    index = merged
-
     for index, row in index.iterrows():
-
-        ## skip if theres enough local history already 
-        if row['workdays'] < lookback:
-            continue
+        
+        ## set the number of iterations we want to with a lookback of 30 days 
+        if row['numMissingBusinessDays'] < lookback:
+            numIterations = 1
+        else:
+            # set numiterations to the min of 4 or row['numMissingBusinessDays']/lookback
+            numIterations = min(4, int(row['numMissingBusinessDays']/lookback))
 
         ## manual throttling of api requests 
         if index > 0:
-            print('Pausing before next round....%s-%s\n'%(row['ticker'], row['interval']))
+            print('Pausing before next round....%s-%s\n'%(row['symbol'], row['interval']))
             time.sleep(45)
         
-        print('%s-%s[yellow]....Updating[/yellow]'%(row['ticker'], row['interval']))
+        print('%s-%s[yellow]....Updating[/yellow]'%(row['symbol'], row['interval']))
 
         # initiate 'enddate from the last time history was updated
         endDate = datetime.datetime.strptime(row['firstRecordDate'][:10], '%Y-%m-%d')-pd.offsets.BDay(1)
         endDate = endDate.replace(hour = 20)
-        i=0
-
+        
         ## initiate the history datafram that will hold the retrieved bars 
         history = pd.DataFrame()
 
         ## append records to history dataframe while days to update remain
-        while i < 4:
+        i=0
+        while i < numIterations:
             i+=1
             ## concatenate history retrieved from ibkr 
-            history = pd.concat([history, ib.getBars(ibkr, symbol=row['ticker'], lookback='%s D'%lookback, interval=row['interval'], endDate=endDate)], ignore_index=True)
+            history = pd.concat([history, ib.getBars(ibkr, symbol=row['symbol'], lookback='%s D'%lookback, interval=row['interval'], endDate=endDate)], ignore_index=True)
             
             ## update enddate for the next iteration
             endDate = endDate - pd.offsets.BDay(lookback - 1)
@@ -426,10 +447,10 @@ def update200():
         history['interval'] = row['interval'].replace(' ', '')
 
         ## save history to db 
-        saveHistoryToDB(history, conn, 'index')
+        db.saveHistoryToDB(history, conn)
         
         ## print logging info & reset history df 
-        print(' %s-%s[green]...Updated![/green]'%(row['ticker'], row['interval']))
+        print(' %s-%s[green]...Updated![/green]'%(row['symbol'], row['interval']))
         print(' from %s to %s\n'%(history['date'].min(), history['date'].max()))
         history = pd.DataFrame()
         
@@ -454,7 +475,7 @@ def refreshLookupTable():
     ## merge with records table... 
     records_withEarliestAvailableDate = pd.merge(records, uniqueRecordSymbols, how='left', on='ticker')
     
-    ## compute the number of missing records in num days 
+    ## compute the number of missing business days
     records_withEarliestAvailableDate['numMissingBusinessDays'] =  records_withEarliestAvailableDate.apply(lambda x: _countWorkdays(x['earliestAvailableTimestamp'], x['firstRecordDate']), axis=1)
     
     ## select columns to match the records table in the db 
@@ -464,14 +485,12 @@ def refreshLookupTable():
     records_forInput = records_forInput.rename({'ticker':'symbol'}, axis=1)
     records_forInput['interval'] = records_forInput['interval'].str.replace(' ', '')
 
+    # get the lookup table from db
     symbolRecords = db.getLookup_symbolRecords()
 
     ## merge them 
     merged = pd.merge(records_forInput, symbolRecords[['name', 'numMissingBusinessDays']], how='outer', on='name')
     
-    ## select just the records that don't match
-    merged = merged.loc[merged['numMissingBusinessDays_x'] != merged['numMissingBusinessDays_y']].reset_index(drop=True)  
-
     if not merged.empty:
         ## drop unneeded col's and rename cols following db table conventions 
         merged.drop(inplace=True, columns=['numMissingBusinessDays_y'])
@@ -482,45 +501,3 @@ def refreshLookupTable():
 
 updateRecords()
 #refreshLookupTable()
-
-"""updateRecords()
-try:
-        ibkr = IB() 
-        ibkr.connect('127.0.0.1', 7496, clientId = 10)
-        conn = sqlite3.connect(_dbName_index)
-except:
-    print('[red]Could not connect with IBKR![/red]\n')
-
-tlt = ib.getBars(ibkr=ibkr, symbol='SPY', interval = '5 mins')
-print(tlt)
-print(ib.getEarliestTimeStamp(ibkr=ibkr, symbol='SPY'))"""
-
-## section below is to update older data and view index records + date range available 
-"""masterloop = 0
-
-while masterloop < 2:
-    print('[green]Sstarting iteration...%s[/green]\n'%(masterloop))
-    #update200()
-    masterloop += 1
-    #time.sleep(300)
-
-try:
-        ibkr = IB() 
-        ibkr.connect('127.0.0.1', 7496, clientId = 10)
-        conn = sqlite3.connect(_dbName_index)
-except:
-    print('[red]Could not connect with IBKR![/red]\n')
-
-index = getRecords(type='index')
-
-# get earliest available dates for list of indices 
-pf = pd.DataFrame({'ticker':_indexList})
-pf['firstAvailableRecord'] = pf.apply(lambda x: ib.getEarliestTimeStamp(ibkr, x['ticker'], 'USD', 'CBOE'), axis=1)
-#pf['firstAvailableRecord'] = pf.apply(lambda x: x)
-
-merged = pd.merge(index, pf, how='left', on = 'ticker')
-merged['workdays'] = merged.apply(lambda x: _countWorkdays(x['firstAvailableRecord'], x['firstRecordDate']), axis=1)
-
-print(index)
-print(pf)
-print(merged)"""
