@@ -99,8 +99,7 @@ def _updateLookup_symbolRecords(conn, tablename, earliestTimestamp, numMissingDa
         ## since this is a new record, we expect a timestamp to have been 
         ## passed on the call to write history to the db 
         if not earliestTimestamp:
-            ## set missing business days to the difference between the earliest available date in ibkr and the earliest date in the local db  
-            print(minDate_symbolHistory.iloc[0]['MIN(date)'])
+            ## set missing business days to the difference between the earliest available date in ibkr and the earliest date in the local db
             numMissingDays = len(pd.bdate_range(earliestTimestamp, minDate_symbolHistory.iloc[0]['MIN(date)']))
 
         ## add missing columns 
@@ -114,9 +113,15 @@ def _updateLookup_symbolRecords(conn, tablename, earliestTimestamp, numMissingDa
         ## save record to db
         minDate_symbolHistory.to_sql(f"{lookupTablename}", conn, index=False, if_exists='append')
     
-    ## otherwise update the existing record 
-    else: 
+    ## otherwise update the existing record
+    elif minDate_symbolHistory['MIN(date)'][0] < minDate_recordsTable['firstRecordDate'][0]:
+        ## update lookuptable with the symbolhistory min date
+        sql_update = 'UPDATE \'%s\' SET firstRecordDate = \'%s\' WHERE symbol = \'%s\' and interval = \'%s\''%(lookupTablename, minDate_symbolHistory['MIN(date)'][0], minDate_symbolHistory['symbol'][0], minDate_symbolHistory['interval'][0]) 
+        cursor = conn.cursor()
+        cursor.execute(sql_update)
+
         print('poot!')
+
 
 """
 Save history to a sqlite3 database
@@ -145,8 +150,8 @@ def saveHistoryToDB(history, conn, earliestTimestamp=''):
     _removeDuplicates(tableName)
 
     ## make sure the records lookup table is kept updated
-    if earliestTimestamp:
-        _updateLookup_symbolRecords(conn, tableName, earliestTimestamp=earliestTimestamp)
+    #if earliestTimestamp:
+    _updateLookup_symbolRecords(conn, tableName, earliestTimestamp=earliestTimestamp)
 
 """
 Returns dataframe of px from database 
