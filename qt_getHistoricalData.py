@@ -44,7 +44,7 @@ _dbName_index = 'historicalData_index.db'
 
 """Tracked intervals for indices
     Note: String format is specific to ibkr"""
-intervals_index = ['5 mins', '15 mins', '30 mins', '1 day']
+intervals_index = ['1 min', '5 mins', '15 mins', '30 mins', '1 day']
 
 ## global vars
 _indexList = ['VIX', 'VIX3M', 'VVIX']
@@ -199,10 +199,18 @@ def updateRecords(updateThresholdDays = 5):
         symbolsWithOutdatedData = records.loc[records['daysSinceLastUpdate'] >= updateThresholdDays]
         newlyAddedSymbols = symbolList[~symbolList['ticker'].isin(records['ticker'])]
 
-    # update history in local DB 
-    updateRecordHistory(records, symbolsWithOutdatedData, newlyAddedSymbols)
+    try:
+        ibkr = setupConnection()
+    except:
+        print('[red] Could not connect to IBKR[/red]')
+        return
     
-    update200()
+    # update history in local DB 
+    updateRecordHistory(ibkr, records, symbolsWithOutdatedData, newlyAddedSymbols)
+    
+    updatePreHistoricData(ibkr)
+
+    if ibkr: ibkr.disconnect()
 
     # print updated records
     updatedRecords = getRecords()
@@ -220,7 +228,7 @@ Updates record history handling the following scenarios:
     3. Existing symbols in tickerlist.csv that have missing intervals
  
 """
-def updateRecordHistory(records, indicesWithOutdatedData= pd.DataFrame(), newlyAddedIndices  = pd.DataFrame()):
+def updateRecordHistory(ibkr, records, indicesWithOutdatedData= pd.DataFrame(), newlyAddedIndices  = pd.DataFrame()):
     print('checking if records records need updating')
 
     ## get a list of missing intervals if any 
@@ -230,9 +238,6 @@ def updateRecordHistory(records, indicesWithOutdatedData= pd.DataFrame(), newlyA
     ## if we have any missing data to update, establish connection with IBKR and local db
     if (not indicesWithOutdatedData.empty) or ( not newlyAddedIndices.empty) or (len(missingIntervals) > 0):
         print('[yellow]Updates pending...[/yellow]\n')
-
-        ## connect with IBKR
-        ibkr = setupConnection()
 
         ## connect with local DB 
         try:
@@ -307,20 +312,23 @@ def updateRecordHistory(records, indicesWithOutdatedData= pd.DataFrame(), newlyA
             if ( _intvl in ['5 mins', '15 mins']):
                 history = ib.getBars(ibkr, symbol=_tkr,lookback='100 D', interval=_intvl )
             
+            elif ( _intvl in ['1 min']):
+                history = ib.getBars(ibkr, symbol=_tkr,lookback='10 D', interval=_intvl )
+            
             elif (_intvl in ['30 mins', '1 day']):
                 history = ib.getBars(ibkr, symbol=_tkr,lookback='365 D', interval=_intvl )
 
             history['interval'] = _intvl.replace(' ', '')
 
             ## get earliest record available froms ibkr
-            earliestTimestamp = ib.getEarliestTimeStamp(ibkr, symbol=newIndex)
-            
+            earliestTimestamp = ib.getEarliestTimeStamp(ibkr, symbol=_tkr)
             db.saveHistoryToDB(history, conn, earliestTimestamp=earliestTimestamp)
 
             print('[red]Missing interval[/red] %s-%s...[red]updated![/red]\n'%(_tkr, _intvl))
                 
     else: 
         print('\n[green]Existing records are up to date...[/green]')
+    
 
                 
 """
@@ -372,14 +380,21 @@ def getRecords():
     return tables
 
 """"
-Saves <lookback> number of days of historical data to local db 
+Updates a chunk of pre-histric data for existing records  
 __
-function is kinda half assed, but it does the job of grabbing missing older data 
+Logic:
+0. get records from the lookup table
+1. Select records with numMissingBusinessDays > 5
+2. Get history from ibkr
+3. Save history to db
+
+
 """
-def update200():
+def updatePreHistoricData(ibkr):
     print('')
     print('[yellow]Updating pre-history...[/yellow]')
-    
+    lookback = 30 # number of days to look back
+
     ## get the lookup table
     lookupTable = db.getLookup_symbolRecords()
 
@@ -391,14 +406,6 @@ def update200():
 
     ## add a space in the interval column 
     index['interval'] = index.apply(lambda x: _addspace(x['interval']), axis=1)
-    lookback = 30 # number of days to look back
-
-    ## connect to ibkr
-    ibkr = setupConnection()
-
-    if not ibkr.isConnected():
-        print('[red]  Exiting!\n[/red]')
-        return
     
     ## connect to db
     try:
@@ -406,31 +413,38 @@ def update200():
     except:
         print('[red]Could not connect to DB![/red]\n')
 
+    # loop thr each reccord in the lookup table
     for index, row in index.iterrows():
         
-        ## set the number of iterations we want to with a lookback of 30 days 
+        ## if the interval is 1 min reduce lookback to 10, otherwise use 30
+        if row['interval'] == '1 min':
+            lookback = 10
+        else:
+            lookback = 30
+
+        ## set the number of iterations we want depending on how much missing data there is  
         if row['numMissingBusinessDays'] < lookback:
             numIterations = 1
         else:
             # set numiterations to the min of 4 or row['numMissingBusinessDays']/lookback
             numIterations = min(4, int(row['numMissingBusinessDays']/lookback))
 
-        ## manual throttling of api requests 
+        ## manual throttling of api requests after the first record (index 0)
         if index > 0:
             print('Pausing before next round....%s-%s\n'%(row['symbol'], row['interval']))
             time.sleep(45)
         
         print('%s-%s[yellow]....Updating[/yellow]'%(row['symbol'], row['interval']))
 
-        # initiate 'enddate from the last time history was updated
+        # initiate 'enddate from the last time history was updated, manually set hour 
+        # to end of day so no data is missed (duplicated are handled later)
         endDate = datetime.datetime.strptime(row['firstRecordDate'][:10], '%Y-%m-%d')-pd.offsets.BDay(1)
         endDate = endDate.replace(hour = 20)
         
         ## initiate the history datafram that will hold the retrieved bars 
         history = pd.DataFrame()
 
-        ## append records to history dataframe while days to update remain
-        i=0
+        i=0 # good ol' loop counter 
         while i < numIterations:
             i+=1
             ## concatenate history retrieved from ibkr 
@@ -442,7 +456,8 @@ def update200():
             
             ## manual throttling of api requests 
             time.sleep(5)
-        
+        if history.empty:
+            next
         ## add interval column for easier lookup 
         history['interval'] = row['interval'].replace(' ', '')
 
@@ -454,8 +469,6 @@ def update200():
         print(' from %s to %s\n'%(history['date'].min(), history['date'].max()))
         history = pd.DataFrame()
         
-
-    ibkr.disconnect()
 
 """
 Refreshes the lookup_symbolRecords table with the latest data 
@@ -498,6 +511,34 @@ def refreshLookupTable():
         
         ## save to db replacing existing (outdated) records 
         merged.to_sql(f"{lookupTableName}", db._connectToDb(), index=False, if_exists='replace')
+    
+    if ibkr: ibkr.disconnect()
 
-updateRecords()
-#refreshLookupTable()
+"""
+function that calls updatePreHistoricData over the course of a night, pausing for 5 minutes between each iteration 
+"""
+def bulkUpdate():
+    # check if the time is between 10pm and 4am eastern time
+    #if datetime.datetime.now().hour < 22 or datetime.datetime.now().hour > 4:
+    #    print('[red]Not between 10pm and 4am eastern time. Exiting...[/red]')
+    #    return
+    #print('[yellow]Starting overnight update...[/yellow]')
+    
+    #while datetime.datetime.now().hour > 22 and datetime.datetime.now().hour < 4:
+
+    ## connect to ibkr
+    ibkr = setupConnection()
+
+    if not ibkr.isConnected():
+        print('[red]  Exiting!\n[/red]')
+        return
+    
+    i=0
+    while i < 10:
+        i=i+1
+        updatePreHistoricData(ibkr)
+        time.sleep(300)
+
+#updateRecords()
+bulkUpdate()
+refreshLookupTable()
