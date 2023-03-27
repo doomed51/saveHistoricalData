@@ -98,7 +98,8 @@ def _updateLookup_symbolRecords(conn, tablename, earliestTimestamp, numMissingDa
         ## compute the number of missing business days 
         ## since this is a new record, we expect a timestamp to have been 
         ## passed on the call to write history to the db 
-        if not earliestTimestamp:
+                
+        if earliestTimestamp:
             ## set missing business days to the difference between the earliest available date in ibkr and the earliest date in the local db
             numMissingDays = len(pd.bdate_range(earliestTimestamp, minDate_symbolHistory.iloc[0]['MIN(date)']))
 
@@ -119,8 +120,6 @@ def _updateLookup_symbolRecords(conn, tablename, earliestTimestamp, numMissingDa
         sql_update = 'UPDATE \'%s\' SET firstRecordDate = \'%s\' WHERE symbol = \'%s\' and interval = \'%s\''%(lookupTablename, minDate_symbolHistory['MIN(date)'][0], minDate_symbolHistory['symbol'][0], minDate_symbolHistory['interval'][0]) 
         cursor = conn.cursor()
         cursor.execute(sql_update)
-
-        print('poot!')
 
 
 """
@@ -192,9 +191,6 @@ Returns the lookup table fo records history as df
 """
 def getLookup_symbolRecords():
     conn = _connectToDb()
-
     sqlStatement_selectRecordsTable = 'SELECT * FROM \'00-lookup_symbolRecords\''
-
     symbolRecords = pd.read_sql(sqlStatement_selectRecordsTable, conn)
-
     return symbolRecords
