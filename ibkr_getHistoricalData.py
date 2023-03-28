@@ -72,4 +72,6 @@ def getEarliestTimeStamp(ibkr, symbol='SPX', currency='USD'):
     else:
         contract = Stock(symbol, 'SMART', currency)
     earliestTS = ibkr.reqHeadTimeStamp(contract, useRTH=False, whatToShow='TRADES')
-    return earliestTS
+
+    # return earliest timestamp in datetime format
+    return pd.to_datetime(earliestTS)
