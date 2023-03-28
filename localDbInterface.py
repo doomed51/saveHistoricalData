@@ -193,4 +193,6 @@ def getLookup_symbolRecords():
     conn = _connectToDb()
     sqlStatement_selectRecordsTable = 'SELECT * FROM \'00-lookup_symbolRecords\''
     symbolRecords = pd.read_sql(sqlStatement_selectRecordsTable, conn)
+    # convert firstRecordDate column to datetime
+    symbolRecords['firstRecordDate'] = pd.to_datetime(symbolRecords['firstRecordDate'])
     return symbolRecords
