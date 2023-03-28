@@ -418,19 +418,26 @@ def updatePreHistoricData(ibkr):
 
     # loop thr each reccord in the lookup table
     for index, row in index.iterrows():
-        
-        ## if the interval is 1 min reduce lookback to 10, otherwise use 30
-        if row['interval'] == '1 min':
+        ## get earliest timestamp from ibkr
+        earliestAvailableTimestamp = ib.getEarliestTimeStamp(ibkr, row['symbol'])
+        numIterations = 4 #number of subsequent calls to ibkr for the same sybol-interval combo
+
+        ## set the lookback based on the history left in ibkr or the interval,
+        ## whichever is the more limiting factor
+        if (lookback > (row['firstRecordDate'] - earliestAvailableTimestamp).days):
+            lookback = (row['firstRecordDate'] - earliestAvailableTimestamp).days
+            numIterations = 1 # we only need one call to ibkr in this case since we have hit the max available data in ibkr
+        elif row['interval'] == '1 min':
             lookback = 10
         else:
             lookback = 30
 
-        ## set the number of iterations we want depending on how much missing data there is  
+        """## set the number of iterations we want depending on how much missing data there is  
         if row['numMissingBusinessDays'] < lookback:
             numIterations = 1
         else:
             # set numiterations to the min of 4 or row['numMissingBusinessDays']/lookback
-            numIterations = min(4, int(row['numMissingBusinessDays']/lookback))
+            numIterations = min(4, int(row['numMissingBusinessDays']/lookback))"""
 
         ## manual throttling of api requests after the first record (index 0)
         if index > 0:
@@ -441,7 +448,8 @@ def updatePreHistoricData(ibkr):
 
         # initiate 'enddate from the last time history was updated, manually set hour 
         # to end of day so no data is missed (duplicated are handled later)
-        endDate = datetime.datetime.strptime(row['firstRecordDate'][:10], '%Y-%m-%d')-pd.offsets.BDay(1)
+        #endDate = datetime.datetime.strptime(row['firstRecordDate'][:10], '%Y-%m-%d')-pd.offsets.BDay(1)
+        endDate = row['firstRecordDate']-pd.offsets.BDay(1)
         endDate = endDate.replace(hour = 20)
         
         ## initiate the history datafram that will hold the retrieved bars 
@@ -451,7 +459,7 @@ def updatePreHistoricData(ibkr):
         while i < numIterations:
             i+=1
             ##exit while loop when lookback is lager than the avilable days in ibkr 
-            if (endDate - ib.getEarliestTimeStamp(ibkr, row['symbol'])).days < lookback:
+            if (endDate - earliestAvailableTimestamp).days < lookback:
                 print('No more data available for %s-%s'%(row['symbol'], row['interval']))
                 break
         
@@ -547,6 +555,30 @@ def bulkUpdate():
         updatePreHistoricData(ibkr)
         time.sleep(300)
 
+refreshLookupTable()
 updateRecords()
 #bulkUpdate()
-refreshLookupTable()
+
+
+
+
+"""lookupTable = db.getLookup_symbolRecords()
+index = lookupTable.loc[lookupTable['numMissingBusinessDays'] > 5].reset_index(drop=True)
+
+## add a space in the interval column 
+index['interval'] = index.apply(lambda x: _addspace(x['interval']), axis=1)
+
+## connect to db
+try:
+        conn = sqlite3.connect(_dbName_index)
+except:
+    print('[red]Could not connect to DB![/red]\n')
+ibkr = setupConnection()
+# loop thr each reccord in the lookup table
+for index, row in index.iterrows():
+    ## get earliest timestamp from ibkr
+    earliestAvailableTimestamp = ib.getEarliestTimeStamp(ibkr, row['symbol'])
+
+    ## set the lookback based on the history left in ibkr or the interval,
+    ## whichever is the more limiting factor
+    print( (row['firstRecordDate'] - earliestAvailableTimestamp).days )"""
