@@ -17,3 +17,8 @@ Basic structure:
  Functions in progress: 
  - analysis: seasonal analysis plots 
  - backtest: early experimentation of backtesting functionality 
+
+How to use: 
+- populate tickerlist.csv with the symbols you want to track
+- open and login to IBKR TWS 
+- run qt_getHistoricalData 
