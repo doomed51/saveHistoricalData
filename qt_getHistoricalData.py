@@ -121,10 +121,10 @@ Returns ibkr connection object
 def setupConnection():
     ## connect with IBKR
     try:
-        print('[yellow] Connecting with IBKR...[/yellow]\n')
+        print('[yellow] Connecting with IBKR...[/yellow]')
         ibkr = IB() 
         ibkr.connect('127.0.0.1', 7496, clientId = 10)
-        print('[green]  Success![/green]\n')
+        print('[green]  Success![/green]')
     except:
         print('[red]  Could not connect with IBKR![/red]\n')
 
@@ -264,8 +264,11 @@ def updateRecordHistory(ibkr, records, indicesWithOutdatedData= pd.DataFrame(), 
                 elif (_intvl in ['30 mins', '1 day']):
                     lookback = 300
                 
+                elif (_intvl in ['1 min']):
+                    lookback = 15
+                
                 ## get history from ibkr 
-                print('%s - %s - %s'%(newIndex, _intvl, lookback))
+                print('Adding %s - %s interval - %s day lookback'%(newIndex, _intvl, lookback))
                 history = ib.getBars(ibkr, symbol=newIndex,lookback='%s D'%(lookback), interval=_intvl)
                 
                 ## get earliest record available for ibkr
@@ -275,7 +278,7 @@ def updateRecordHistory(ibkr, records, indicesWithOutdatedData= pd.DataFrame(), 
                 history['interval'] = _intvl.replace(' ', '')
                 db.saveHistoryToDB(history, conn, earliestTimestamp=earliestTimestamp)
 
-                print(' New record Added for %s-%s..from %s to %s'%(newIndex, _intvl, history['date'].min(), history['date'].max()))
+                print(' [green]Success![/green] New record Added for %s-%s..from %s to %s'%(newIndex, _intvl, history['date'].min(), history['date'].max()))
 
     ##
     ## update symbols with outdated records 
@@ -447,6 +450,11 @@ def updatePreHistoricData(ibkr):
         i=0 # good ol' loop counter 
         while i < numIterations:
             i+=1
+            ##exit while loop when lookback is lager than the avilable days in ibkr 
+            if (endDate - ib.getEarliestTimeStamp(ibkr, row['symbol'])).days < lookback:
+                print('No more data available for %s-%s'%(row['symbol'], row['interval']))
+                break
+        
             ## concatenate history retrieved from ibkr 
             history = pd.concat([history, ib.getBars(ibkr, symbol=row['symbol'], lookback='%s D'%lookback, interval=row['interval'], endDate=endDate)], ignore_index=True)
             
@@ -456,8 +464,7 @@ def updatePreHistoricData(ibkr):
             
             ## manual throttling of api requests 
             time.sleep(5)
-        if history.empty:
-            next
+
         ## add interval column for easier lookup 
         history['interval'] = row['interval'].replace(' ', '')
 
@@ -474,8 +481,8 @@ def updatePreHistoricData(ibkr):
 Refreshes the lookup_symbolRecords table with the latest data 
 uses live api connection 
 """
-def refreshLookupTable(): 
-    print('\n[yellow]Refreshing lookup table[/yellow]')
+def refreshLookupTable():
+    print('\n[red]Refreshing lookup table...[/red]')
     
     ibkr = setupConnection() ## to get earliest available timestamt
     lookupTableName = '00-lookup_symbolRecords' ##lookup table name in db 
@@ -513,6 +520,7 @@ def refreshLookupTable():
         merged.to_sql(f"{lookupTableName}", db._connectToDb(), index=False, if_exists='replace')
     
     if ibkr: ibkr.disconnect()
+    print('\n[green] Done![/green]')
 
 """
 function that calls updatePreHistoricData over the course of a night, pausing for 5 minutes between each iteration 
@@ -539,6 +547,6 @@ def bulkUpdate():
         updatePreHistoricData(ibkr)
         time.sleep(300)
 
-#updateRecords()
-bulkUpdate()
+updateRecords()
+#bulkUpdate()
 refreshLookupTable()
