@@ -402,7 +402,7 @@ def updatePreHistoricData(ibkr):
     lookupTable = db.getLookup_symbolRecords()
 
     # select records that have numMissingBusinessDays > 5 
-    index = lookupTable.loc[lookupTable['numMissingBusinessDays'] > 5].reset_index(drop=True)
+    index = lookupTable.loc[lookupTable['numMissingBusinessDays'] > 1].reset_index(drop=True)
     if index.empty:
         print('No records to update')
         return
@@ -550,35 +550,11 @@ def bulkUpdate():
         return
     
     i=0
-    while i < 10:
+    while i < 5:
         i=i+1
         updatePreHistoricData(ibkr)
         time.sleep(300)
 
 refreshLookupTable()
 updateRecords()
-#bulkUpdate()
-
-
-
-
-"""lookupTable = db.getLookup_symbolRecords()
-index = lookupTable.loc[lookupTable['numMissingBusinessDays'] > 5].reset_index(drop=True)
-
-## add a space in the interval column 
-index['interval'] = index.apply(lambda x: _addspace(x['interval']), axis=1)
-
-## connect to db
-try:
-        conn = sqlite3.connect(_dbName_index)
-except:
-    print('[red]Could not connect to DB![/red]\n')
-ibkr = setupConnection()
-# loop thr each reccord in the lookup table
-for index, row in index.iterrows():
-    ## get earliest timestamp from ibkr
-    earliestAvailableTimestamp = ib.getEarliestTimeStamp(ibkr, row['symbol'])
-
-    ## set the lookback based on the history left in ibkr or the interval,
-    ## whichever is the more limiting factor
-    print( (row['firstRecordDate'] - earliestAvailableTimestamp).days )"""
+bulkUpdate()
