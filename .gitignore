@@ -139,5 +139,8 @@ token.txt
 access_token.yml
 
 # database file & ticker list
-*.db
+*.db*
 *.csv
+
+#local test scripts
+scrap.py
