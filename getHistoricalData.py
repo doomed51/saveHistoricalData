@@ -57,8 +57,7 @@ _tickerFilepath = 'tickerList.csv'
 
 ######################################################
 """
-
-## adda space between num and alphabet
+## add a space between num and alphabet
 def _addspace(myStr): 
     return re.sub("[A-Za-z]+", lambda elm: " "+elm[0],myStr )
 
@@ -71,46 +70,6 @@ def _countWorkdays(startDate, endDate, excluded=(6,7)):
         return (len(pd.bdate_range(endDate, startDate)) * -1)
     else:
         return len(pd.bdate_range(startDate, endDate))
-
-"""
-lambda function returns numbers of business days since a DBtable was updated
-"""
-def _getDaysSinceLastUpdated(row):
-    conn = sqlite3.connect(_dbName_index)
-    maxtime = pd.read_sql('SELECT MAX(date) FROM '+ row['name'], conn)
-    mytime = datetime.datetime.strptime(maxtime['MAX(date)'][0][:10], '%Y-%m-%d')
-    
-    ## calculate business days since last update
-    numDays = len( pd.bdate_range(mytime, datetime.datetime.now() )) - 1
-
-    return numDays
-
-def _getLastUpdateDate(row):
-    conn = sqlite3.connect(_dbName_index)
-    maxtime = pd.read_sql('SELECT MAX(date) FROM '+ row['name'], conn)
-    maxtime = maxtime['MAX(date)']
-
-    return maxtime
-
-def _getFirstRecordDate(row):
-    conn = sqlite3.connect(_dbName_index)
-    mintime = pd.read_sql('SELECT MIN(date) FROM '+ row['name'], conn)
-    mintime = mintime['MIN(date)']
-
-    ## convert to datetime handling cases where there is 
-    ## only a date and no time (e.g. 1day interval data)
-    if len(mintime.iloc[0]) > 10: 
-        mintime = datetime.datetime.strptime(mintime.iloc[0], '%Y-%m-%d %H:%M:%S')
-    else:
-        mintime = datetime.datetime.strptime(mintime.iloc[0], '%Y-%m-%d')
-    
-    return mintime
-
-"""
-################################################################
-########################### END ################################
-################################################################
-"""
 
 """
 Setup connection to ibkr
@@ -148,31 +107,6 @@ def saveHistoryToCSV(history, type='stock'):
 
 
 """
- Returns the ealiest stored record for the specified symbol-interval combo
-    INPUTS
-    ---------
-    sqlConn: [sqlite3.connection]
-    symbol: [str] lookup symbol
-    interval: [str] oneday, hour, etc
-    type: [str] stock, or option
-    ---------
-    RETURNS [dateTime] or [str]:empty string if table is not found in the DB 
-"""
-def getLastUpdateDate(sqlConn, symbol, interval, type):
-    lastDate = ''
-    sql = 'SELECT * FROM ' + symbol + '_' + type + '_' + interval
-    history = pd.DataFrame()
-
-    try:
-        history = pd.read_sql(sql, sqlConn)
-        history['end'] = pd.to_datetime(history['end'], dayfirst=False)
-        lastDate = history['end'].max()
-    except:
-        next
-
-    return lastDate
-
-"""
 Root function that will check the the watchlist and update all records in the local db
 --
 inputs: 
@@ -192,28 +126,30 @@ def updateRecords(updateThresholdDays = 5):
     symbolList['ticker'] = symbolList['ticker'].str.strip(' ').str.upper()
     symbolList.sort_values(by=['ticker'], inplace=True)
 
-    # merge into master records list 
-    records = getRecords()
+    with db.sqlite_connection(_dbName_index) as conn:
+        # merge into master records list 
+        records = db.getRecords(conn)
 
-    if not records.empty: ## if database contains some records, check if any need to be updated
-        symbolsWithOutdatedData = records.loc[records['daysSinceLastUpdate'] >= updateThresholdDays]
-        newlyAddedSymbols = symbolList[~symbolList['ticker'].isin(records['ticker'])]
+        if not records.empty: ## if database contains some records, check if any need to be updated
+            symbolsWithOutdatedData = records.loc[records['daysSinceLastUpdate'] >= updateThresholdDays]
+            newlyAddedSymbols = symbolList[~symbolList['ticker'].isin(records['ticker'])]
 
-    try:
-        ibkr = ib.setupConnection()
-    except:
-        print('[red] Could not connect to IBKR[/red]')
-        return
-    
-    # update history in local DB 
-    updateRecordHistory(ibkr, records, symbolsWithOutdatedData, newlyAddedSymbols)
-    
-    updatePreHistoricData(ibkr)
+        try:
+            ibkr = ib.setupConnection()
+        except:
+            print('[red] Could not connect to IBKR[/red]')
+            return
+        
+        # update history in local DB 
+        updateRecordHistory(ibkr, records, symbolsWithOutdatedData, newlyAddedSymbols)
+        
+        updatePreHistoricData(ibkr)
 
-    if ibkr: ibkr.disconnect()
+        if ibkr: ibkr.disconnect()
 
-    # print updated records
-    updatedRecords = getRecords()
+        # print updated records
+        updatedRecords = db.getRecords(conn)
+
     updatedRecords['numYearsOfHistory'] = updatedRecords.apply(lambda x: _countWorkdays(pd.to_datetime(x['firstRecordDate']), pd.to_datetime(x['lastUpdateDate']))/260, axis=1)
     updatedRecords.drop(columns=['firstRecordDate', 'name'], inplace=True)
 
@@ -230,11 +166,13 @@ Updates record history handling the following scenarios:
 """
 def updateRecordHistory(ibkr, records, indicesWithOutdatedData= pd.DataFrame(), newlyAddedIndices  = pd.DataFrame()):
     print('checking if records records need updating')
+    # initialize connection object as empty until we need it
+    conn = ''
 
     ## get a list of missing intervals if any 
     missingIntervals = pd.DataFrame()
     missingIntervals = getMissingIntervals(records, type='index')
- 
+    
     ## if we have any missing data to update, establish connection with IBKR and local db
     if (not indicesWithOutdatedData.empty) or ( not newlyAddedIndices.empty) or (len(missingIntervals) > 0):
         print('[yellow]Updates pending...[/yellow]\n')
@@ -332,7 +270,10 @@ def updateRecordHistory(ibkr, records, indicesWithOutdatedData= pd.DataFrame(), 
     else: 
         print('\n[green]Existing records are up to date...[/green]')
     
-
+    # if a connection to the db is open, close it
+    if conn:
+        conn.close()
+    
                 
 """
 Returns a list of symbol-interval combos that are missing from the local database 
@@ -363,26 +304,6 @@ def getMissingIntervals(records, type = 'stock'):
 
 
 """
-Returns a DF with all saved ticker data and last update date 
-"""
-def getRecords():
-    conn = sqlite3.connect(_dbName_index)
-    
-    try:
-        tables = pd.read_sql('SELECT name FROM sqlite_master WHERE type=\'table\' AND NOT name LIKE \'00_%\'', conn)
-       # conn.close()
-    except:
-        print('no tables!')
-
-    if not tables.empty:
-        tables[['ticker', 'type', 'interval']] = tables['name'].str.split('_',expand=True)     
-        tables['lastUpdateDate'] = tables.apply(_getLastUpdateDate, axis=1)
-        tables['daysSinceLastUpdate'] = tables.apply(_getDaysSinceLastUpdated, axis=1)
-        tables['interval'] = tables.apply(lambda x: _addspace(x['interval']), axis=1)
-        tables['firstRecordDate'] = tables.apply(_getFirstRecordDate, axis=1)
-    return tables
-
-""""
 Updates a chunk of pre-histric data for existing records  
 __
 Logic:
@@ -390,30 +311,27 @@ Logic:
 1. Select records with numMissingBusinessDays > 5
 2. Get history from ibkr
 3. Save history to db
-
-
 """
 def updatePreHistoricData(ibkr):
     print('')
     print('[yellow]Updating pre-history...[/yellow]')
     
-    ## connect to db
-    try:
-            conn = sqlite3.connect(_dbName_index)
-    except:
-        print('[red]Could not connect to DB![/red]\n')
-
     lookback = 30 # number of days to look back
 
-    ## get the lookup table
-    lookupTable = db.getLookup_symbolRecords()
+    with db.sqlite_connection(_dbName_index) as conn:
+        ## get the lookup table
+        lookupTable = db.getLookup_symbolRecords(conn)
 
     # select records that have numMissingBusinessDays > 5 
     lookupTable = lookupTable.loc[lookupTable['numMissingBusinessDays'] > 1].reset_index(drop=True)
+    
+    lookupTable = lookupTable.loc[lookupTable['symbol'] != 'SPY'].reset_index(drop=True)
+    
     if lookupTable.empty:
         print('No records to update')
         return
-
+    #drop any rows where symbol='SPY'
+    
     ## add a space in the interval column 
     lookupTable['interval'] = lookupTable.apply(lambda x: _addspace(x['interval']), axis=1)
 
@@ -471,7 +389,8 @@ def updatePreHistoricData(ibkr):
         history['interval'] = row['interval'].replace(' ', '')
 
         ## save history to db 
-        db.saveHistoryToDB(history, conn)
+        with db.sqlite_connection(_dbName_index) as conn:
+            db.saveHistoryToDB(history, conn)
         
         ## print logging info & reset history df 
         print(' %s-%s[green]...Updated![/green]'%(row['symbol'], row['interval']))
@@ -488,39 +407,41 @@ def refreshLookupTable():
     
     ibkr = setupConnection() ## to get earliest available timestamt
     lookupTableName = '00-lookup_symbolRecords' ##lookup table name in db 
-    records = getRecords() ## latest local records to compare against 
     
-    ## select unique symbols and get the earliest available timestamp from ibkr 
-    uniqueRecordSymbols = pd.DataFrame({'ticker':records['ticker'].unique()})
-    uniqueRecordSymbols['earliestAvailableTimestamp'] = uniqueRecordSymbols['ticker'].apply(lambda x: ib.getEarliestTimeStamp(ibkr, x))
+    with db.sqlite_connection(_dbName_index) as conn:
+        records = db.getRecords(conn) ## latest local records to compare against 
 
-    ## merge with records table... 
-    records_withEarliestAvailableDate = pd.merge(records, uniqueRecordSymbols, how='left', on='ticker')
-    
-    ## compute the number of missing business days
-    records_withEarliestAvailableDate['numMissingBusinessDays'] =  records_withEarliestAvailableDate.apply(lambda x: _countWorkdays(x['earliestAvailableTimestamp'], x['firstRecordDate']), axis=1)
-    
-    ## select columns to match the records table in the db 
-    records_forInput = records_withEarliestAvailableDate[['name', 'ticker', 'interval', 'firstRecordDate', 'numMissingBusinessDays']]
+        ## select unique symbols and get the earliest available timestamp from ibkr 
+        uniqueRecordSymbols = pd.DataFrame({'ticker':records['ticker'].unique()})
+        uniqueRecordSymbols['earliestAvailableTimestamp'] = uniqueRecordSymbols['ticker'].apply(lambda x: ib.getEarliestTimeStamp(ibkr, x))
 
-    ## format col names etc to abide by db naming & interval formatting conventions
-    records_forInput = records_forInput.rename({'ticker':'symbol'}, axis=1)
-    records_forInput['interval'] = records_forInput['interval'].str.replace(' ', '')
-
-    # get the lookup table from db
-    symbolRecords = db.getLookup_symbolRecords()
-
-    ## merge them 
-    merged = pd.merge(records_forInput, symbolRecords[['name', 'numMissingBusinessDays']], how='outer', on='name')
-    
-    if not merged.empty:
-        ## drop unneeded col's and rename cols following db table conventions 
-        merged.drop(inplace=True, columns=['numMissingBusinessDays_y'])
-        merged.rename(columns={'numMissingBusinessDays_x':'numMissingBusinessDays'}, inplace=True)
+        ## merge with records table... 
+        records_withEarliestAvailableDate = pd.merge(records, uniqueRecordSymbols, how='left', on='ticker')
         
-        ## save to db replacing existing (outdated) records 
-        merged.to_sql(f"{lookupTableName}", db._connectToDb(), index=False, if_exists='replace')
-    
+        ## compute the number of missing business days
+        records_withEarliestAvailableDate['numMissingBusinessDays'] =  records_withEarliestAvailableDate.apply(lambda x: _countWorkdays(x['earliestAvailableTimestamp'], x['firstRecordDate']), axis=1)
+        
+        ## select columns to match the records table in the db 
+        records_forInput = records_withEarliestAvailableDate[['name', 'ticker', 'interval', 'firstRecordDate', 'numMissingBusinessDays']]
+
+        ## format col names etc to abide by db naming & interval formatting conventions
+        records_forInput = records_forInput.rename({'ticker':'symbol'}, axis=1)
+        records_forInput['interval'] = records_forInput['interval'].str.replace(' ', '')
+
+        # get the lookup table from db
+        symbolRecords = db.getLookup_symbolRecords(conn)
+
+        ## merge them 
+        merged = pd.merge(records_forInput, symbolRecords[['name', 'numMissingBusinessDays']], how='outer', on='name')
+        
+        if not merged.empty:
+            ## drop unneeded col's and rename cols following db table conventions 
+            merged.drop(inplace=True, columns=['numMissingBusinessDays_y'])
+            merged.rename(columns={'numMissingBusinessDays_x':'numMissingBusinessDays'}, inplace=True)
+            
+            ## save to db replacing existing (outdated) records 
+            merged.to_sql(f"{lookupTableName}", conn, index=False, if_exists='replace')
+        
     if ibkr: ibkr.disconnect()
     print('\n[green] Done![/green]')
 
@@ -552,4 +473,4 @@ def bulkUpdate():
 
 refreshLookupTable()
 updateRecords()
-bulkUpdate()
+#bulkUpdate()
