@@ -78,6 +78,11 @@ Returns [DataFrame] of historical data from IBKR with...
         [columns]: date | open | high | low | close | volume | symbol | interval 
 """
 def getBars(ibkr, symbol='SPX', currency='USD', endDate='', lookback='10 D', interval='15 mins', whatToShow='TRADES'):
+    # if an end date is specified, explicit convert to iso format 8601
+    if endDate:
+        # convert enddate using tz_localize
+        endDate = endDate.tz_localize('US/Eastern')
+
     bars = _getHistoricalBars(ibkr, symbol, currency, endDate, lookback, interval, whatToShow)
     
     return bars
