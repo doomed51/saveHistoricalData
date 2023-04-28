@@ -4,15 +4,14 @@ Date: February, 2022
 
 PURPOSE
 ----------
-Build a local database of historical pricing data for a list of specified equities
+Maintains a local database of historical pricing data for a list of specified symbols
 
 VARIABLES
 ----------
-# The LIST of equities to track history for 
+# The LIST of symbols to be tracked 
 tickerFilepath = 'tickerList.csv'
 
-# The [database]] where history is saved
-'historicalData_stock.db'
+# The [database]] where pricing data is stored
 'historicalData_index.db'
 
 # The data sources for historcal data 
@@ -36,8 +35,8 @@ import pandas as pd
 import re
 import time
 
-import ibkr_interface as ib
-import localDb_interface as db
+import interface_ibkr as ib
+import interface_localDb as db
 
 ## Default DB names 
 _dbName_index = 'historicalData_index.db'
@@ -122,9 +121,9 @@ def updateRecords(updateThresholdDays = 5):
 
     ## convert to dataframe, and cleanup  
     symbolList = pd.DataFrame(symbolList.columns).reset_index(drop=True)
-    symbolList.rename(columns={0:'ticker'}, inplace=True)
-    symbolList['ticker'] = symbolList['ticker'].str.strip(' ').str.upper()
-    symbolList.sort_values(by=['ticker'], inplace=True)
+    symbolList.rename(columns={0:'symbol'}, inplace=True)
+    symbolList['symbol'] = symbolList['symbol'].str.strip(' ').str.upper()
+    symbolList.sort_values(by=['symbol'], inplace=True)
 
     with db.sqlite_connection(_dbName_index) as conn:
         # merge into master records list 
@@ -132,7 +131,7 @@ def updateRecords(updateThresholdDays = 5):
 
         if not records.empty: ## if database contains some records, check if any need to be updated
             symbolsWithOutdatedData = records.loc[records['daysSinceLastUpdate'] >= updateThresholdDays]
-            newlyAddedSymbols = symbolList[~symbolList['ticker'].isin(records['ticker'])]
+            newlyAddedSymbols = symbolList[~symbolList['symbol'].isin(records['symbol'])]
 
         try:
             ibkr = ib.setupConnection()
@@ -189,9 +188,9 @@ def updateRecordHistory(ibkr, records, indicesWithOutdatedData= pd.DataFrame(), 
     ## add records for symbols newly added to the watchlist 
     ##
     if not newlyAddedIndices.empty:
-        print('\n[blue]%s new indicies found[/blue], adding to db...'%(newlyAddedIndices['ticker'].count()))
+        print('\n[blue]%s new indicies found[/blue], adding to db...'%(newlyAddedIndices['symbol'].count()))
 
-        for newIndex in newlyAddedIndices['ticker']:
+        for newIndex in newlyAddedIndices['symbol']:
             ## add records for each tracked interval 
             for _intvl in intervals_index:
                 
@@ -223,10 +222,10 @@ def updateRecordHistory(ibkr, records, indicesWithOutdatedData= pd.DataFrame(), 
     ##
     if not indicesWithOutdatedData.empty:
         print('\n[yellow]Outdated records found. Updating...[/yellow]')
-        pd.to_datetime(indicesWithOutdatedData['lastUpdateDate'])
+        pd.to_datetime(indicesWithOutdatedData['lastUpdateDate'], format='ISO8601')
 
         ## regex to add a space between any non-digit and digit (adds a space to interval column)
-        indicesWithOutdatedData['interval'] = indicesWithOutdatedData['interval'].apply(lambda x: re.sub(r'(?<=\d)(?=[a-z])', ' ', x))
+        indicesWithOutdatedData['interval'].apply(lambda x: re.sub(r'(?<=\d)(?=[a-z])', ' ', x))
 
         # Iterate through records with missing data and update the local 
         # database with the latest available data from ibkr
@@ -234,14 +233,15 @@ def updateRecordHistory(ibkr, records, indicesWithOutdatedData= pd.DataFrame(), 
             ## Add column with number of business days that need updating (curr date - last record)
             
             ## get history from ibkr 
-            history = ib.getBars(ibkr, symbol=row['ticker'], lookback='%s D'%(row['daysSinceLastUpdate']), interval=row['interval']) 
+            history = ib.getBars(ibkr, symbol=row['symbol'], lookback='%s D'%(row['daysSinceLastUpdate']), interval=row['interval']) 
             
             ## add interval column for easier lookup 
             history['interval'] = row['interval'].replace(' ', '')
+            history['symbol'] = row['symbol']
             
             ## save history to db 
             db.saveHistoryToDB(history, conn)
-            print('%s-%s...[green]updated![/green]\n'%(row['ticker'], row['interval']))
+            print('%s-%s...[green]updated![/green]\n'%(row['symbol'], row['interval']))
 
     ##
     ## update missing intervals if we have any 
@@ -260,7 +260,7 @@ def updateRecordHistory(ibkr, records, indicesWithOutdatedData= pd.DataFrame(), 
                 history = ib.getBars(ibkr, symbol=_tkr,lookback='365 D', interval=_intvl )
 
             history['interval'] = _intvl.replace(' ', '')
-
+            history['symbol'] = _tkr
             ## get earliest record available froms ibkr
             earliestTimestamp = ib.getEarliestTimeStamp(ibkr, symbol=_tkr)
             db.saveHistoryToDB(history, conn, earliestTimestamp=earliestTimestamp)
@@ -283,18 +283,18 @@ records: [Dataframe] of getRecords()
 """
 def getMissingIntervals(records, type = 'stock'):
     
-    numRecordsPerSymbol = records.groupby(by='ticker').count()
+    numRecordsPerSymbol = records.groupby(by='symbol').count()
 
     # each symbol where count < interval.count
     symbolsWithMissingIntervals = numRecordsPerSymbol.loc[
-        numRecordsPerSymbol['name'] < len(intervals_index)].reset_index()['ticker'].unique()
+        numRecordsPerSymbol['name'] < len(intervals_index)].reset_index()['symbol'].unique()
 
     ## find missing symbol-interval combos
     missingCombos = []
     for symbol in symbolsWithMissingIntervals:
         for interval in intervals_index:
             myRecord = records.loc[
-                (records['ticker'] == symbol) & (records['interval'] == interval)
+                (records['symbol'] == symbol) & (records['interval'] == interval)
             ]
             if myRecord.empty:
                 missingCombos.append(symbol+'-'+interval)
@@ -374,7 +374,6 @@ def updatePreHistoricData(ibkr):
             if 0 > (endDate - earliestAvailableTimestamp).days:
                 print('No more data available for %s-%s'%(row['symbol'], row['interval']))
                 break
-        
             ## concatenate history retrieved from ibkr 
             history = pd.concat([history, ib.getBars(ibkr, symbol=row['symbol'], lookback='%s D'%lookback, interval=row['interval'], endDate=endDate)], ignore_index=True)
             
@@ -387,6 +386,7 @@ def updatePreHistoricData(ibkr):
 
         ## add interval column for easier lookup 
         history['interval'] = row['interval'].replace(' ', '')
+        history['symbol'] = row['symbol']
 
         ## save history to db 
         with db.sqlite_connection(_dbName_index) as conn:
@@ -406,26 +406,28 @@ def refreshLookupTable():
     print('\n[red]Refreshing lookup table...[/red]')
     
     ibkr = setupConnection() ## to get earliest available timestamt
+    if not ibkr.isConnected():
+        exit()
     lookupTableName = '00-lookup_symbolRecords' ##lookup table name in db 
     
     with db.sqlite_connection(_dbName_index) as conn:
         records = db.getRecords(conn) ## latest local records to compare against 
 
         ## select unique symbols and get the earliest available timestamp from ibkr 
-        uniqueRecordSymbols = pd.DataFrame({'ticker':records['ticker'].unique()})
-        uniqueRecordSymbols['earliestAvailableTimestamp'] = uniqueRecordSymbols['ticker'].apply(lambda x: ib.getEarliestTimeStamp(ibkr, x))
+        uniqueRecordSymbols = pd.DataFrame({'symbol':records['symbol'].unique()})
+        uniqueRecordSymbols['earliestAvailableTimestamp'] = uniqueRecordSymbols['symbol'].apply(lambda x: ib.getEarliestTimeStamp(ibkr, x))
 
         ## merge with records table... 
-        records_withEarliestAvailableDate = pd.merge(records, uniqueRecordSymbols, how='left', on='ticker')
+        records_withEarliestAvailableDate = pd.merge(records, uniqueRecordSymbols, how='left', on='symbol')
         
         ## compute the number of missing business days
         records_withEarliestAvailableDate['numMissingBusinessDays'] =  records_withEarliestAvailableDate.apply(lambda x: _countWorkdays(x['earliestAvailableTimestamp'], x['firstRecordDate']), axis=1)
         
         ## select columns to match the records table in the db 
-        records_forInput = records_withEarliestAvailableDate[['name', 'ticker', 'interval', 'firstRecordDate', 'numMissingBusinessDays']]
+        records_forInput = records_withEarliestAvailableDate[['name', 'symbol', 'interval', 'firstRecordDate', 'numMissingBusinessDays']]
 
         ## format col names etc to abide by db naming & interval formatting conventions
-        records_forInput = records_forInput.rename({'ticker':'symbol'}, axis=1)
+        records_forInput = records_forInput.rename({'symbol':'symbol'}, axis=1)
         records_forInput['interval'] = records_forInput['interval'].str.replace(' ', '')
 
         # get the lookup table from db
