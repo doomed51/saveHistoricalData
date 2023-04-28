@@ -40,8 +40,19 @@ def setupConnection():
         print('[green]  Success![/green]')
     except:
         print('[red]  Could not connect with IBKR![/red]\n')
+        exit()
 
     return ibkr
+
+""" formats the contract history returned from ibkr 
+"""
+def _formatContractHistory(contractHistory_df):
+    contractHistory_df.drop(['average', 'barCount'], inplace=True, axis=1)
+    # convert date column to datetime
+    contractHistory_df['date'] = pd.to_datetime(contractHistory_df['date'])
+    # trim the timezone info from the datetime
+    contractHistory_df['date'] = contractHistory_df['date'].dt.tz_localize(None)
+    return contractHistory_df
 
 def _getHistoricalBars(ibkrObj, symbol, currency, endDate, lookback, interval, whatToShow):
     if symbol in _index:
@@ -49,6 +60,11 @@ def _getHistoricalBars(ibkrObj, symbol, currency, endDate, lookback, interval, w
         contract = Index(symbol, 'CBOE', currency)
     else:
         contract = Stock(symbol, 'SMART', currency) 
+    
+    # make sure endDate is tzaware
+    if endDate:
+        endDate = endDate.tz_localize('US/Eastern')
+        
     # grab history from IBKR 
     contractHistory = ibkrObj.reqHistoricalData(
         contract, 
@@ -60,11 +76,8 @@ def _getHistoricalBars(ibkrObj, symbol, currency, endDate, lookback, interval, w
         formatDate=1)
     
     if contractHistory: 
-        # converting to dataframe for ease of use 
-        contractHistory_df = util.df(contractHistory)
-        contractHistory_df.drop(['average', 'barCount'], inplace=True, axis=1)
-        contractHistory_df['symbol'] = symbol
-        #contractHistory_df['interval'] = interval.replace(' ','')
+        # convert to dataframe & format for usage
+        contractHistory_df = _formatContractHistory(util.df(contractHistory))
         return contractHistory_df
     
     else: 
@@ -77,11 +90,11 @@ Returns [DataFrame] of historical data from IBKR with...
     outputs:
         [columns]: date | open | high | low | close | volume | symbol | interval 
 """
-def getBars(ibkr, symbol='SPX', currency='USD', endDate='', lookback='10 D', interval='15 mins', whatToShow='TRADES'):
+def getBars(ibkr, symbol='SPY', currency='USD', endDate='', lookback='10 D', interval='15 mins', whatToShow='TRADES'):
     # if an end date is specified, explicit convert to iso format 8601
-    if endDate:
+    #if endDate:
         # convert enddate using tz_localize
-        endDate = endDate.tz_localize('US/Eastern')
+        #endDate = endDate.tz_localize('US/Eastern')
 
     bars = _getHistoricalBars(ibkr, symbol, currency, endDate, lookback, interval, whatToShow)
     
@@ -90,7 +103,7 @@ def getBars(ibkr, symbol='SPX', currency='USD', endDate='', lookback='10 D', int
 """
 Returns [datetime] of earliest datapoint available 
 """
-def getEarliestTimeStamp(ibkr, symbol='SPX', currency='USD'):
+def getEarliestTimeStamp(ibkr, symbol='SPY', currency='USD'):
     if symbol in _index:
         contract = Index(symbol, 'CBOE', currency)
     else:
