@@ -72,7 +72,7 @@ def _countWorkdays(startDate, endDate, excluded=(6,7)):
 
 """
 Setup connection to ibkr
-###
+
 --
 Returns ibkr connection object 
 """
@@ -113,7 +113,7 @@ inputs:
         to keep track of. existing records will be kept up to date by default) 
     updateThresholdDays.int -> only updates records that are older than this number of days
 """
-def updateRecords(updateThresholdDays = 5):
+def updateRecords(updateThresholdDays = 2):
 
     #### check for new tickers 
     # read in tickerlist.txt
@@ -207,15 +207,17 @@ def updateRecordHistory(ibkr, records, indicesWithOutdatedData= pd.DataFrame(), 
                 ## get history from ibkr 
                 print('Adding %s - %s interval - %s day lookback'%(newIndex, _intvl, lookback))
                 history = ib.getBars(ibkr, symbol=newIndex,lookback='%s D'%(lookback), interval=_intvl)
-                
+               
                 ## get earliest record available for ibkr
                 earliestTimestamp = ib.getEarliestTimeStamp(ibkr, symbol=newIndex)
 
                 ## add interval column for easier lookup 
                 history['interval'] = _intvl.replace(' ', '')
+                history['symbol'] = newIndex
+
                 db.saveHistoryToDB(history, conn, earliestTimestamp=earliestTimestamp)
 
-                print(' [green]Success![/green] New record Added for %s-%s..from %s to %s'%(newIndex, _intvl, history['date'].min(), history['date'].max()))
+                print(' [green]Success![/green] New record Added for %s-%s..from %s to %s\n'%(newIndex, _intvl, history['date'].min(), history['date'].max()))
 
     ##
     ## update symbols with outdated records 
@@ -322,10 +324,9 @@ def updatePreHistoricData(ibkr):
         ## get the lookup table
         lookupTable = db.getLookup_symbolRecords(conn)
 
-    # select records that have numMissingBusinessDays > 5 
-    lookupTable = lookupTable.loc[lookupTable['numMissingBusinessDays'] > 1].reset_index(drop=True)
+    # select records older than x days
+    lookupTable = lookupTable.loc[lookupTable['numMissingBusinessDays'] > 3].reset_index(drop=True)
     
-    lookupTable = lookupTable.loc[lookupTable['symbol'] != 'SPY'].reset_index(drop=True)
     
     if lookupTable.empty:
         print('No records to update')
@@ -337,6 +338,10 @@ def updatePreHistoricData(ibkr):
 
     # loop thr each reccord in the lookup table
     for index, row in lookupTable.iterrows():
+        ## SPY data in ibkr is inaccurate so we have to skip it 
+        if (row['symbol'] in ['SPY','VVIX']) and (row['interval'] in ['5 mins', '15 mins', '30 mins']):
+            continue
+
         ## get earliest timestamp from ibkr
         earliestAvailableTimestamp = ib.getEarliestTimeStamp(ibkr, row['symbol'])
         numIterations = 4 #number of subsequent calls to ibkr for the same sybol-interval combo
@@ -348,42 +353,53 @@ def updatePreHistoricData(ibkr):
             lookback = (row['firstRecordDate'] - earliestAvailableTimestamp).days
             numIterations = 1 # only need the one iteration
         elif row['interval'] == '1 min':
-            lookback = 10
+            lookback = 2
         else:
             lookback = 30
-
-        ## manual throttling of api requests after the first record (index 0)
-        if index > 0:
-            print('Pausing before next round....%s-%s\n'%(row['symbol'], row['interval']))
-            time.sleep(45)
         
-        print('%s-%s[yellow]....Updating[/yellow]'%(row['symbol'], row['interval']))
-
         # initiate 'enddate from the last time history was updated, manually set hour 
         # to end of day so no data is missed (duplicates are handled later)
         endDate = row['firstRecordDate']-pd.offsets.BDay(1)
         endDate = endDate.replace(hour = 20)
         
+        print('%s-%s[yellow]....Updating %s days from %s[/yellow]'%(row['symbol'], row['interval'], lookback, endDate))
+
         ## initiate the history datafram that will hold the retrieved bars 
         history = pd.DataFrame()
+        ## manual throttling: pause 30s before requesting next set of data
+        if index > 0:
+            print('Pausing before next symbol....%s-%s'%(row['symbol'], row['interval']))
+            time.sleep(45)
+        ##exit while loop when lookback is larger than the avilable days in ibkr 
+        if 0 > (endDate - earliestAvailableTimestamp).days:
+            print('No more data available for %s-%s'%(row['symbol'], row['interval']))
+            continue
 
         i=0 # good ol' loop counter 
         while i < numIterations:
             i+=1
-            ##exit while loop when lookback is larger than the avilable days in ibkr 
-            if 0 > (endDate - earliestAvailableTimestamp).days:
-                print('No more data available for %s-%s'%(row['symbol'], row['interval']))
-                break
+            
+            currentIterationHistoricalBars = ib.getBars(ibkr, symbol=row['symbol'], lookback='%s D'%lookback, interval=row['interval'], endDate=endDate)
+            
+            # skip to next if history is empty
+            if currentIterationHistoricalBars.empty:
+                i=numIterations ## quit out of the while loop since there is no data left
+                print('No data left for %s-%s, skipping to next'%(row['symbol'], row['interval'])) 
+                continue
+
             ## concatenate history retrieved from ibkr 
-            history = pd.concat([history, ib.getBars(ibkr, symbol=row['symbol'], lookback='%s D'%lookback, interval=row['interval'], endDate=endDate)], ignore_index=True)
+            history = pd.concat([history, currentIterationHistoricalBars], ignore_index=True)
             
             ## update enddate for the next iteration
             endDate = endDate - pd.offsets.BDay(lookback - 1)
             endDate = endDate.replace(hour = 20)
             
             ## manual throttling of api requests 
-            #time.sleep(5)
+            time.sleep(5)
 
+        # skip to next if history is empty
+        if history.empty:
+            continue
         ## add interval column for easier lookup 
         history['interval'] = row['interval'].replace(' ', '')
         history['symbol'] = row['symbol']
@@ -402,28 +418,25 @@ def updatePreHistoricData(ibkr):
 Refreshes the lookup_symbolRecords table with the latest data 
 uses live api connection 
 """
-def refreshLookupTable():
+def refreshLookupTable(ibkr, dbname):
     print('\n[red]Refreshing lookup table...[/red]')
     
-    ibkr = setupConnection() ## to get earliest available timestamt
-    if not ibkr.isConnected():
-        exit()
     lookupTableName = '00-lookup_symbolRecords' ##lookup table name in db 
     
-    with db.sqlite_connection(_dbName_index) as conn:
+    with db.sqlite_connection(dbname) as conn:
         records = db.getRecords(conn) ## latest local records to compare against 
 
         ## select unique symbols and get the earliest available timestamp from ibkr 
         uniqueRecordSymbols = pd.DataFrame({'symbol':records['symbol'].unique()})
         uniqueRecordSymbols['earliestAvailableTimestamp'] = uniqueRecordSymbols['symbol'].apply(lambda x: ib.getEarliestTimeStamp(ibkr, x))
 
-        ## merge with records table... 
+        ## merge the earliest availabe timestamp from ibkr with the records table... 
         records_withEarliestAvailableDate = pd.merge(records, uniqueRecordSymbols, how='left', on='symbol')
-        
+
         ## compute the number of missing business days
         records_withEarliestAvailableDate['numMissingBusinessDays'] =  records_withEarliestAvailableDate.apply(lambda x: _countWorkdays(x['earliestAvailableTimestamp'], x['firstRecordDate']), axis=1)
-        
-        ## select columns to match the records table in the db 
+
+        ## prepare data for insertion into db  
         records_forInput = records_withEarliestAvailableDate[['name', 'symbol', 'interval', 'firstRecordDate', 'numMissingBusinessDays']]
 
         ## format col names etc to abide by db naming & interval formatting conventions
@@ -435,7 +448,7 @@ def refreshLookupTable():
 
         ## merge them 
         merged = pd.merge(records_forInput, symbolRecords[['name', 'numMissingBusinessDays']], how='outer', on='name')
-        
+ 
         if not merged.empty:
             ## drop unneeded col's and rename cols following db table conventions 
             merged.drop(inplace=True, columns=['numMissingBusinessDays_y'])
@@ -444,7 +457,6 @@ def refreshLookupTable():
             ## save to db replacing existing (outdated) records 
             merged.to_sql(f"{lookupTableName}", conn, index=False, if_exists='replace')
         
-    if ibkr: ibkr.disconnect()
     print('\n[green] Done![/green]')
 
 """
@@ -467,12 +479,28 @@ def bulkUpdate():
         return
     
     i=0
-    while i < 5:
+    while i < 3:
         i=i+1
+        refreshLookupTable(ibkr, _dbName_index)
         updatePreHistoricData(ibkr)
-        refreshLookupTable()
         time.sleep(300)
 
-refreshLookupTable()
+ibkr=setupConnection()
+refreshLookupTable(ibkr, _dbName_index)
+ibkr.disconnect()
+
 updateRecords()
 #bulkUpdate()
+
+## get earliest available time for spy from ibkr
+#earliestAvailableTimestamp = ib.getEarliestTimeStamp(ibkr, 'SPY')
+#print(earliestAvailableTimestamp)
+
+
+"""endDate = datetime.datetime.now()-pd.offsets.BDay(5400)
+print(endDate)
+
+## get 15 min bars starting from 2004 june
+history = ib.getBars(ibkr, symbol='SPY', lookback='10 D', interval='30 mins', endDate=endDate)
+print(history)
+ibkr.disconnect()"""
