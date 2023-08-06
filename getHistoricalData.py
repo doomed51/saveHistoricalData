@@ -362,29 +362,24 @@ def updatePreHistoricData(ibkr):
         endDate = row['firstRecordDate']-pd.offsets.BDay(1)
         endDate = endDate.replace(hour = 20)
         
-        print('%s-%s[yellow]....Updating %s days from %s[/yellow]'%(row['symbol'], row['interval'], lookback, endDate))
-
-        ## initiate the history datafram that will hold the retrieved bars 
-        history = pd.DataFrame()
-        ## manual throttling: pause 30s before requesting next set of data
-        if index > 0:
-            print('Pausing before next symbol....%s-%s'%(row['symbol'], row['interval']))
-            time.sleep(45)
         ##exit while loop when lookback is larger than the avilable days in ibkr 
         if 0 > (endDate - earliestAvailableTimestamp).days:
             print('No more data available for %s-%s'%(row['symbol'], row['interval']))
             continue
+        print('%s-%s[yellow]....Updating %s days from %s[/yellow]'%(row['symbol'], row['interval'], lookback, endDate))
+
+        ## initiate the history datafram that will hold the retrieved bars 
+        history = pd.DataFrame()
 
         i=0 # good ol' loop counter 
         while i < numIterations:
             i+=1
             
             currentIterationHistoricalBars = ib.getBars(ibkr, symbol=row['symbol'], lookback='%s D'%lookback, interval=row['interval'], endDate=endDate)
-            
             # skip to next if history is empty
             if currentIterationHistoricalBars.empty:
                 i=numIterations ## quit out of the while loop since there is no data left
-                print('No data left for %s-%s, skipping to next'%(row['symbol'], row['interval'])) 
+                print('No data left for %s-%s, skipping to next \n'%(row['symbol'], row['interval'])) 
                 continue
 
             ## concatenate history retrieved from ibkr 
@@ -412,6 +407,11 @@ def updatePreHistoricData(ibkr):
         print(' %s-%s[green]...Updated![/green]'%(row['symbol'], row['interval']))
         print(' from %s to %s\n'%(history['date'].min(), history['date'].max()))
         history = pd.DataFrame()
+
+        ## manual throttling: pause 30s before requesting next set of data
+        if index > 0:
+            print('Pausing before next symbol....')
+            time.sleep(45)
         
 
 """
