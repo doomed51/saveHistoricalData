@@ -118,10 +118,9 @@ def getBars_futures(ibkr, symbol='NG', lastTradeMonth='202311', exchange='NYMEX'
 """
 def _getHistoricalBars_futures(ibkrObj, symbol, lastTradeMonth, exchange, currency, endDate, lookback, interval, whatToShow):
     ## Future contract type definition: https://ib-insync.readthedocs.io/api.html#ib_insync.contract.Future
-    ## Future(symbol='', lastTradeDateOrContractMonth='', exchange='', localSymbol='', multiplier='', currency='', **kwargs)
-    ## contract month, or day format str format: YYYYMM or YYYYMMDD
+    ## contract month, or day format: YYYYMM or YYYYMMDD
     contract = Future(symbol=symbol, lastTradeDateOrContractMonth=lastTradeMonth, exchange=exchange, currency=currency)
-    print(contract)
+    
     # make sure endDate is tzaware
     if endDate:
         # convert to pd series
@@ -162,7 +161,3 @@ def getEarliestTimeStamp(ibkr, symbol='SPY', currency='USD', lastTradeMonth=''):
 
     # return earliest timestamp in datetime format
     return pd.to_datetime(earliestTS)
-
-#myib = setupConnection()
-#b = getBars_futures(myib)
-#print(b)
