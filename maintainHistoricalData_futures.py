@@ -223,8 +223,12 @@ def _updatePreHistory(lookupTable, ib):
     # add a space between digit and alphabet in the interval column 
     lookupTable['interval'] = lookupTable.apply(lambda row: _addspace(row['interval']), axis=1)
     lookback = '100 D'
+    
     # drop records where lastTradeMonth <= todays date in format YYYYMM
     lookupTable = lookupTable.loc[lookupTable['lastTradeMonth'] > datetime.today().strftime('%Y%m')].reset_index(drop=True)
+
+    # drop records with numMissingBusinessDays = 0
+    lookupTable = lookupTable.loc[lookupTable['numMissingBusinessDays'] > 0].reset_index(drop=True)
     
     # select just the unique symbols from the lookup table
     uniqueSymbol = lookupTable.drop_duplicates(subset=['symbol'])
@@ -367,6 +371,8 @@ with db.sqlite_connection(dbName_futures) as conn:
     for i in (1,20):
         lookupTable = db.getLookup_symbolRecords(conn)
         _updatePreHistory(lookupTable, ib)
+        print('%s: sleeping for 5 mins...'%(datetime.now().strftime('%H:%M:%S')))
         time.sleep(300)
+        
 
 
