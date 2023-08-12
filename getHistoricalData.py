@@ -324,9 +324,8 @@ def updatePreHistoricData(ibkr):
         ## get the lookup table
         lookupTable = db.getLookup_symbolRecords(conn)
 
-    # select records older than x days
+    # select records that are missing more than 3 business days of data
     lookupTable = lookupTable.loc[lookupTable['numMissingBusinessDays'] > 3].reset_index(drop=True)
-    
     
     if lookupTable.empty:
         print('No records to update')
@@ -336,7 +335,7 @@ def updatePreHistoricData(ibkr):
     ## add a space in the interval column 
     lookupTable['interval'] = lookupTable.apply(lambda x: _addspace(x['interval']), axis=1)
 
-    # loop thr each reccord in the lookup table
+    # loop through each reccord in the lookup table
     for index, row in lookupTable.iterrows():
         ## SPY data in ibkr is inaccurate so we have to skip it 
         if (row['symbol'] in ['SPY','VVIX']) and (row['interval'] in ['5 mins', '15 mins', '30 mins']):
@@ -379,7 +378,7 @@ def updatePreHistoricData(ibkr):
             # skip to next if history is empty
             if currentIterationHistoricalBars.empty:
                 i=numIterations ## quit out of the while loop since there is no data left
-                print('No data left for %s-%s, skipping to next \n'%(row['symbol'], row['interval'])) 
+                print('\n')
                 continue
 
             ## concatenate history retrieved from ibkr 
@@ -404,8 +403,8 @@ def updatePreHistoricData(ibkr):
             db.saveHistoryToDB(history, conn)
         
         ## print logging info & reset history df 
-        print(' %s-%s[green]...Updated![/green]'%(row['symbol'], row['interval']))
-        print(' from %s to %s\n'%(history['date'].min(), history['date'].max()))
+        #print(' %s-%s[green]...Updated![/green]'%(row['symbol'], row['interval']))
+        #print(' from %s to %s\n'%(history['date'].min(), history['date'].max()))
         history = pd.DataFrame()
 
         ## manual throttling: pause 30s before requesting next set of data
