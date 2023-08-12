@@ -31,6 +31,7 @@ _defaultSleepTime = 40 #seconds, wait time between ibkr api calls
 filename_futuresWatchlist = 'futuresWatchlist.csv'
 dbName_futures = 'historicalData_futures.db'
 trackedIntervals = ['1 day']#, '1 hour', '30 mins', '5 mins', '1 min']
+numExpiryMonths = 48 # number of future expiries we want to track at any given time 
 
 ## add a space between num and alphabet
 def _addspace(myStr): 
@@ -113,18 +114,6 @@ def _updateSingleRecord(row, endDate):
         # get earliest timestamp from ibkr
         db.saveHistoryToDB(record, conn, earlistTimestamp)
 
-    # get today's date
-    #today = datetime.today()
-    # get last business day
-    #lastBusinessDay = today - relativedelta(days=1)
-    
-    # get number of business days since last available record
-    #numBusinessDays = _countWorkdays(row['latestTimestamp'], lastBusinessDay)
-    # get new data from ibkr
-    #newData = ibkr.getHistoricalData(symbol=row['symbol'], interval=row['interval'], lookback=numBusinessDays)
-    # update db
-    #with db.sqlite_connection(dbName_futures) as conn:
-    #    db.updateRecords(conn, newData, row['name'])
 
 """
     updates outdated records in the db 
@@ -137,20 +126,42 @@ def updateRecords(updateThresholdDays = 1):
     currentDbRecords = _getLatestRecords()
     
     # drop records where type/expiry column is the same as current date-month (formant YYYYMM)
-    currentDbRecords = currentDbRecords.loc[currentDbRecords['type/expiry'] != datetime.today().strftime('%Y%m')]
+    currentDbRecords = currentDbRecords.loc[currentDbRecords['type/expiry'] != datetime.today().strftime('%Y%m')].reset_index(drop=True)
+    
+    # calculate difference between numExpoiryMonths and max(index) of currentDbRecords
+    deltaExpiryMonths = numExpiryMonths - currentDbRecords.index.max() - 1
+
+    for i in range(deltaExpiryMonths):
+        # get the next expiry month 
+        print(i)
+        expiryStr = datetime.strptime(currentDbRecords['type/expiry'].iloc[-1], '%Y%m')
+        expiryStr += relativedelta(months=1)
+        # add row to currentDbRecords
+        newRow = pd.DataFrame({
+                'symbol':[currentDbRecords['symbol'].iloc[-1]], 
+                'type/expiry':[expiryStr.strftime('%Y%m')], 
+                'interval':[currentDbRecords['interval'].iloc[-1]], 
+                'name':[db._constructTableName(interval = currentDbRecords['interval'].iloc[-1], lastTradeMonth=expiryStr.strftime('%Y%m'), symbol=currentDbRecords['symbol'].iloc[-1])], 
+                'lastUpdateDate':[''], 
+                'daysSinceLastUpdate':[100], 
+                'firstRecordDate':['']
+            })
+        #currentDbRecords = currentDbRecords.append(newRow, ignore_index=True)
+        currentDbRecords = pd.concat([currentDbRecords, newRow], ignore_index=True)
 
     ## if there are records in the db, see what needs updating
     if not currentDbRecords.empty:
         records_with_old_data = currentDbRecords.loc[currentDbRecords['daysSinceLastUpdate'] > updateThresholdDays]
         newlyAddedSymbols = watchlist.loc[~watchlist['symbol'].isin(currentDbRecords['symbol'])]
     
+    # update old records
     if not records_with_old_data.empty:
-        print('updating records with old data')
-        #_updateSingleRecord(records_with_old_data)
-
+        print(' [yellow]Updating records with old data...[/yellow]')
         # for each row, index in records_with_old_data, call _updateSingleRecord(row)
         for index, row in records_with_old_data.iterrows():
             _updateSingleRecord(row, datetime.today())
+    else:
+        print('[green]  All FUTURES records are up to date![/green]\n')
 
 
 
@@ -227,12 +238,11 @@ def _updatePreHistory(lookupTable, ib):
         endDate = record['firstRecordDate']
         
         # print loginfo
-        print('looking up data for %s %s %s'%(record.symbol, record['lastTradeMonth'], record['interval']))
+        print('looking up data for %s-%s, interval: %s'%(record.symbol, record['lastTradeMonth'], record['interval']))
         
         # query ibkr for history 
         history = ibkr.getBars_futures(ib, symbol=record['symbol'], lastTradeMonth=record['lastTradeMonth'], interval=record['interval'], endDate=endDate, lookback=lookback)
         
-        #earlistTimestamp = ibkr.getEarliestTimeStamp(ib, symbol=record['symbol'], lastTradeMonth=record['lastTradeMonth'])
         # set earliestTimeStamp from the uniqueSymbol df
         earlistTimestamp = uniqueSymbol.loc[uniqueSymbol['symbol'] == record['symbol']]['earliestTimeStamp'].iloc[0]
 
@@ -240,19 +250,23 @@ def _updatePreHistory(lookupTable, ib):
         if history.empty:
             print(' [yellow]No data found [/yellow]for %s %s %s. Skipping to next...'%(record['symbol'], record['lastTradeMonth'], record['interval']))
             continue
-        # append symbol, interval, and lastTradeMonth columns to history
+        
+        # append symbol, interval, and lastTradeMonth columns to align with db schema
         history['symbol'] = record['symbol']
         history['interval'] = record['interval']
         history['lastTradeMonth'] = record['lastTradeMonth']
-        # sql statement that changes a column name on a target table from A to B 
-        sqlStatement = 'ALTER TABLE \'%s\' RENAME COLUMN date TO date_old'%(record['name'])
-        # append history to the db
+        
+        # update history to the db
         with db.sqlite_connection(dbName_futures) as conn:
             print(' saving to db...')
             db.saveHistoryToDB(history, conn, earlistTimestamp)
-        # sleep for 40s
-        print('sleeping for %ss...\n'%(str(_defaultSleepTime)))
-        time.sleep(_defaultSleepTime)
+        
+        # sleep for 40s every 2 iterations
+        if index != len(lookupTable)-1: # dont sleep if we're on the last record
+            if index % 2 == 0:
+                print('%s: [yellow]sleeping for %ss...[/yellow]\n'%(datetime.now().strftime('%H:%M:%S'), str(_defaultSleepTime)))
+                time.sleep(_defaultSleepTime)
+        
     return
 
 """
@@ -275,8 +289,9 @@ def initializeRecords(ib, watchlist,  updateThresholdDays=1):
         # iterate through each symbol in the watchlist 
         for numWatchlist in range(len(watchlist)):
             earlistTimestamp = ibkr.getEarliestTimeStamp(ib, symbol=watchlist['symbol'][numWatchlist], lastTradeMonth=expiryStr.strftime('%Y%m'))
+            
             # get contracts for the next 45 months 
-            for i in range(1, 45):
+            for i in range(1, numExpiryMonths):
                 for interval in trackedIntervals: # iterate through each interval
                     # get data for the contract, and interval 
                     print('looking up %s %s'%(watchlist['symbol'][numWatchlist], expiryStr.strftime('%Y%m')))
@@ -344,12 +359,14 @@ def initializeRecords(ib, watchlist,  updateThresholdDays=1):
 #updateRecords()
 #_dirtyRefreshLookupTable(ib)
 
+print('\n[yellow] Checking FUTURES records... [/yellow]')
+ib = ibkr.setupConnection()
 updateRecords()
 
-ib = ibkr.setupConnection()
 with db.sqlite_connection(dbName_futures) as conn:
-    lookupTable = db.getLookup_symbolRecords(conn)
-
-_updatePreHistory(lookupTable, ib)
+    for i in (1,20):
+        lookupTable = db.getLookup_symbolRecords(conn)
+        _updatePreHistory(lookupTable, ib)
+        time.sleep(300)
 
 
