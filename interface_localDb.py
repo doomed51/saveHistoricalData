@@ -164,6 +164,10 @@ def _updateLookup_symbolRecords(conn, tablename, type, earliestTimestamp, numMis
     else:
         sql_minDate_recordsTable = 'SELECT firstRecordDate FROM \'%s\' WHERE symbol = \'%s\' and interval = \'%s\''%(lookupTablename, minDate_symbolHistory['symbol'][0], minDate_symbolHistory['interval'][0])
     minDate_recordsTable = pd.read_sql(sql_minDate_recordsTable, conn)
+    
+    # if this is an empty string '', then we will use the min date from the record table instead of the lookup table 
+    if minDate_recordsTable['firstRecordDate'][0] == '':
+        minDate_recordsTable['firstRecordDate'][0] = minDate_symbolHistory['firstRecordDate'][0]
 
     ## rename columns to match db table columns 
     minDate_symbolHistory.rename(columns={'MIN(date)':'firstRecordDate'}, inplace=True)
@@ -268,10 +272,6 @@ def saveHistoryToDB(history, conn, earliestTimestamp=''):
     #make sure there are no duplicates in the resulting table
     _removeDuplicates(conn, tableName)
 
-    ## make sure the records lookup table is kept updated
-    #if 'lastTradeMonth' in history.columns:
-    #    _updateLookup_symbolRecords(conn, tableName, earliestTimestamp='')
-    #else:
     _updateLookup_symbolRecords(conn, tableName, type,earliestTimestamp=earliestTimestamp)
     
     ## print logging info
