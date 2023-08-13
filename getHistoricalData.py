@@ -141,19 +141,18 @@ def updateRecords(updateThresholdDays = 2):
         
         # update history in local DB 
         updateRecordHistory(ibkr, records, symbolsWithOutdatedData, newlyAddedSymbols)
-        
-        updatePreHistoricData(ibkr)
 
+        # disconnect from ibkr
         if ibkr: ibkr.disconnect()
 
-        # print updated records
+        # get updated records from db 
         updatedRecords = db.getRecords(conn)
 
     updatedRecords['numYearsOfHistory'] = updatedRecords.apply(lambda x: _countWorkdays(pd.to_datetime(x['firstRecordDate']), pd.to_datetime(x['lastUpdateDate']))/260, axis=1)
     updatedRecords.drop(columns=['firstRecordDate', 'name'], inplace=True)
 
     print('[green]---------------------------------- CURRENT RECORDS ----------------------------------[/green]')
-    print(updatedRecords)
+    print(updatedRecords.describe())
     print('[green]-------------------------------------------------------------------------------------[/green]')
 
 """
@@ -316,7 +315,9 @@ Logic:
 """
 def updatePreHistoricData(ibkr):
     print('')
-    print('[yellow]Updating pre-history...[/yellow]')
+    #print timestamp
+    print(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    print('%s: [yellow]Updating pre-history...[/yellow]'%(datetime.datetime.now().strftime("%H:%M:%S")))
     
     lookback = 30 # number of days to look back
 
@@ -365,7 +366,7 @@ def updatePreHistoricData(ibkr):
         if 0 > (endDate - earliestAvailableTimestamp).days:
             print('No more data available for %s-%s'%(row['symbol'], row['interval']))
             continue
-        print('%s-%s[yellow]....Updating %s days from %s[/yellow]'%(row['symbol'], row['interval'], lookback, endDate))
+        print('%s: %s-%s[yellow]....Updating %s days from %s[/yellow]'%(datetime.datetime.now().strftime("%H:%M:%S"), row['symbol'], row['interval'], lookback, endDate))
 
         ## initiate the history datafram that will hold the retrieved bars 
         history = pd.DataFrame()
@@ -394,6 +395,7 @@ def updatePreHistoricData(ibkr):
         # skip to next if history is empty
         if history.empty:
             continue
+        
         ## add interval column for easier lookup 
         history['interval'] = row['interval'].replace(' ', '')
         history['symbol'] = row['symbol']
@@ -409,7 +411,7 @@ def updatePreHistoricData(ibkr):
 
         ## manual throttling: pause 30s before requesting next set of data
         if index > 0:
-            print('Pausing before next symbol....')
+            print('%s: Pausing before next symbol....'%(datetime.datetime.now().strftime("%H:%M:%S")))
             time.sleep(45)
         
 
@@ -469,27 +471,31 @@ def bulkUpdate():
     #print('[yellow]Starting overnight update...[/yellow]')
     
     #while datetime.datetime.now().hour > 22 and datetime.datetime.now().hour < 4:
-
-    ## connect to ibkr
-    ibkr = setupConnection()
-
-    if not ibkr.isConnected():
-        print('[red]  Exiting!\n[/red]')
-        return
     
     i=0
-    while i < 3:
+    while i < 2:
         i=i+1
+        ## connect to ibkr
+        ibkr = setupConnection()
+
+        if not ibkr.isConnected():  
+            print('[red]  Exiting!\n[/red]')
+            return
+        
         refreshLookupTable(ibkr, _dbName_index)
+        
         updatePreHistoricData(ibkr)
+        
+        ibkr.disconnect()
+        print('%s: sleeping for 5 mins\n'%(datetime.datetime.now().strftime("%H:%M:%S")))
         time.sleep(300)
 
-ibkr=setupConnection()
-refreshLookupTable(ibkr, _dbName_index)
-ibkr.disconnect()
+#ibkr=setupConnection()
+#refreshLookupTable(ibkr, _dbName_index)
+#ibkr.disconnect()
+#updateRecords()
 
-updateRecords()
-#bulkUpdate()
+bulkUpdate()
 
 ## get earliest available time for spy from ibkr
 #earliestAvailableTimestamp = ib.getEarliestTimeStamp(ibkr, 'SPY')
