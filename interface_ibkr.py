@@ -3,6 +3,8 @@ from ib_insync import *
 from rich import print
 
 import pandas as pd
+
+import datetime
 import sqlite3
 import sys
 
@@ -35,15 +37,15 @@ Returns ibkr connection object
 def setupConnection():
     ## connect with IBKR
     try:
-        print('[yellow] Connecting with IBKR...[/yellow]')
+        print(' %s[yellow]: Connecting with IBKR...[/yellow]'%(datetime.datetime.now().strftime('%H:%M:%S')))
         ibkr = IB() 
         ibkr.connect('127.0.0.1', 7496, clientId = 10)
-        print('[green]  Success![/green]')
+        print('[green]  Success![/green]\n')
     except Exception as e:
         print('[red]  Could not connect with IBKR![/red]\n')
         print(e)
         exit()
-
+    
     return ibkr
 
 """ 
