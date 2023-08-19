@@ -473,7 +473,7 @@ def bulkUpdate():
     #while datetime.datetime.now().hour > 22 and datetime.datetime.now().hour < 4:
     
     i=0
-    while i < 2:
+    while i < 5:
         i=i+1
         ## connect to ibkr
         ibkr = setupConnection()
