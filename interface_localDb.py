@@ -164,13 +164,6 @@ def _updateLookup_symbolRecords(conn, tablename, type, earliestTimestamp, numMis
     else:
         sql_minDate_recordsTable = 'SELECT firstRecordDate FROM \'%s\' WHERE symbol = \'%s\' and interval = \'%s\''%(lookupTablename, minDate_symbolHistory['symbol'][0], minDate_symbolHistory['interval'][0])
     minDate_recordsTable = pd.read_sql(sql_minDate_recordsTable, conn)
-    
-    # if this is an empty string '', then we will use the min date from the record table instead of the lookup table 
-    if minDate_recordsTable['firstRecordDate'][0] == '':
-        minDate_recordsTable['firstRecordDate'][0] = minDate_symbolHistory['firstRecordDate'][0]
-
-    ## rename columns to match db table columns 
-    minDate_symbolHistory.rename(columns={'MIN(date)':'firstRecordDate'}, inplace=True)
 
     # calculate the number of missing business days between the earliest record date in ibkr, and the earliest record date as per the db
     if type == 'future':
@@ -180,7 +173,8 @@ def _updateLookup_symbolRecords(conn, tablename, type, earliestTimestamp, numMis
     if minDate_recordsTable.empty:
         print(' adding new record to lookup table...')
         minDate_symbolHistory['name'] = tablename
-        
+        ## rename columns to match db table columns 
+        minDate_symbolHistory.rename(columns={'MIN(date)':'firstRecordDate'}, inplace=True)
         if earliestTimestamp:
             ## set missing business days to the difference between the earliest available date in ibkr and the earliest date in the local db
     
@@ -195,6 +189,13 @@ def _updateLookup_symbolRecords(conn, tablename, type, earliestTimestamp, numMis
     ## otherwise update the existing record
     #elif minDate_symbolHistory['firstRecordDate'][0] < minDate_recordsTable['firstRecordDate'][0]:
     else:
+        # if this is an empty string '', then we will use the min date from the record table instead of the lookup table 
+        if minDate_recordsTable['firstRecordDate'][0] == '':
+            minDate_recordsTable['firstRecordDate'][0] = minDate_symbolHistory['firstRecordDate'][0]
+
+        ## rename columns to match db table columns 
+        minDate_symbolHistory.rename(columns={'MIN(date)':'firstRecordDate'}, inplace=True)
+
         ## update lookuptable with the symbolhistory min date
         # if we are saving futures, we have to query on symbol, interval, AND lastTradeMonth
         print(' updating lookup table...')
