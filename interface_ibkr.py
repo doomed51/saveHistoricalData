@@ -4,6 +4,7 @@ from rich import print
 
 import pandas as pd
 
+import ib_insync.wrapper
 import datetime
 import sqlite3
 import sys
@@ -37,7 +38,7 @@ Returns ibkr connection object
 def setupConnection():
     ## connect with IBKR
     try:
-        print(' %s[yellow]: Connecting with IBKR...[/yellow]'%(datetime.datetime.now().strftime('%H:%M:%S')))
+        print(' %s: [yellow]Connecting with IBKR...[/yellow]'%(datetime.datetime.now().strftime('%H:%M:%S')))
         ibkr = IB() 
         ibkr.connect('127.0.0.1', 7496, clientId = 10)
         print('[green]  Success![/green]\n')
@@ -86,15 +87,20 @@ def _getHistoricalBars(ibkrObj, symbol, currency, endDate, lookback, interval, w
     if endDate:
         endDate = endDate.tz_localize('US/Eastern')
     # grab history from IBKR 
-    contractHistory = ibkrObj.reqHistoricalData(
-        contract, 
-        endDateTime = endDate,
-        durationStr=lookback,
-        barSizeSetting=interval,
-        whatToShow=whatToShow,
-        useRTH=False,
-        formatDate=1)
-  
+    try:
+        contractHistory = ibkrObj.reqHistoricalData(
+            contract, 
+            endDateTime = endDate,
+            durationStr=lookback,
+            barSizeSetting=interval,
+            whatToShow=whatToShow,
+            useRTH=False,
+            formatDate=1)
+    
+    # except for HistoricalDataError
+    except ib_insync.wrapper.error as e:
+        print(e)
+        
     contractHistory_df = pd.DataFrame()
     if contractHistory: 
         # convert to dataframe & format for usage
@@ -128,23 +134,29 @@ def _getHistoricalBars_futures(ibkrObj, symbol, lastTradeMonth, exchange, curren
         # convert to pd series
         endDate = pd.to_datetime(endDate)
         endDate = endDate.tz_localize('US/Eastern')
-    # grab history from IBKR 
-    contractHistory = ibkrObj.reqHistoricalData(
-        contract, 
-        endDateTime = endDate,
-        durationStr=lookback,
-        barSizeSetting=interval,
-        whatToShow=whatToShow,
-        useRTH=False,
-        formatDate=1)
+    try:
+        # grab history from IBKR 
+        contractHistory = ibkrObj.reqHistoricalData(
+            contract, 
+            endDateTime = endDate,
+            durationStr=lookback,
+            barSizeSetting=interval,
+            whatToShow=whatToShow,
+            useRTH=False,
+            formatDate=1)
+    except Exception as e:
+        print(e)
+        print('\nCould not retrieve history for...%s!'%(symbol))
+        return pd.DataFrame()
     
     contractHistory_df = pd.DataFrame()
     if contractHistory: 
         # convert to dataframe & format for usage
         contractHistory_df = _formatContractHistory(util.df(contractHistory))
     
-    else: 
-        print('\nNo history found for...%s!'%(symbol))
+    else:
+        print('[red]No history found for...%s!\n[/red]'%(symbol))
+        exit()
 
     return contractHistory_df
 

@@ -164,14 +164,10 @@ def _updateLookup_symbolRecords(conn, tablename, type, earliestTimestamp, numMis
     else:
         sql_minDate_recordsTable = 'SELECT firstRecordDate FROM \'%s\' WHERE symbol = \'%s\' and interval = \'%s\''%(lookupTablename, minDate_symbolHistory['symbol'][0], minDate_symbolHistory['interval'][0])
     minDate_recordsTable = pd.read_sql(sql_minDate_recordsTable, conn)
-
-    # calculate the number of missing business days between the earliest record date in ibkr, and the earliest record date as per the db
-    if type == 'future':
-        numMissingDays = len(pd.bdate_range(earliestTimestamp, minDate_symbolHistory.iloc[0]['firstRecordDate']))
     
     ## if no entry is found in the lookup table, add one  
     if minDate_recordsTable.empty:
-        print(' adding new record to lookup table...')
+        print(' Adding new record to lookup table...')
         minDate_symbolHistory['name'] = tablename
         ## rename columns to match db table columns 
         minDate_symbolHistory.rename(columns={'MIN(date)':'firstRecordDate'}, inplace=True)
@@ -195,6 +191,10 @@ def _updateLookup_symbolRecords(conn, tablename, type, earliestTimestamp, numMis
 
         ## rename columns to match db table columns 
         minDate_symbolHistory.rename(columns={'MIN(date)':'firstRecordDate'}, inplace=True)
+
+        # calculate the number of missing business days between the earliest record date in ibkr, and the earliest record date as per the db
+        if type == 'future':
+            numMissingDays = len(pd.bdate_range(earliestTimestamp, minDate_symbolHistory.iloc[0]['firstRecordDate']))
 
         ## update lookuptable with the symbolhistory min date
         # if we are saving futures, we have to query on symbol, interval, AND lastTradeMonth
@@ -252,6 +252,8 @@ conn: [Sqlite3 connection object]
 """
 def saveHistoryToDB(history, conn, earliestTimestamp=''):
     ## set type to index if the symbol is in the index list 
+    print(' Updating from %s to %s'%(history['date'].min(), history['date'].max()))
+
     if history['symbol'][0] in index_list:
         type = 'index'
     else: 
@@ -274,17 +276,16 @@ def saveHistoryToDB(history, conn, earliestTimestamp=''):
     _removeDuplicates(conn, tableName)
 
     _updateLookup_symbolRecords(conn, tableName, type,earliestTimestamp=earliestTimestamp)
-    
+
     ## print logging info
     if 'lastTradeMonth' in history.columns:
-        print(' %s-%s-%s[green]...Updated![/green]'%(history['symbol'][0], history['lastTradeMonth'][0], history['interval'][0]))
+        print(' %s: %s-%s-%s[green]...Updated![/green]\n'%(datetime.datetime.now().strftime("%H:%M:%S"),history['symbol'][0], history['lastTradeMonth'][0], history['interval'][0]))
     else:
-        print(' %s-%s[green]...Updated![/green]'%(history['symbol'][0], history['interval'][0]))
-    print(' from %s to %s'%(history['date'].min(), history['date'].max()))
-    print('\n')
+        print(' %s: %s-%s[green]...Updated![/green]\n'%(datetime.datetime.now().strftime("%H:%M:%S"), history['symbol'][0], history['interval'][0]))
+    
 
 """
-Returns a dataframe of all tables that currently exist in t he db with some helpful stats
+Returns a dataframe of all tables that currently exist in the db with some helpful stats
 """
 def getRecords(conn):
     records = pd.DataFrame()
@@ -301,7 +302,7 @@ def getRecords(conn):
         ## add tablename column
         records['name'] = tableNames['name']
         
-        ## add record keeping columns 
+        ## add record metadata
         records['lastUpdateDate'] = tableNames.apply(_getLastUpdateDate, axis=1, conn=conn)
         records['daysSinceLastUpdate'] = tableNames.apply(_getDaysSinceLastUpdated, axis=1, conn=conn)
         records['interval'] = records.apply(lambda x: _addspace(x['interval']), axis=1)
