@@ -198,7 +198,7 @@ def _updateLookup_symbolRecords(conn, tablename, type, earliestTimestamp, numMis
 
         ## update lookuptable with the symbolhistory min date
         # if we are saving futures, we have to query on symbol, interval, AND lastTradeMonth
-        print(' updating lookup table...')
+        print(' Updating lookup table...')
         sql_updateNumMissingDays=''
         if type == 'future':
             sql_update = 'UPDATE \'%s\' SET firstRecordDate = \'%s\' WHERE symbol = \'%s\' and interval = \'%s\' and lastTradeMonth = \'%s\''%(lookupTablename, minDate_symbolHistory['firstRecordDate'][0], minDate_symbolHistory['symbol'][0], minDate_symbolHistory['interval'][0], minDate_symbolHistory['lastTradeMonth'][0])
