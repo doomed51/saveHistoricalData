@@ -38,16 +38,14 @@ import time
 import interface_ibkr as ib
 import interface_localDb as db
 
-## Default DB names 
-_dbName_index = 'historicalData_index.db'
+######### SET GLOBAL VARS #########
+_tickerFilepath = 'tickerList.csv' ## List of symbols to keep track of
+_dbName_index = 'historicalData_index.db' ## Default DB names 
 
-"""Tracked intervals for indices
-    Note: String format is specific to ibkr"""
 intervals_index = ['1 min', '5 mins', '15 mins', '30 mins', '1 hour', '1 day']
-
-## global vars
 _indexList = ['VIX', 'VIX3M', 'VVIX']
-_tickerFilepath = 'tickerList.csv'
+
+ibkrThrottleTime = 30 # minimum seconds to wait between api requests to ibkr
 
 """
 ######################################################
@@ -371,7 +369,7 @@ def updatePreHistoricData(ibkr):
         
         ##exit while loop when lookback is larger than the avilable days in ibkr 
         if 0 > (endDate - earliestAvailableTimestamp).days:
-            print('[red]No more data available[/red] for %s-%s\n'%(row['symbol'], row['interval']))
+            print('[red]No more data available[/red] for %s-%s'%(row['symbol'], row['interval']))
             # update the lookup table 
             with db.sqlite_connection(_dbName_index) as conn:
                 # set type 
@@ -381,6 +379,7 @@ def updatePreHistoricData(ibkr):
                     type = 'stock'
                 tablename = row['symbol']+'_'+type+'_'+row['interval'].replace(' ', '')
                 db._updateLookup_symbolRecords(conn, tablename, type, earliestAvailableTimestamp)
+                print('\n')
             continue
         
         print('%s: Updating %s-%s, %s days from %s'%(datetime.datetime.now().strftime("%H:%M:%S"), row['symbol'], row['interval'], lookback*numIterations, endDate))
@@ -388,7 +387,7 @@ def updatePreHistoricData(ibkr):
         ## initiate the history datafram that will hold the retrieved bars 
         history = pd.DataFrame()
 
-        i=0 # good ol' loop counter 
+        i=0 # call ibkr numIterations times 
         while i < numIterations:
             i+=1
             
@@ -413,7 +412,7 @@ def updatePreHistoricData(ibkr):
             endDate = endDate.replace(hour = 20)
             
             ## manual throttling of api requests 
-            time.sleep(5)
+            time.sleep(ibkrThrottleTime/6)
 
         # skip to next if history is empty
         if history.empty:
@@ -425,14 +424,14 @@ def updatePreHistoricData(ibkr):
 
         ## save history to db 
         with db.sqlite_connection(_dbName_index) as conn:
-            db.saveHistoryToDB(history, conn)
+            db.saveHistoryToDB(history, conn, earliestAvailableTimestamp)
         
         history = pd.DataFrame()
 
-        ## manual throttling: pause 30s before requesting next set of data
+        ## manual throttling: pause before requesting next set of data
         if index > 0:
             print('%s: [yellow]Pausing before next symbol...[/yellow]\n'%(datetime.datetime.now().strftime("%H:%M:%S")))
-            time.sleep(45)
+            time.sleep(ibkrThrottleTime*2)
         
 
 """
@@ -542,7 +541,7 @@ def bulkUpdate():
         ibkr.disconnect()
         print('%s: sleeping for 5 mins\n'%(datetime.datetime.now().strftime("%H:%M:%S")))
         if i != 5:
-            time.sleep(300)
+            time.sleep(ibkrThrottleTime * 10)
 
 #ibkr=setupConnection()
 #refreshLookupTable(ibkr, _dbName_index)
