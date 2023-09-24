@@ -173,10 +173,7 @@ def _updateLookup_symbolRecords(conn, tablename, type, earliestTimestamp, numMis
         minDate_symbolHistory.rename(columns={'MIN(date)':'firstRecordDate'}, inplace=True)
         if earliestTimestamp:
             ## set missing business days to the difference between the earliest available date in ibkr and the earliest date in the local db
-    
-            ## add missing columns 
             minDate_symbolHistory['numMissingBusinessDays'] = numMissingDays
-        
             minDate_symbolHistory = minDate_symbolHistory.iloc[:,[4,1,2,0,3]]
         
         ## save record to db
@@ -193,7 +190,7 @@ def _updateLookup_symbolRecords(conn, tablename, type, earliestTimestamp, numMis
         minDate_symbolHistory.rename(columns={'MIN(date)':'firstRecordDate'}, inplace=True)
 
         # calculate the number of missing business days between the earliest record date in ibkr, and the earliest record date as per the db
-        if type == 'future':
+        if earliestTimestamp:
             numMissingDays = len(pd.bdate_range(earliestTimestamp, minDate_symbolHistory.iloc[0]['firstRecordDate']))
 
         ## update lookuptable with the symbolhistory min date
@@ -206,7 +203,11 @@ def _updateLookup_symbolRecords(conn, tablename, type, earliestTimestamp, numMis
             ## sql statement to update the numMissinbgBusinessDays column
             sql_updateNumMissingDays = 'UPDATE \'%s\' SET numMissingBusinessDays = \'%s\' WHERE symbol = \'%s\' and interval = \'%s\' and lastTradeMonth = \'%s\''%(lookupTablename, numMissingDays, minDate_symbolHistory['symbol'][0], minDate_symbolHistory['interval'][0], minDate_symbolHistory['lastTradeMonth'][0])
         else:
-            sql_update = 'UPDATE \'%s\' SET firstRecordDate = \'%s\' WHERE symbol = \'%s\' and interval = \'%s\''%(lookupTablename, minDate_symbolHistory['firstRecordDate'][0], minDate_symbolHistory['symbol'][0], minDate_symbolHistory['interval'][0]) 
+            sql_update = 'UPDATE \'%s\' SET firstRecordDate = \'%s\' WHERE symbol = \'%s\' and interval = \'%s\''%(lookupTablename, minDate_symbolHistory['firstRecordDate'][0], minDate_symbolHistory['symbol'][0], minDate_symbolHistory['interval'][0])
+
+            if earliestTimestamp: 
+                sql_updateNumMissingDays = 'UPDATE \'%s\' SET numMissingBusinessDays = \'%s\' WHERE symbol = \'%s\' and interval = \'%s\''%(lookupTablename, numMissingDays, minDate_symbolHistory['symbol'][0], minDate_symbolHistory['interval'][0])
+
         cursor = conn.cursor()
         cursor.execute(sql_update)
         if sql_updateNumMissingDays:
