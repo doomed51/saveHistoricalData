@@ -235,6 +235,12 @@ def _formatpxHistory(pxHistory):
     
     # if interval is < 1 day, split the date and time column
     if pxHistory['interval'][0] in ['1min', '5mins', '15mins', '30mins', '1hour']:
+        # remove extra timezone info if it exists
+        
+        # for any value in the date column of pxhistory where the length is > 19, reduce it to 19
+        pxHistory['Date'] = pxHistory['Date'].apply(lambda x: x[:19] if len(x) > 19 else x) 
+        
+        # split date into date and time info
         pxHistory[['Date', 'Time']] = pxHistory['Date'].str.split(' ', expand=True)
         # set format for Date and Time columns
         pxHistory['Date'] = pd.to_datetime(pxHistory['Date'], format='%Y-%m-%d')
@@ -251,14 +257,15 @@ history: [DataFrame]
 conn: [Sqlite3 connection object]
     connection to the local db 
 """
-def saveHistoryToDB(history, conn, earliestTimestamp=''):
+def saveHistoryToDB(history, conn, earliestTimestamp='', type=''):
     ## set type to index if the symbol is in the index list 
     print(' Updating from %s to %s'%(history['date'].min(), history['date'].max()))
 
-    if history['symbol'][0] in index_list:
-        type = 'index'
-    else: 
-        type='stock'
+    if type != 'future':
+        if history['symbol'][0] in index_list:
+            type = 'index'
+        else: 
+            type='stock'
     
     ## construct tablename
     if 'lastTradeMonth' in history.columns:
@@ -276,7 +283,7 @@ def saveHistoryToDB(history, conn, earliestTimestamp=''):
     #make sure there are no duplicates in the resulting table
     _removeDuplicates(conn, tableName)
 
-    _updateLookup_symbolRecords(conn, tableName, type,earliestTimestamp=earliestTimestamp)
+    _updateLookup_symbolRecords(conn, tableName, type, earliestTimestamp=earliestTimestamp)
 
     ## print logging info
     if 'lastTradeMonth' in history.columns:
@@ -286,7 +293,13 @@ def saveHistoryToDB(history, conn, earliestTimestamp=''):
     
 
 """
-Returns a dataframe of all tables that currently exist in the db with some helpful stats
+Returns a dataframe of all tables that currently exist in the db with some helpful stats:
+- lastUpdateDate: [datetime] last time the table was updated
+- daysSinceLastUpdate: [int] number of business days since the table was last updated
+- firstRecordDate: [datetime] first record date in the table
+
+**note: this pulls directly from database tables and does not depend on the lookup table
+
 """
 def getRecords(conn):
     records = pd.DataFrame()
@@ -345,4 +358,21 @@ def getLookup_symbolRecords(conn):
     symbolRecords = pd.read_sql(sqlStatement_selectRecordsTable, conn)
     # convert firstRecordDate column to datetime
     symbolRecords['firstRecordDate'] = pd.to_datetime(symbolRecords['firstRecordDate'], format='ISO8601')
+
+    # given that the 'name' column is in format symbol_type_interval, create a new column type that is just the type
+    symbolRecords['type'] = symbolRecords['name'].str.split('_', expand=True)[1]
+
+    # if type is a number, change type to 'future' 
+    symbolRecords['type'] = symbolRecords['type'].apply(lambda x: 'future' if x.isdigit() else x)
+
     return symbolRecords
+
+"""
+    returns exchange by looking up symbol in database lookup tablee
+"""
+def getExchange(conn, symbol):
+    exchangeLookupTable = '00-lookup_exchangeMapping'
+    # get exchange from lookup table
+    sql = 'SELECT exchange FROM \'%s\' WHERE symbol=\'%s\'' %(exchangeLookupTable, symbol)
+    
+    return pd.read_sql(sql, conn).values[0][0]
