@@ -8,9 +8,10 @@ import ib_insync.wrapper
 import datetime
 import sqlite3
 import sys
+import config
 
 #global list of index symbols
-_index = ['VIX', 'VIX3M', 'VVIX', 'SPX', 'VIX1D']
+_index = config._index
 
 ##
 # IBKR API reference: https://interactivebrokers.github.io/tws-api/historical_bars.html
@@ -111,20 +112,38 @@ def _getHistoricalBars(ibkrObj, symbol, currency, endDate, lookback, interval, w
 
     return contractHistory_df
 
+"""
+    returns exchange by looking up symbol in database lookup tablee
+"""
+def getExchange(symbol):
+    # connect to database
+    conn = sqlite3.connect('database.db')
+    c = conn.cursor()
+    exchangeLookupTable = '00-lookup_exchangeMapping'
+
+    # get exchange from lookup table
+    sql = 'SELECT exchange FROM \'%s\' WHERE symbol=\'%s\'' %(exchangeLookupTable, symbol)
+    c.execute()
+    exchange = c.fetchone()[0]
+
+    # close connection
+    conn.close()
+
+    return exchange
 
 """
 Returns dataframe of historical data for futures
     by default, returns data for NG futures
 """
 def getBars_futures(ibkr, symbol='NG', lastTradeMonth='202311', exchange='NYMEX', currency='USD', endDate='', lookback='60 D', interval='1 day', whatToShow='TRADES'):
-    bars = _getHistoricalBars_futures(ibkr, symbol, lastTradeMonth, exchange, currency, endDate, lookback, interval, whatToShow)
+    bars = _getHistoricalBars_futures(ibkr, symbol, exchange, lastTradeMonth, currency, endDate, lookback, interval, whatToShow)
     
     return bars
 
 """
     Returns [DataFrame] of historical data for futures from IBKR
 """
-def _getHistoricalBars_futures(ibkrObj, symbol, lastTradeMonth, exchange, currency, endDate, lookback, interval, whatToShow):
+def _getHistoricalBars_futures_old(ibkrObj, symbol, exchange, lastTradeMonth, currency, endDate, lookback, interval, whatToShow):
     ## Future contract type definition: https://ib-insync.readthedocs.io/api.html#ib_insync.contract.Future
     ## contract month, or day format: YYYYMM or YYYYMMDD
     contract = Future(symbol=symbol, lastTradeDateOrContractMonth=lastTradeMonth, exchange=exchange, currency=currency)
@@ -161,6 +180,48 @@ def _getHistoricalBars_futures(ibkrObj, symbol, lastTradeMonth, exchange, curren
     return contractHistory_df
 
 """
+    Returns [DataFrame] of historical data for futures from IBKR
+    inputs:
+        needs ibkr object and contract object
+    returns dataframe of historical data
+"""
+def _getHistoricalBars_futures(ibkrObj, contract, endDate, lookback, interval, whatToShow):
+    ## Future contract type definition: https://ib-insync.readthedocs.io/api.html#ib_insync.contract.Future
+    
+    # make sure endDate is tzaware
+    if endDate:
+        # convert to pd series
+        endDate = pd.to_datetime(endDate)
+        endDate = endDate.tz_localize('US/Eastern')
+    try:
+        # grab history from IBKR 
+        contractHistory = ibkrObj.reqHistoricalData(
+            contract, 
+            endDateTime = endDate,
+            durationStr=lookback,
+            barSizeSetting=interval,
+            whatToShow=whatToShow,
+            useRTH=False,
+            formatDate=1)
+    except Exception as e:
+        print(e)
+        print('\nError42: Could not retrieve historys!')
+        return pd.DataFrame()
+    
+    contractHistory_df = pd.DataFrame()
+    if contractHistory: 
+        # convert to dataframe & format for usage
+        contractHistory_df = _formatContractHistory(util.df(contractHistory))
+    
+    else:
+        print('[red]No history found for %s...%s!\n[/red]'%(interval, contract))
+        exit()
+
+    return contractHistory_df
+
+
+
+"""
 Returns [datetime] of earliest datapoint available for index and stock 
 """
 def getEarliestTimeStamp(ibkr, symbol='SPY', currency='USD', lastTradeMonth=''):
@@ -172,6 +233,45 @@ def getEarliestTimeStamp(ibkr, symbol='SPY', currency='USD', lastTradeMonth=''):
     else:
         contract = Stock(symbol, 'SMART', currency)
     earliestTS = ibkr.reqHeadTimeStamp(contract, useRTH=False, whatToShow='TRADES')
+    print(earliestTS)
+    # return earliest timestamp in datetime format
+    return pd.to_datetime(earliestTS)
+
+"""
+Returns [datetime] of earliest datapoint available for index and stock, requires Contract object as input
+"""
+def getEarliestTimeStamp(ibkr, contract):
+
+    earliestTS = ibkr.reqHeadTimeStamp(contract, useRTH=False, whatToShow='TRADES')
 
     # return earliest timestamp in datetime format
     return pd.to_datetime(earliestTS)
+
+"""
+    Returns contract details for a given symbol, call must be type aware (stock, future, index)
+    [inputs]
+        ibkr connection object
+        symbol
+        [optional]
+        type = 'stock' | 'future' | 'index'
+        currency = 'USD' | 'CAD'
+"""
+def getContractDetails(ibkr, symbol, type = 'stock', currency='USD'):
+    # set type to index if symbol is in index list
+    if symbol in _index:
+        type = 'index'
+
+    # grab contract details from IBKR 
+    try:
+        if type == 'future':
+            contracts = ibkr.reqContractDetails(Future(symbol))
+        elif type == 'index':
+            contracts = ibkr.reqContractDetails(Index(symbol, currency=currency))
+        else: 
+            contracts = ibkr.reqContractDetails(Stock(symbol, currency=currency))
+    except Exception as e:
+        print(e)
+        print('\nCould not retrieve contract details for...%s!'%(symbol))
+        return pd.DataFrame()
+            
+    return contracts
