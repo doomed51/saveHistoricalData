@@ -28,7 +28,9 @@ from pathlib import Path
 from requests.exceptions import HTTPError
 from rich import print
 from urllib.error import HTTPError, URLError
+from ib_insync import util as ibkrUtil
 
+import config 
 import datetime
 import sqlite3 
 import pandas as pd
@@ -39,11 +41,13 @@ import interface_ibkr as ib
 import interface_localDb as db
 
 ######### SET GLOBAL VARS #########
+pd.set_option('display.max_rows', None)
+
 _tickerFilepath = 'tickerList.csv' ## List of symbols to keep track of
 _dbName_index = 'historicalData_index.db' ## Default DB names 
 
-intervals_index = ['1 min', '5 mins', '15 mins', '30 mins', '1 hour', '1 day']
-_indexList = ['VIX', 'VIX3M', 'VVIX']
+intervals_index = config.intervals
+_indexList = config._index
 
 ibkrThrottleTime = 30 # minimum seconds to wait between api requests to ibkr
 
@@ -325,11 +329,18 @@ def updatePreHistoricData(ibkr):
         lookupTable = db.getLookup_symbolRecords(conn)
 
     # select records that are missing more than 3 business days of data
-    lookupTable = lookupTable.loc[lookupTable['numMissingBusinessDays'] > 3].reset_index(drop=True)
-    
+    lookupTable = lookupTable.loc[lookupTable['numMissingBusinessDays'] > 2].reset_index(drop=True)
+
+    # add space to interval column
+    lookupTable['interval'] = lookupTable['interval'].apply(lambda x: _addspace(x))
+
     # get earliest availeble timestamp for each symbol in our lookup table 
     uniqueSymbolsInLookupTable = pd.DataFrame({'symbol':lookupTable['symbol'].unique()})
-    uniqueSymbolsInLookupTable['earliestAvailableTimestamp'] = uniqueSymbolsInLookupTable.apply(lambda x: ib.getEarliestTimeStamp(ibkr, x['symbol']), axis=1)
+    # set type column 
+    uniqueSymbolsInLookupTable['type'] = uniqueSymbolsInLookupTable['symbol'].apply(
+        lambda x: 'index' if x in _indexList else 'stock')
+    
+    uniqueSymbolsInLookupTable['earliestAvailableTimestamp'] = uniqueSymbolsInLookupTable.apply(lambda x: ib.getEarliestTimeStamp(ibkr, ib.getContractDetails(ibkr, x['symbol'], type = x['type'])[0].contract), axis=1)
 
     # exit if nothing to update
     if lookupTable.empty:
@@ -337,12 +348,13 @@ def updatePreHistoricData(ibkr):
         exit()
     
     ## add a space in the interval column 
-    lookupTable['interval'] = lookupTable.apply(lambda x: _addspace(x['interval']), axis=1)
+    #lookupTable['interval'] = lookupTable.apply(lambda x: _addspace(x['interval']), axis=1)
 
     # loop through each reccord in the lookup table
     for index, row in lookupTable.iterrows():
         ## set earliestAvailableTimestamp to the matching symbol in uniqueSymbolsInLookupTable
         earliestAvailableTimestamp = uniqueSymbolsInLookupTable.loc[uniqueSymbolsInLookupTable['symbol'] == row['symbol']]['earliestAvailableTimestamp'].values[0]
+        
         # convert to datetime
         earliestAvailableTimestamp = pd.to_datetime(earliestAvailableTimestamp)
         print('%s, %s'%(row['symbol'], earliestAvailableTimestamp))
@@ -414,8 +426,25 @@ def updatePreHistoricData(ibkr):
             ## manual throttling of api requests 
             time.sleep(ibkrThrottleTime/6)
 
-        # skip to next if history is empty
+        # stop updating the symbol as all history has been saved
         if history.empty:
+            # update the lookup table for the last time 
+            with db.sqlite_connection(_dbName_index) as conn:
+                # set type 
+                if row['symbol'] in _indexList:
+                    type = 'index'
+                else:
+                    type = 'stock'
+                tablename = row['symbol']+'_'+type+'_'+row['interval'].replace(' ', '')
+
+                # get price history of symbol 
+                history = db.getPriceHistory(conn, row['symbol'], row['interval'].replace(' ', ''))
+
+                # set earliest timestamp to the min(date) record in the db 
+                earliestAvailableTimestamp = db._getFirstRecordDate(row, conn)
+
+                db._updateLookup_symbolRecords(conn, tablename, type, earliestAvailableTimestamp)
+                print('\n')
             continue
         
         ## add interval column for easier lookup 
@@ -443,60 +472,87 @@ def refreshLookupTable(ibkr, dbname):
     lookupTableName = '00-lookup_symbolRecords' ##lookup table name in db
 
     ## create dataframe with columns: name, earliestAvailableTimestamp; and values (VIX_index_1min, 2012-10-31 09:31:00), (VIX3M_index_1min, 2012-10-31 09:31:00), (VVIX_index_1min, 2014-05-14 09:31:00)
-    data = {
-        'name': ['VIX_index_1min', 'VIX3M_index_1min', 'VVIX_index_1min'],
-        'earliestAvailableTimestamp': ['2012-10-31 09:31:00', '2012-10-31 09:31:00', '2014-05-14 09:31:00']
-    }
-    lookup_symbolEarliestAvailableTimestamp = pd.DataFrame(data)
+    #data = {
+    #    'name': ['VIX_index_1min', 'VIX3M_index_1min', 'VVIX_index_1min'],
+    #    'earliestAvailableTimestamp': ['2012-10-31 09:31:00', '2012-10-31 09:31:00', '2014-05-14 09:31:00']
+    #}
+    #lookup_symbolEarliestAvailableTimestamp = pd.DataFrame(data)
     
     with db.sqlite_connection(dbname) as conn:
         records = db.getRecords(conn) ## fresh read of local db records
+        # remove space in interval column
+        records['interval'] = records['interval'].str.replace(' ', '')
+        # rename 'type/expiry' to 'type'
+        records.rename(columns={'type/expiry':'type'}, inplace=True)
 
         # get the lookup table to compare against 
         lookupTableRecords = db.getLookup_symbolRecords(conn)
         # drop firstRecordDate column from the lookup table 
         lookupTableRecords.drop(columns=['firstRecordDate'], inplace=True)
+        
 
-        # merge both dataframes on the 'name' column 
-        allRecords = pd.merge(lookupTableRecords, records[['name', 'lastUpdateDate', 'daysSinceLastUpdate', 'firstRecordDate']], how='left', on='name')
+        # manage case where lookup table is empty
+        if lookupTableRecords.empty:
+            allRecords = records[['name', 'symbol', 'interval', 'lastUpdateDate', 'daysSinceLastUpdate', 'firstRecordDate']]
+        else:
+            # merge both dataframes on the 'name' column 
+            #print('[red] !!!!!!!!!! skipped merging lookup table and records - revert once lookup is fixed !!!!!!!!! [/red]')
+            allRecords = pd.merge(lookupTableRecords, records, how='right', on=['name', 'symbol', 'interval', 'type'])
+            
+            ################## temp fix code to be removed 
+            #allRecords = records[['name', 'symbol', 'interval', 'lastUpdateDate', 'daysSinceLastUpdate', 'firstRecordDate']]
+            # add column numMissingBusinessDays
+            #allRecords['numMissingBusinessDays'] = 0
+
 
         # select just the records that need a ibkr lookup
         # starting with records that have numMissingBusinessDays >= 1
-        lookupRecords = allRecords.loc[allRecords['numMissingBusinessDays'] > 1]
+        lookupRecords = allRecords#.loc[allRecords['numMissingBusinessDays'] > 1]
 
         # drop records that are in the local lookup table
-        lookupRecords = lookupRecords.loc[~lookupRecords['name'].isin(lookup_symbolEarliestAvailableTimestamp['name'])]     
+        #lookupRecords = lookupRecords.loc[~lookupRecords['name'].isin(lookup_symbolEarliestAvailableTimestamp['name'])]     
 
         #
         ## select unique symbols and get the earliest available timestamp from ibkr 
         #
         lookupRecords_uniqueSymbols = pd.DataFrame({'symbol':lookupRecords['symbol'].unique()})
-        lookupRecords_uniqueSymbols['earliestAvailableTimestamp'] = lookupRecords_uniqueSymbols['symbol'].apply(lambda x: ib.getEarliestTimeStamp(ibkr, x))
-
-        ## merge the earliest availabe timestamp from ibkr with the records table... 
-        records_withEarliestAvailableDate = pd.merge(allRecords, lookupRecords_uniqueSymbols, how='left', on='symbol')
         
+        lookupRecords_uniqueSymbols['earliestAvailableTimestamp'] = lookupRecords_uniqueSymbols['symbol'].apply(
+            lambda x: ib.getEarliestTimeStamp(ibkr, 
+                                              ib.getContractDetails(ibkr,x)[0].contract))
+
+        
+        print(lookupRecords_uniqueSymbols)
+
+        ## merge the earliest availabe timestamp from ibkr with the records table resulting in
+        #  columns: name symbol interval, numMissingBusinessDays, lastUpdateDate, daysSinceLastUpdate,
+        # firstRecordDate, earliestAvailableTimestamp
+        records_withEarliestAvailableDate = pd.merge(allRecords, lookupRecords_uniqueSymbols, how='left', on='symbol')
+
         # newdr = records_withEarliestAvailableDate where earliestAvailableTimestamp is not null
         records_withNewEarliestAvailableDate = records_withEarliestAvailableDate.loc[records_withEarliestAvailableDate['earliestAvailableTimestamp'].notnull()]
-
         
         ## compute the number of missing business days
-        records_withNewEarliestAvailableDate.loc[:, 'numMissingBusinessDays'] = records_withNewEarliestAvailableDate.apply(lambda x: _countWorkdays(x['earliestAvailableTimestamp'], x['firstRecordDate']), axis=1)
+        records_withNewEarliestAvailableDate['numMissingBusinessDays'] = records_withNewEarliestAvailableDate.apply(lambda x: _countWorkdays(x['earliestAvailableTimestamp'], x['firstRecordDate']), axis=1)
+
+        # select records where numMissingBusinessDays = -1 and (firstRecordDate-earliestAvailableTimestamp) != -1
+        #records_withNewEarliestAvailableDate = records_withNewEarliestAvailableDate.loc[(records_withNewEarliestAvailableDate['numMissingBusinessDays'] == -1) & ((records_withNewEarliestAvailableDate['firstRecordDate'] - records_withNewEarliestAvailableDate['earliestAvailableTimestamp']) != -1)]
         
         ## drop unneeded columns
         # limit just to columns name, numMissingBusinessDays
         records_withNewEarliestAvailableDate = records_withNewEarliestAvailableDate[['name', 'numMissingBusinessDays']]
         # drop numMissingBusinessDays from allRecords
         allRecords.drop(columns=['numMissingBusinessDays'], inplace=True)
+        
 
         # merge allRecords and records_withNewEarliestAvailableDate 
         updatedRecords = pd.merge(allRecords, records_withNewEarliestAvailableDate, how='left', on='name')
 
         # replace NaN in numMissingBusiness days wiht -1 
-        updatedRecords['numMissingBusinessDays'].fillna(-1, inplace=True)
+        # updatedRecords['numMissingBusinessDays'].fillna(-1, inplace=True)
         
         ## prepare data for insertion into db  
-        records_forInput = records_withEarliestAvailableDate[['name', 'symbol', 'interval', 'firstRecordDate', 'numMissingBusinessDays']].copy()
+        records_forInput = updatedRecords[['name', 'symbol', 'interval', 'firstRecordDate', 'numMissingBusinessDays']].copy()
         
         ## format col names etc to abide by db naming & interval formatting conventions
         #records_forInput = records_forInput.rename({'symbol':'symbol'}, axis=1)
@@ -505,12 +561,17 @@ def refreshLookupTable(ibkr, dbname):
         # order by symbol
         records_forInput.sort_values(by=['symbol'], inplace=True)
         records_forInput.reset_index(drop=True, inplace=True)
- 
+
+        ###############
+        #### TODO: use config lookup table to filter out symbol-1min manually 
+        ###############
+
         if not records_forInput.empty:
             ## save to db replacing existing (outdated) records 
             records_forInput.to_sql(f"{lookupTableName}", conn, index=False, if_exists='replace')
-        
-    print('\n[green] Done![/green]')
+            print('\n[green] Done![/green]')
+        else:
+            print('\n[green] No updates needed![/green]')
 
 """
 function that calls updatePreHistoricData over the course of a night, pausing for 5 minutes between each iteration 
