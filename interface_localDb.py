@@ -147,14 +147,6 @@ def _updateLookup_symbolRecords(conn, tablename, type, earliestTimestamp, numMis
         sql_minDate_symbolHistory = 'SELECT MIN(date), symbol, interval FROM %s'%(tablename)
     minDate_symbolHistory = pd.read_sql(sql_minDate_symbolHistory, conn)
 
-    # adjust endates caused by bad ibkr data
-    if minDate_symbolHistory['symbol'][0] in ['VVIX','SPY']:
-        if type == 'future':
-            # update the record where name=tablename with nummissinbusinessdays = 
-            return
-        else:
-            return
-
     #remove space from the interval column
     minDate_symbolHistory['interval'] = minDate_symbolHistory['interval'].apply(lambda x: _removeSpaces(x))
     
@@ -180,7 +172,6 @@ def _updateLookup_symbolRecords(conn, tablename, type, earliestTimestamp, numMis
         minDate_symbolHistory.to_sql(f"{lookupTablename}", conn, index=False, if_exists='append')
     
     ## otherwise update the existing record
-    #elif minDate_symbolHistory['firstRecordDate'][0] < minDate_recordsTable['firstRecordDate'][0]:
     else:
         # if this is an empty string '', then we will use the min date from the record table instead of the lookup table 
         if minDate_recordsTable['firstRecordDate'][0] == '':
@@ -356,14 +347,15 @@ Returns the lookup table fo records history as df
 def getLookup_symbolRecords(conn):
     sqlStatement_selectRecordsTable = 'SELECT * FROM \'00-lookup_symbolRecords\''
     symbolRecords = pd.read_sql(sqlStatement_selectRecordsTable, conn)
-    # convert firstRecordDate column to datetime
-    symbolRecords['firstRecordDate'] = pd.to_datetime(symbolRecords['firstRecordDate'], format='ISO8601')
+    if not symbolRecords.empty:
+        # convert firstRecordDate column to datetime
+        symbolRecords['firstRecordDate'] = pd.to_datetime(symbolRecords['firstRecordDate'], format='ISO8601')
 
-    # given that the 'name' column is in format symbol_type_interval, create a new column type that is just the type
-    symbolRecords['type'] = symbolRecords['name'].str.split('_', expand=True)[1]
+        # given that the 'name' column is in format symbol_type_interval, create a new column type that is just the type
+        symbolRecords['type'] = symbolRecords['name'].str.split('_', expand=True)[1]
 
-    # if type is a number, change type to 'future' 
-    symbolRecords['type'] = symbolRecords['type'].apply(lambda x: 'future' if x.isdigit() else x)
+        # if type is a number, change type to 'future' 
+        symbolRecords['type'] = symbolRecords['type'].apply(lambda x: 'future' if x.isdigit() else x)
 
     return symbolRecords
 
