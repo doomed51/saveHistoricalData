@@ -1,7 +1,11 @@
 import pandas as pd 
 
+
+###### DATABASE CONFIGS
 dbname_stock = '/workbench/historicalData/venv/saveHistoricalData/historicalData_index.db'
 dbname_future = '/workbench/historicalData/venv/saveHistoricalData/historicalData_futures.db'
+
+lookupTableName = '00-lookup_symbolRecords'
 
 # default list of intervals to download
 intervals = ['1 min', '5 mins', '30 mins', '1 day']
