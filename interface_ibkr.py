@@ -248,6 +248,16 @@ def getEarliestTimeStamp(ibkr, contract):
     return pd.to_datetime(earliestTS)
 
 """
+Returns just the contract portion of contract details for a given symbol and type 
+"""
+def getContract(ibkr, symbol, type='stock', currency='USD'):
+    conDetails = getContractDetails(ibkr, symbol, type, currency)
+    if len(conDetails) == 0: # contract not found 
+        return Contract()
+    else:
+        return conDetails[0].contract
+
+"""
     Returns contract details for a given symbol, call must be type aware (stock, future, index)
     [inputs]
         ibkr connection object
