@@ -171,7 +171,7 @@ def _updateLookup_symbolRecords(conn, tablename, type, earliestTimestamp, numMis
         ## save record to db
         minDate_symbolHistory.to_sql(f"{lookupTablename}", conn, index=False, if_exists='append')
     
-    ## otherwise update the existing record
+    ## otherwise update the existing record in the lookup table 
     else:
         # if this is an empty string '', then we will use the min date from the record table instead of the lookup table 
         if minDate_recordsTable['firstRecordDate'][0] == '':
