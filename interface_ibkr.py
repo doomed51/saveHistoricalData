@@ -135,7 +135,7 @@ def getExchange(symbol):
 Returns dataframe of historical data for futures
     by default, returns data for NG futures
 """
-def getBars_futures(ibkr, symbol='NG', lastTradeMonth='202311', exchange='NYMEX', currency='USD', endDate='', lookback='60 D', interval='1 day', whatToShow='TRADES'):
+def getBars_futures(ibkr, symbol, lastTradeMonth, exchange, lookback, interval, endDate='', currency='USD', whatToShow='TRADES'):
     bars = _getHistoricalBars_futures(ibkr, symbol, exchange, lastTradeMonth, currency, endDate, lookback, interval, whatToShow)
     
     return bars
@@ -143,10 +143,10 @@ def getBars_futures(ibkr, symbol='NG', lastTradeMonth='202311', exchange='NYMEX'
 """
     Returns [DataFrame] of historical data for futures from IBKR
 """
-def _getHistoricalBars_futures_old(ibkrObj, symbol, exchange, lastTradeMonth, currency, endDate, lookback, interval, whatToShow):
+def _getHistoricalBars_futures(ibkrObj, symbol, exchange, lastTradeMonth, currency, endDate, lookback, interval, whatToShow):
     ## Future contract type definition: https://ib-insync.readthedocs.io/api.html#ib_insync.contract.Future
     ## contract month, or day format: YYYYMM or YYYYMMDD
-    contract = Future(symbol=symbol, lastTradeDateOrContractMonth=lastTradeMonth, exchange=exchange, currency=currency)
+    contract = Future(symbol=symbol, lastTradeDateOrContractMonth=lastTradeMonth, exchange=exchange, currency=currency, includeExpired=True)
     
     # make sure endDate is tzaware
     if endDate:
@@ -174,8 +174,8 @@ def _getHistoricalBars_futures_old(ibkrObj, symbol, exchange, lastTradeMonth, cu
         contractHistory_df = _formatContractHistory(util.df(contractHistory))
     
     else:
-        print('[red]No history found for...%s!\n[/red]'%(symbol))
-        exit()
+        print('[red]No history found for...%s![/red]'%(symbol))
+        return None
 
     return contractHistory_df
 
@@ -185,7 +185,7 @@ def _getHistoricalBars_futures_old(ibkrObj, symbol, exchange, lastTradeMonth, cu
         needs ibkr object and contract object
     returns dataframe of historical data
 """
-def _getHistoricalBars_futures(ibkrObj, contract, endDate, lookback, interval, whatToShow):
+def _getHistoricalBars_futures_withContract(ibkrObj, contract, endDate, lookback, interval, whatToShow):
     ## Future contract type definition: https://ib-insync.readthedocs.io/api.html#ib_insync.contract.Future
     
     # make sure endDate is tzaware
@@ -215,7 +215,7 @@ def _getHistoricalBars_futures(ibkrObj, contract, endDate, lookback, interval, w
     
     else:
         print('[red]No history found for %s...%s!\n[/red]'%(interval, contract))
-        exit()
+        return None
 
     return contractHistory_df
 
@@ -224,16 +224,15 @@ def _getHistoricalBars_futures(ibkrObj, contract, endDate, lookback, interval, w
 """
 Returns [datetime] of earliest datapoint available for index and stock 
 """
-def getEarliestTimeStamp(ibkr, symbol='SPY', currency='USD', lastTradeMonth=''):
+def getEarliestTimeStamp_m(ibkr, symbol='SPY', currency='USD', lastTradeMonth='', exchange='SMART'):
 
     if symbol in _index:
         contract = Index(symbol, 'CBOE', currency)
     elif lastTradeMonth:
-        contract = Future(symbol=symbol, lastTradeDateOrContractMonth=lastTradeMonth, exchange='NYMEX', currency=currency)
+        contract = Future(symbol=symbol, lastTradeDateOrContractMonth=lastTradeMonth, exchange=exchange, currency=currency)
     else:
         contract = Stock(symbol, 'SMART', currency)
     earliestTS = ibkr.reqHeadTimeStamp(contract, useRTH=False, whatToShow='TRADES')
-    print(earliestTS)
     # return earliest timestamp in datetime format
     return pd.to_datetime(earliestTS)
 
@@ -267,10 +266,10 @@ def getContract(ibkr, symbol, type='stock', currency='USD'):
         currency = 'USD' | 'CAD'
 """
 def getContractDetails(ibkr, symbol, type = 'stock', currency='USD'):
-    # set type to index if symbol is in index list
-    if symbol in _index:
-        type = 'index'
-
+    # change type to index if in index list
+    if type != 'future': 
+        if symbol in _index:
+            type = 'index'
     # grab contract details from IBKR 
     try:
         if type == 'future':
