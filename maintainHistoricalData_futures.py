@@ -204,10 +204,22 @@ def _getMissingContracts(ib, symbol, numMonths = numExpiryMonths):
     # get contracts from ibkr 
     contracts = ibkr.getContractDetails(ib, symbol, 'future')
     contracts = ibkr.util.df(contracts)
+    
     # if symbol = VIX, drop the weekly contracts 
     if symbol == 'VIX':
         contracts = contracts.loc[contracts['marketName'] == 'VX'].reset_index(drop=True)
     
+    # if symbol = NG, limit contracts to nymex and 2 years out
+    if symbol == 'NG': 
+        contracts['exchange'] = contracts['contract'].apply(lambda x: x.exchange)
+
+        # select only contracts where contract.exchange = nymex
+        contracts = contracts.loc[contracts['exchange'] == 'NYMEX'].reset_index(drop=True)
+
+        # limit contracts to 2 years out 
+        maxDate = datetime.today() + relativedelta(months=24)
+        contracts = contracts.loc[contracts['realExpirationDate'] <= maxDate.strftime('%Y%m%d')].reset_index(drop=True)
+
     missingContracts = pd.DataFrame(columns=['interval', 'realExpirationDate', 'contract'])
     
     # append missing contracts for each tracked interval 
