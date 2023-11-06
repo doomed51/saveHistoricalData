@@ -166,8 +166,8 @@ def _updateLookup_symbolRecords(conn, tablename, type, earliestTimestamp, numMis
         if earliestTimestamp:
             ## set missing business days to the difference between the earliest available date in ibkr and the earliest date in the local db
             minDate_symbolHistory['numMissingBusinessDays'] = numMissingDays
-            minDate_symbolHistory = minDate_symbolHistory.iloc[:,[4,1,2,0,3]]
-        
+            minDate_symbolHistory = minDate_symbolHistory.iloc[:,[4,1,2,0,5,3]]
+
         ## save record to db
         minDate_symbolHistory.to_sql(f"{lookupTablename}", conn, index=False, if_exists='append')
     
@@ -268,6 +268,8 @@ def saveHistoryToDB(history, conn, earliestTimestamp='', type=''):
         # construct tablename as symbol_type_interval
         tableName = history['symbol'][0]+'_'+type+'_'+history['interval'][0]
     
+    print('earliesttimestamp is %s'%(earliestTimestamp))
+    
     # write history to db
     history.to_sql(f"{tableName}", conn, index=False, if_exists='append')
 
@@ -362,7 +364,7 @@ def getLookup_symbolRecords(conn):
 """
     returns exchange by looking up symbol in database lookup tablee
 """
-def getExchange(conn, symbol):
+def getLookup_exchange(conn, symbol):
     exchangeLookupTable = '00-lookup_exchangeMapping'
     # get exchange from lookup table
     sql = 'SELECT exchange FROM \'%s\' WHERE symbol=\'%s\'' %(exchangeLookupTable, symbol)
