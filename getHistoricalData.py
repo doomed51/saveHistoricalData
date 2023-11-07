@@ -43,7 +43,7 @@ import interface_localDb as db
 ######### SET GLOBAL VARS #########
 pd.set_option('display.max_rows', None)
 
-_tickerFilepath = 'tickerList.csv' ## List of symbols to keep track of
+_tickerFilepath = config.watchlist_main ## List of symbols to keep track of
 _dbName_index = 'historicalData_index.db' ## Default DB names 
 
 intervals_index = config.intervals
@@ -108,7 +108,7 @@ def saveHistoryToCSV(history, type='stock'):
 
 
 """
-Root function that will check the the watchlist and update all records in the local db
+Root function that will check the the watchlist and make sure all records are up to date
 --
 inputs: 
     tickerlist.csv -> list of tickers to keep track of(Note: only for adding new symbols 
@@ -130,7 +130,6 @@ def updateRecords(updateThresholdDays = 2):
     with db.sqlite_connection(_dbName_index) as conn:
         # merge into master records list 
         records = db.getRecords(conn)
-
         if not records.empty: ## if database contains some records, check if any need to be updated
             symbolsWithOutdatedData = records.loc[records['daysSinceLastUpdate'] >= updateThresholdDays]
             newlyAddedSymbols = symbolList[~symbolList['symbol'].isin(records['symbol'])]
@@ -462,7 +461,7 @@ def updatePreHistoricData(ibkr):
 
         ## manual throttling: pause before requesting next set of data
         print('%s: [yellow]Pausing before next record...[/yellow]\n'%(datetime.datetime.now().strftime("%H:%M:%S")))
-        time.sleep(ibkrThrottleTime*2)
+        time.sleep(ibkrThrottleTime)
         
 
 """
@@ -529,8 +528,6 @@ def refreshLookupTable_old(ibkr, dbname):
         # drop rows with nan in numMissingBusinessDays
         records_forInput.dropna(subset=['numMissingBusinessDays'], inplace=True)
         
-        
-        print(records_withNewEarliestAvailableDate)
         exit()
         if not lookupTableRecords.empty:
             # update the lookuptable with input records 
@@ -618,7 +615,6 @@ def refreshLookupTable(ibkr, dbname):
         
         # drop rows with nan in numMissingBusinessDays
         records_forInput.dropna(subset=['numMissingBusinessDays'], inplace=True)
-        
 
         if not lookupTableRecords.empty:
             # update the lookuptable with input records 
