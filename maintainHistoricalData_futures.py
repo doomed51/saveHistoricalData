@@ -106,32 +106,6 @@ def _countWorkdays(startDate, endDate, excluded=(6,7)):
     else:
         return len(pd.bdate_range(startDate, endDate))
 
-"""
-    updates a single outdated table in the db
-    input: 
-    row
-        lookupTable data with columns: 
-        [ symbol, trade/expiry, interval, name(i.e. tablename), lastUpdateDate, daysSinceLastUpdate, firstRecordDate ]
-    endDate
-        datetime object of the date to look back from, leave blank for current day 
-    algo: 
-        1. calculate lookback number of business days since last available record 
-        2. get new data from ibkr
-        3. update db
-"""
-def _updateSingleRecord_old(row, endDate):
-    # query ibkr for futures history 
-    record = ibkr.getBars_futures(ib, symbol=row['symbol'], lastTradeMonth=row['type/expiry'], interval=row['interval'], endDate=endDate, lookback=str(row['daysSinceLastUpdate'])+' D')
-    record['symbol'] = row['symbol']
-    record['interval'] = row['interval']
-    record['lastTradeMonth'] = row['type/expiry']
-    
-    earlistTimestamp = ibkr.getEarliestTimeStamp(ib, symbol=row['symbol'], lastTradeMonth=row['type/expiry'])
-
-    # save the data to db 
-    with db.sqlite_connection(dbName_futures) as conn:
-        db.saveHistoryToDB(record, conn, earlistTimestamp)
-
 def _updateSingleRecord(ib, symbol, expiry, interval, lookback, endDate=''):
     # get exchange from lookup table 
     with db.sqlite_connection(dbName_futures) as conn:
@@ -146,7 +120,7 @@ def _updateSingleRecord(ib, symbol, expiry, interval, lookback, endDate=''):
         # loop for numCalls appending records and reducing endDate by lookback each time
         for i in range(1, numCalls):
             # get history from ibkr and append to records
-            record = record._append(ibkr.getBars_futures(ib, symbol=symbol, lastTradeMonth=expiry, interval=interval, endDate=endDate, lookback='10 D', exchange=exchange))
+            record = record._append(ibkr.getBars_futures(ib, symbol=symbol, lastTradeDate=expiry, interval=interval, endDate=endDate, lookback='10 D', exchange=exchange))
             
             # sleep
             print('%s: sleeping for %ss...'%(datetime.now().strftime('%H:%M:%S'), _defaultSleepTime/6))
@@ -156,7 +130,7 @@ def _updateSingleRecord(ib, symbol, expiry, interval, lookback, endDate=''):
     # otherwise made a single call to ibkr
     else:
         # query ibkr for futures history 
-        record = ibkr.getBars_futures(ib, symbol=symbol, lastTradeMonth=expiry, interval=interval, endDate=endDate, lookback=lookback, exchange=exchange)
+        record = ibkr.getBars_futures(ib, symbol=symbol, lastTradeDate=expiry, interval=interval, endDate=endDate, lookback=lookback, exchange=exchange)
 
     # handle case where no records are returned
     if record is None:
@@ -164,6 +138,7 @@ def _updateSingleRecord(ib, symbol, expiry, interval, lookback, endDate=''):
         # update the lookup table to reflect no records left 
         with db.sqlite_connection(dbName_futures) as conn:
             # set tablename
+
             tablename = symbol+'_'+expiry+'_'+interval.replace(' ', '')
             # get lookuptable
             lookupTable = db.getLookup_symbolRecords(conn)
@@ -177,13 +152,12 @@ def _updateSingleRecord(ib, symbol, expiry, interval, lookback, endDate=''):
         # format records before saving to db 
         record['symbol'] = symbol
         record['interval'] = interval
-        record['lastTradeMonth'] = expiry
-        
-        earlistTimestamp = ibkr.getEarliestTimeStamp_m(ib, symbol=symbol, lastTradeMonth=expiry, exchange=exchange)
+        record['lastTradeDate'] = expiry
+        earlistTimestamp = ibkr.getEarliestTimeStamp_m(ib, symbol=symbol, lastTradeDate=expiry, exchange=exchange)
 
         # save the data to db 
         with db.sqlite_connection(dbName_futures) as conn:
-            db.saveHistoryToDB(record, conn, earlistTimestamp)     
+            db.saveHistoryToDB(record, conn, earlistTimestamp, type='future')     
         
 """
     returns contracts missing from the db for given specified 
@@ -194,7 +168,7 @@ def _updateSingleRecord(ib, symbol, expiry, interval, lookback, endDate=''):
         [DataFrame] of missing contracts informat symbol_expiry_interval 
 """
 def _getMissingContracts(ib, symbol, numMonths = numExpiryMonths):
-    print(' %s:[yellow] Checking for missing contracts...[/yellow]'%(datetime.now().strftime('%H:%M:%S')))
+    print(' %s:[yellow] Checking missing contracts for %s...[/yellow]'%(datetime.now().strftime('%H:%M:%S'), symbol))
     # get latest records from db 
     with db.sqlite_connection(dbName_futures) as conn:
         latestRecords = db.getRecords(conn)
@@ -233,8 +207,7 @@ def _getMissingContracts(ib, symbol, numMonths = numExpiryMonths):
             contracts['interval'] = interval
             missingContracts = missingContracts._append(contracts[['interval', 'realExpirationDate', 'contract']])
         
-        else: # for intervals that exist in our db...
-            # check to see which contracts are missing from our db
+        else: # otherwise select just the contracts not in our db 
             contracts['interval'] = interval
             missingContracts = missingContracts._append(contracts.loc[~contracts['realExpirationDate'].isin(latestRecords_interval['type/expiry'])][['interval', 'realExpirationDate', 'contract']])
     
@@ -242,8 +215,34 @@ def _getMissingContracts(ib, symbol, numMonths = numExpiryMonths):
         print('  [green]No missing contracts found![/green]')
     return missingContracts.reset_index(drop=True)
 
+""" 
+    maps future expiry, symbol combo to ibkr unique id 
 """
-    version 2 of the updateRecords function
+def uniqueIDMapper(ib, symbol, expiry): 
+    # get contract details 
+    contractDetails = ibkr.getContractDetails(ib, symbol=symbol, type='future')
+    # convert to dataframe 
+    contractDetails = ibkr.util.df(contractDetails)
+    # set pands to print all columns
+    pd.set_option('display.max_columns', None)
+    contractDetails['localSymbol'] = contractDetails['contract'].apply(lambda x: x.localSymbol)
+    contractDetails['exchange'] = contractDetails['contract'].apply(lambda x: x.exchange)
+
+    # select only contracts where contract.exchange = db.getexchange
+    with db.sqlite_connection(dbName_futures) as conn:
+        exchange = db.getExchange(conn, symbol)
+        print(exchange)
+    print(expiry)
+    contractDetails = contractDetails.loc[contractDetails['exchange'] == exchange].reset_index(drop=True)
+    print(contractDetails[['localSymbol', 'realExpirationDate']])
+    # select only contracts where contract.realExpirationDate = expiry
+    contractDetails = contractDetails.loc[contractDetails['realExpirationDate'] == expiry].reset_index(drop=True)
+
+    print(contractDetails[['localSymbol', 'realExpirationDate']])
+    exit()
+
+"""
+    Updates existing, and adds missing records to the db
     logic: 
     - update existing records
     - add new contracts, if needed, to maintain numContract number of forward contracts being tracked 
@@ -270,13 +269,11 @@ def updateRecords():
 
     # open ibkr connection
     ib = ibkr.setupConnection()
+
     missingContracts = pd.DataFrame()
     for symbol in watchlist['symbol']:
         missingContracts = missingContracts._append(_getMissingContracts(ib, symbol))
-###################
-    # get a list of contracts missing from our db
-    #missingContracts = _getMissingContracts(ib, symbol)
-    #
+
     # add lookback columnbased on interval
     missingContracts['lookback'] = missingContracts.apply(
         lambda row: _setLookback(row['interval']), axis=1)
@@ -285,7 +282,7 @@ def updateRecords():
     if not latestRecords.loc[latestRecords['daysSinceLastUpdate'] > 1].empty:
         for row in (latestRecords.loc[latestRecords['daysSinceLastUpdate'] > 1]).iterrows():
             _updateSingleRecord(ib, row[1]['symbol'], row[1]['type/expiry'], row[1]['interval'], str(row[1]['daysSinceLastUpdate']+1)+' D')
-    
+
     # add missing contracts to our db 
     for missingContract in missingContracts.iterrows():
         print('Adding contract %s %s %s'%(missingContract[1]['contract'].symbol, missingContract[1]['realExpirationDate'], missingContract[1]['interval']))
@@ -301,7 +298,7 @@ def updateRecords():
     This function updates the past two years of futures data.
     use this when a symbol is first added from the watchlist  
 """
-def loadExpiredContracts(ib, symbol, lastTradeMonth, interval):
+def loadExpiredContracts(ib, symbol, lastTradeDate, interval):
     ###############
     ## placeholder!!! needs to be implemented
     ###############
@@ -324,7 +321,7 @@ def _dirtyRefreshLookupTable(ib):
     trackedSymbols = lookupTable.drop_duplicates(subset=['symbol'])
     
     # add a new column with lambda function to get earliestimestamp from ibkr
-    trackedSymbols['earliestTimestamp'] = trackedSymbols.apply(lambda row: ibkr.getEarliestTimeStamp(ib, symbol=row['symbol'], lastTradeMonth=row['lastTradingDate']), axis=1)
+    trackedSymbols['earliestTimestamp'] = trackedSymbols.apply(lambda row: ibkr.getEarliestTimeStamp(ib, symbol=row['symbol'], lastTradeDate=row['lastTradingDate']), axis=1)
 
     # get list of all tablenames in the db
     with db.sqlite_connection(dbName_futures) as conn:
@@ -375,17 +372,17 @@ def _updatePreHistory(lookupTable, ib):
     lookupTable['interval'] = lookupTable.apply(lambda row: _addspace(row['interval']), axis=1)
     lookback = '100 D'
     
-    # drop records where lastTradeMonth <= todays date in format YYYYMM
-    lookupTable = lookupTable.loc[lookupTable['lastTradeMonth'] > datetime.today().strftime('%Y%m')].reset_index(drop=True)
+    # drop records where lastTradeDate <= todays date in format YYYYMM
+    lookupTable = lookupTable.loc[lookupTable['lastTradeDate'] > datetime.today().strftime('%Y%m')].reset_index(drop=True)
 
-    # drop records with numMissingBusinessDays = 0
+    # select records that are still missing dates 
     lookupTable = lookupTable.loc[lookupTable['numMissingBusinessDays'] > 0].reset_index(drop=True)
     
     # select just the unique symbols from the lookup table
     uniqueSymbol = lookupTable.drop_duplicates(subset=['symbol'])
 
     # add the earliest available record date as a new column 
-    uniqueSymbol = uniqueSymbol.assign(earliestTimeStamp = lambda row: ibkr.getEarliestTimeStamp(ib, symbol=row['symbol'][0], lastTradeMonth=row['lastTradeMonth'][0]), axis=1)
+    uniqueSymbol = uniqueSymbol.assign(earliestTimeStamp = lambda row: ibkr.getEarliestTimeStamp(ib, symbol=row['symbol'][0], lastTradeDate=row['lastTradeDate'][0]), axis=1)
 
     # iterate through each record in the lookup table
     for index, record in lookupTable.iterrows():
@@ -393,23 +390,23 @@ def _updatePreHistory(lookupTable, ib):
         endDate = record['firstRecordDate']
         
         # print loginfo
-        print('looking up data for %s-%s, interval: %s'%(record.symbol, record['lastTradeMonth'], record['interval']))
+        print('looking up data for %s-%s, interval: %s'%(record.symbol, record['lastTradeDate'], record['interval']))
         
         # query ibkr for history 
-        history = ibkr.getBars_futures(ib, symbol=record['symbol'], lastTradeMonth=record['lastTradeMonth'], interval=record['interval'], endDate=endDate, lookback=lookback)
+        history = ibkr.getBars_futures(ib, symbol=record['symbol'], lastTradeDate=record['lastTradeDate'], interval=record['interval'], endDate=endDate, lookback=lookback)
         
         # set earliestTimeStamp from the uniqueSymbol df
         earlistTimestamp = uniqueSymbol.loc[uniqueSymbol['symbol'] == record['symbol']]['earliestTimeStamp'].iloc[0]
 
         # skip to next if no data is returned
         if history.empty:
-            print(' [yellow]No data found [/yellow]for %s %s %s. Skipping to next...'%(record['symbol'], record['lastTradeMonth'], record['interval']))
+            print(' [yellow]No data found [/yellow]for %s %s %s. Skipping to next...'%(record['symbol'], record['lastTradeDate'], record['interval']))
             continue
         
-        # append symbol, interval, and lastTradeMonth columns to align with db schema
+        # append symbol, interval, and lastTradeDate columns to align with db schema
         history['symbol'] = record['symbol']
         history['interval'] = record['interval']
-        history['lastTradeMonth'] = record['lastTradeMonth']
+        history['lastTradeDate'] = record['lastTradeDate']
         
         # update history to the db
         with db.sqlite_connection(dbName_futures) as conn:
@@ -443,14 +440,14 @@ def initializeRecords(ib, watchlist,  updateThresholdDays=1):
 
         # iterate through each symbol in the watchlist 
         for numWatchlist in range(len(watchlist)):
-            earlistTimestamp = ibkr.getEarliestTimeStamp(ib, symbol=watchlist['symbol'][numWatchlist], lastTradeMonth=expiryStr.strftime('%Y%m'))
+            earlistTimestamp = ibkr.getEarliestTimeStamp(ib, symbol=watchlist['symbol'][numWatchlist], lastTradeDate=expiryStr.strftime('%Y%m'))
             
             # get contracts for the next 45 months 
             for i in range(1, numExpiryMonths):
                 for interval in trackedIntervals: # iterate through each interval
                     # get data for the contract, and interval 
                     print('looking up %s %s'%(watchlist['symbol'][numWatchlist], expiryStr.strftime('%Y%m')))
-                    data = ibkr.getBars_futures(ib, symbol=watchlist['symbol'][numWatchlist], lastTradeMonth=expiryStr.strftime('%Y%m'), interval=interval)
+                    data = ibkr.getBars_futures(ib, symbol=watchlist['symbol'][numWatchlist], lastTradeDate=expiryStr.strftime('%Y%m'), interval=interval)
                     
                     # skip if no data is returned
                     if data.empty:
@@ -460,7 +457,7 @@ def initializeRecords(ib, watchlist,  updateThresholdDays=1):
                     # add columns to simplify life 
                     data['symbol'] = watchlist['symbol'][numWatchlist]
                     data['interval'] = interval.replace(' ', '')
-                    data['lastTradeMonth'] = expiryStr.strftime('%Y%m')
+                    data['lastTradeDate'] = expiryStr.strftime('%Y%m')
 
                     # update local records
                     with db.sqlite_connection(dbName_futures) as conn:
