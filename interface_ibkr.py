@@ -113,40 +113,21 @@ def _getHistoricalBars(ibkrObj, symbol, currency, endDate, lookback, interval, w
     return contractHistory_df
 
 """
-    returns exchange by looking up symbol in database lookup tablee
-"""
-def getExchange(symbol):
-    # connect to database
-    conn = sqlite3.connect('database.db')
-    c = conn.cursor()
-    exchangeLookupTable = '00-lookup_exchangeMapping'
-
-    # get exchange from lookup table
-    sql = 'SELECT exchange FROM \'%s\' WHERE symbol=\'%s\'' %(exchangeLookupTable, symbol)
-    c.execute()
-    exchange = c.fetchone()[0]
-
-    # close connection
-    conn.close()
-
-    return exchange
-
-"""
 Returns dataframe of historical data for futures
     by default, returns data for NG futures
 """
-def getBars_futures(ibkr, symbol, lastTradeMonth, exchange, lookback, interval, endDate='', currency='USD', whatToShow='TRADES'):
-    bars = _getHistoricalBars_futures(ibkr, symbol, exchange, lastTradeMonth, currency, endDate, lookback, interval, whatToShow)
+def getBars_futures(ibkr, symbol, lastTradeDate, exchange, lookback, interval, endDate='', currency='USD', whatToShow='TRADES'):
+    bars = _getHistoricalBars_futures(ibkr, symbol, exchange, lastTradeDate, currency, endDate, lookback, interval, whatToShow)
     
     return bars
 
 """
     Returns [DataFrame] of historical data for futures from IBKR
 """
-def _getHistoricalBars_futures(ibkrObj, symbol, exchange, lastTradeMonth, currency, endDate, lookback, interval, whatToShow):
+def _getHistoricalBars_futures(ibkrObj, symbol, exchange, lastTradeDate, currency, endDate, lookback, interval, whatToShow):
     ## Future contract type definition: https://ib-insync.readthedocs.io/api.html#ib_insync.contract.Future
     ## contract month, or day format: YYYYMM or YYYYMMDD
-    contract = Future(symbol=symbol, lastTradeDateOrContractMonth=lastTradeMonth, exchange=exchange, currency=currency, includeExpired=True)
+    contract = Future(symbol=symbol, lastTradeDateOrContractMonth=lastTradeDate, exchange=exchange, currency=currency, includeExpired=True)
     
     # make sure endDate is tzaware
     if endDate:
@@ -219,17 +200,15 @@ def _getHistoricalBars_futures_withContract(ibkrObj, contract, endDate, lookback
 
     return contractHistory_df
 
-
-
 """
 Returns [datetime] of earliest datapoint available for index and stock 
 """
-def getEarliestTimeStamp_m(ibkr, symbol='SPY', currency='USD', lastTradeMonth='', exchange='SMART'):
+def getEarliestTimeStamp_m(ibkr, symbol='SPY', currency='USD', lastTradeDate='', exchange='SMART'):
 
     if symbol in _index:
         contract = Index(symbol, 'CBOE', currency)
-    elif lastTradeMonth:
-        contract = Future(symbol=symbol, lastTradeDateOrContractMonth=lastTradeMonth, exchange=exchange, currency=currency)
+    elif lastTradeDate:
+        contract = Future(symbol=symbol, lastTradeDateOrContractMonth=lastTradeDate, exchange=exchange, currency=currency)
     else:
         contract = Stock(symbol, 'SMART', currency)
     earliestTS = ibkr.reqHeadTimeStamp(contract, useRTH=False, whatToShow='TRADES')
