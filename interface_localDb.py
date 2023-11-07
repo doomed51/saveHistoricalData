@@ -261,7 +261,7 @@ conn: [Sqlite3 connection object]
 """
 def saveHistoryToDB(history, conn, earliestTimestamp='', type=''):
     ## set type to index if the symbol is in the index list 
-    print(' Updating from %s to %s'%(history['date'].min(), history['date'].max()))
+    print(' Adding dates %s to %s'%(history['date'].min(), history['date'].max()))
 
     if type != 'future':
         if history['symbol'][0] in index_list:
@@ -281,6 +281,7 @@ def saveHistoryToDB(history, conn, earliestTimestamp='', type=''):
         
     # write history to db
     history.to_sql(f"{tableName}", conn, index=False, if_exists='append')
+    print('[green]  Done! [/green]')
 
     #make sure there are no duplicates in the resulting table
     _removeDuplicates(conn, tableName)
