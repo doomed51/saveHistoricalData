@@ -96,14 +96,14 @@ symbol - [str]
 interval - [str] 
 
 """
-def _constructTableName(symbol, interval, lastTradeMonth=''):
+def _constructTableName(symbol, interval, lastTradeDate=''):
     type_ = 'stock'
     tableName = symbol+'_'+type_+'_'+interval
     if symbol.upper() in index_list:
         type_ = 'index'
         tableName = symbol+'_'+type_+'_'+interval
-    elif lastTradeMonth:
-        tableName = symbol+'_'+str(lastTradeMonth)+'_'+interval
+    elif lastTradeDate:
+        tableName = symbol+'_'+str(lastTradeDate)+'_'+interval
 
 
     
@@ -127,6 +127,16 @@ def _removeDuplicates(conn, tablename):
     cursor.execute(sql_selectMinId)
 
 """
+    returns exchange:symbol in database lookup tablee
+"""
+def getExchange(conn, symbol):
+    exchangeLookupTable = '00-lookup_exchangeMapping'
+    sql = 'SELECT exchange FROM \'%s\' WHERE symbol=\'%s\'' %(exchangeLookupTable, symbol)
+    exchange = pd.read_sql(sql, conn).values[0][0]
+
+    return exchange
+
+"""
 Utility to update the symbol record lookup table
 This should be called when local db records are updated 
 This should not be run before security history is added to the db 
@@ -142,7 +152,7 @@ def _updateLookup_symbolRecords(conn, tablename, type, earliestTimestamp, numMis
 
     ## get the earliest record date as per the db 
     if type == 'future':
-        sql_minDate_symbolHistory = 'SELECT MIN(date), symbol, interval, lastTradeMonth FROM %s'%(tablename)
+        sql_minDate_symbolHistory = 'SELECT MIN(date), symbol, interval, lastTradeDate FROM %s'%(tablename)
     else:
         sql_minDate_symbolHistory = 'SELECT MIN(date), symbol, interval FROM %s'%(tablename)
     minDate_symbolHistory = pd.read_sql(sql_minDate_symbolHistory, conn)
@@ -151,8 +161,8 @@ def _updateLookup_symbolRecords(conn, tablename, type, earliestTimestamp, numMis
     minDate_symbolHistory['interval'] = minDate_symbolHistory['interval'].apply(lambda x: _removeSpaces(x))
     
     ## get the earliest record date as per the lookup table
-    if type == 'future': ## add lastTradeMonth to selection query 
-        sql_minDate_recordsTable = 'SELECT firstRecordDate FROM \'%s\' WHERE symbol = \'%s\' and interval = \'%s\' and lastTradeMonth = \'%s\''%(lookupTablename, minDate_symbolHistory['symbol'][0], minDate_symbolHistory['interval'][0], minDate_symbolHistory['lastTradeMonth'][0])
+    if type == 'future': ## add lastTradeDate to selection query 
+        sql_minDate_recordsTable = 'SELECT firstRecordDate FROM \'%s\' WHERE symbol = \'%s\' and interval = \'%s\' and lastTradeDate = \'%s\''%(lookupTablename, minDate_symbolHistory['symbol'][0], minDate_symbolHistory['interval'][0], minDate_symbolHistory['lastTradeDate'][0])
     else:
         sql_minDate_recordsTable = 'SELECT firstRecordDate FROM \'%s\' WHERE symbol = \'%s\' and interval = \'%s\''%(lookupTablename, minDate_symbolHistory['symbol'][0], minDate_symbolHistory['interval'][0])
     minDate_recordsTable = pd.read_sql(sql_minDate_recordsTable, conn)
@@ -185,14 +195,14 @@ def _updateLookup_symbolRecords(conn, tablename, type, earliestTimestamp, numMis
             numMissingDays = len(pd.bdate_range(earliestTimestamp, minDate_symbolHistory.iloc[0]['firstRecordDate']))
 
         ## update lookuptable with the symbolhistory min date
-        # if we are saving futures, we have to query on symbol, interval, AND lastTradeMonth
+        # if we are saving futures, we have to query on symbol, interval, AND lastTradeDate
         print(' Updating lookup table...')
         sql_updateNumMissingDays=''
         if type == 'future':
-            sql_update = 'UPDATE \'%s\' SET firstRecordDate = \'%s\' WHERE symbol = \'%s\' and interval = \'%s\' and lastTradeMonth = \'%s\''%(lookupTablename, minDate_symbolHistory['firstRecordDate'][0], minDate_symbolHistory['symbol'][0], minDate_symbolHistory['interval'][0], minDate_symbolHistory['lastTradeMonth'][0])
+            sql_update = 'UPDATE \'%s\' SET firstRecordDate = \'%s\' WHERE symbol = \'%s\' and interval = \'%s\' and lastTradeDate = \'%s\''%(lookupTablename, minDate_symbolHistory['firstRecordDate'][0], minDate_symbolHistory['symbol'][0], minDate_symbolHistory['interval'][0], minDate_symbolHistory['lastTradeDate'][0])
 
             ## sql statement to update the numMissinbgBusinessDays column
-            sql_updateNumMissingDays = 'UPDATE \'%s\' SET numMissingBusinessDays = \'%s\' WHERE symbol = \'%s\' and interval = \'%s\' and lastTradeMonth = \'%s\''%(lookupTablename, numMissingDays, minDate_symbolHistory['symbol'][0], minDate_symbolHistory['interval'][0], minDate_symbolHistory['lastTradeMonth'][0])
+            sql_updateNumMissingDays = 'UPDATE \'%s\' SET numMissingBusinessDays = \'%s\' WHERE symbol = \'%s\' and interval = \'%s\' and lastTradeDate = \'%s\''%(lookupTablename, numMissingDays, minDate_symbolHistory['symbol'][0], minDate_symbolHistory['interval'][0], minDate_symbolHistory['lastTradeDate'][0])
         else:
             sql_update = 'UPDATE \'%s\' SET firstRecordDate = \'%s\' WHERE symbol = \'%s\' and interval = \'%s\''%(lookupTablename, minDate_symbolHistory['firstRecordDate'][0], minDate_symbolHistory['symbol'][0], minDate_symbolHistory['interval'][0])
 
@@ -237,6 +247,7 @@ def _formatpxHistory(pxHistory):
         pxHistory['Date'] = pd.to_datetime(pxHistory['Date'], format='%Y-%m-%d')
         pxHistory['Time'] = pd.to_datetime(pxHistory['Time'], format='%H:%M:%S')
     return pxHistory
+
 """
 Save history to a sqlite3 database
 ###
@@ -259,17 +270,15 @@ def saveHistoryToDB(history, conn, earliestTimestamp='', type=''):
             type='stock'
     
     ## construct tablename
-    if 'lastTradeMonth' in history.columns:
-        # construct tablename as symbol_lastTradeMonth_interval
-        tableName = history['symbol'][0]+'_'+history['lastTradeMonth'][0]+'_'+_removeSpaces(history['interval'][0])
+    if 'lastTradeDate' in history.columns:
+        # construct tablename as symbol_lastTradeDate_interval
+        tableName = history['symbol'][0]+'_'+history['lastTradeDate'][0]+'_'+_removeSpaces(history['interval'][0])
         type = 'future'
     
     else:
         # construct tablename as symbol_type_interval
         tableName = history['symbol'][0]+'_'+type+'_'+history['interval'][0]
-    
-    print('earliesttimestamp is %s'%(earliestTimestamp))
-    
+        
     # write history to db
     history.to_sql(f"{tableName}", conn, index=False, if_exists='append')
 
@@ -279,8 +288,8 @@ def saveHistoryToDB(history, conn, earliestTimestamp='', type=''):
     _updateLookup_symbolRecords(conn, tableName, type, earliestTimestamp=earliestTimestamp)
 
     ## print logging info
-    if 'lastTradeMonth' in history.columns:
-        print(' %s: %s-%s-%s[green]...Updated![/green]\n'%(datetime.datetime.now().strftime("%H:%M:%S"),history['symbol'][0], history['lastTradeMonth'][0], history['interval'][0]))
+    if 'lastTradeDate' in history.columns:
+        print(' %s: %s-%s-%s[green]...Updated![/green]\n'%(datetime.datetime.now().strftime("%H:%M:%S"),history['symbol'][0], history['lastTradeDate'][0], history['interval'][0]))
     else:
         print(' %s: %s-%s[green]...Updated![/green]\n'%(datetime.datetime.now().strftime("%H:%M:%S"), history['symbol'][0], history['interval'][0]))
     
@@ -328,10 +337,10 @@ interval - [str]
 lookback - [str] optional 
 
 """
-def getPriceHistory(conn, symbol, interval, withpctchange=False, lastTradeMonth=''):
+def getPriceHistory(conn, symbol, interval, withpctchange=False, lastTradeDate=''):
     
     # construct sql statement and query the db 
-    tableName = _constructTableName(symbol, interval, lastTradeMonth)
+    tableName = _constructTableName(symbol, interval, lastTradeDate)
     sqlStatement = 'SELECT * FROM '+tableName
     pxHistory = pd.read_sql(sqlStatement, conn)
     #ensure formatting of retreived data
