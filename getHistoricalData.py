@@ -351,11 +351,6 @@ def updatePreHistoricData(ibkr):
 
     # loop through each reccord in the lookup table
     for index, row in lookupTable.iterrows():
-        ######################################################
-        #row['name'] = 'SPY_stock_' + row['interval'].replace(' ', '')
-        #row['symbol'] = 'SPY'
-        #row['firstRecordDate'] = pd.to_datetime('2004-01-23 09:30:00')
-        ######################################################
         ## set earliestAvailableTimestamp to the matching symbol in uniqueSymbolsInLookupTable
         earliestAvailableTimestamp = uniqueSymbolsInLookupTable.loc[uniqueSymbolsInLookupTable['symbol'] == row['symbol']]['earliestAvailableTimestamp'].values[0]
         
@@ -377,11 +372,9 @@ def updatePreHistoricData(ibkr):
         else:
             lookback = 30
         
-        # TODO: set endDate to 1h back instead of 1 busines day
         # initiate 'enddate from the last time history was updated, manually set hour 
         # to end of day so no data is missed (duplicates are handled later)
-        endDate = row['firstRecordDate']-pd.offsets.BDay(1)
-        endDate = endDate.replace(hour = 20)
+        endDate = row['firstRecordDate']#-pd.offsets.BDay(1)
         
         ##exit while loop when lookback is larger than the avilable days in ibkr 
         if 0 > (endDate - earliestAvailableTimestamp).days:
