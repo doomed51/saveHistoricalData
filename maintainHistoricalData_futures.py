@@ -390,12 +390,15 @@ def _updatePreHistory(lookupTable, ib):
 
     # iterate through each record in the lookup table
     for index, record in lookupTable.iterrows():  
-        lookback = 5
+        lookback = 100
         # print loginfo
         print('%s: [yellow]looking up data for [/yellow]%s-%s, interval: %s'%(datetime.now().strftime("%H:%M:%S"), record.symbol, record['lastTradeDate'], record['interval']))
         
-        # set the endDate to the firstRecordDate
-        endDate = record['firstRecordDate']
+        # set the endDate to the firstRecordDate minus 1 minute
+        if record['interval'] == '1 day':
+            endDate = (record['firstRecordDate'] - relativedelta(days=1)).strftime('%Y%m%d %H:%M:%S')
+        else:
+            endDate = record['firstRecordDate'] - relativedelta(minutes=1)
 
         # set earliestTimeStamp from the constructed lookup table
         earliestAvailableTimestamp = pd.to_datetime(uniqueSymbol.loc[uniqueSymbol['symbol'] == record['symbol']]['earliestTimeStamp'].iloc[0])
@@ -405,15 +408,19 @@ def _updatePreHistory(lookupTable, ib):
         if lookback > (record['firstRecordDate'] - earliestAvailableTimestamp).days:
             lookback = (record['firstRecordDate'] - earliestAvailableTimestamp).days
         elif record['interval'] in ['1 day', '1 month']:
-            lookback = 252
+            lookback = 100
         elif record['interval'] in ['1 min']:
             lookback = 3
         else:
             lookback = 30
         # append ' D' to lookback
         lookback = str(lookback) + ' D'
+
         # query ibkr for history 
         history = ibkr.getBars_futures(ib, symbol=record['symbol'], lastTradeDate=record['lastTradeDate'], interval=record['interval'], endDate=endDate, lookback=lookback, exchange=exchange)
+        
+        # if the number of returned records for 1d < lookback, that means we have run out of historical data and should stop updating in the future 
+
 
         # skip to next if no data is returned
         if history is None:
@@ -522,8 +529,6 @@ with db.sqlite_connection(dbName_futures) as conn:
     for i in (1,20):
         lookupTable = db.getLookup_symbolRecords(conn)
         _updatePreHistory(lookupTable, ib)
-#        print('%s: sleeping for 5 mins...'%(datetime.now().strftime('%H:%M:%S')))
-#        time.sleep(300)
 
 #updateRecords()       
 
