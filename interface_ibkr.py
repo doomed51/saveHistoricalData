@@ -82,7 +82,10 @@ def _getHistoricalBars(ibkrObj, symbol, currency, endDate, lookback, interval, w
         # set the contract to look for
         contract = Index(symbol, 'CBOE', currency)
     else:
-        contract = Stock(symbol, 'SMART', currency) 
+        if symbol == 'DXJ':
+            contract = Stock(symbol, 'ARCA', currency) 
+        else:
+            contract = Stock(symbol, 'SMART', currency) 
     
     # make sure endDate is tzaware
     if endDate:
@@ -128,7 +131,7 @@ def _getHistoricalBars_futures(ibkrObj, symbol, exchange, lastTradeDate, currenc
     ## Future contract type definition: https://ib-insync.readthedocs.io/api.html#ib_insync.contract.Future
     ## contract month, or day format: YYYYMM or YYYYMMDD
     contract = Future(symbol=symbol, lastTradeDateOrContractMonth=lastTradeDate, exchange=exchange, currency=currency, includeExpired=True)
-    
+
     # make sure endDate is tzaware
     if endDate:
         # convert to pd series
@@ -223,9 +226,12 @@ Returns [datetime] of earliest datapoint available for index and stock, requires
 def getEarliestTimeStamp(ibkr, contract):
 
     earliestTS = ibkr.reqHeadTimeStamp(contract, useRTH=False, whatToShow='TRADES')
+    timestamp = pd.to_datetime(earliestTS)
+    # make sure timestamp is tzaware 
+    timestamp = timestamp.tz_localize(None)
 
     # return earliest timestamp in datetime format
-    return pd.to_datetime(earliestTS)
+    return timestamp 
 
 """
 Returns just the contract portion of contract details for a given symbol and type 

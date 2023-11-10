@@ -211,6 +211,8 @@ def updateRecordHistory(ibkr, records, indicesWithOutdatedData= pd.DataFrame(), 
     if not indicesWithOutdatedData.empty:
         print('\n[blue]Outdated records found. Updating...[/blue]\n')
         pd.to_datetime(indicesWithOutdatedData['lastUpdateDate'], format='ISO8601')
+        # reset index
+        indicesWithOutdatedData.reset_index(drop=True, inplace=True)
 
         ## regex to add a space between any non-digit and digit (adds a space to interval column)
         indicesWithOutdatedData['interval'].apply(lambda x: re.sub(r'(?<=\d)(?=[a-z])', ' ', x))
@@ -233,7 +235,12 @@ def updateRecordHistory(ibkr, records, indicesWithOutdatedData= pd.DataFrame(), 
             ## save history to db 
             with db.sqlite_connection(_dbName_index) as conn:
                 db.saveHistoryToDB(history, conn, earliestTimestamp)
-            print('%s-%s...[green]updated![/green]\n'%(row['symbol'], row['interval']))
+            print('%s-%s...[green]updated![/green]'%(row['symbol'], row['interval']))
+
+            # sleep every 3rd record 
+            if index % 3 == 0:
+                print('%s: [yellow]Pausing %ss before next record...[/yellow]\n'%(datetime.datetime.now().strftime("%H:%M:%S"), ibkrThrottleTime))
+                time.sleep(ibkrThrottleTime)
 
     ##
     ## update missing intervals if we have any 
@@ -562,4 +569,4 @@ def bulkUpdate():
             time.sleep(ibkrThrottleTime * 10)
 
 updateRecords()
-#bulkUpdate()
+bulkUpdate()
