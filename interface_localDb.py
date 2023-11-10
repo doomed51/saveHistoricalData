@@ -156,6 +156,11 @@ def _updateLookup_symbolRecords(conn, tablename, type, earliestTimestamp, numMis
     else:
         sql_minDate_symbolHistory = 'SELECT MIN(date), symbol, interval FROM %s'%(tablename)
     minDate_symbolHistory = pd.read_sql(sql_minDate_symbolHistory, conn)
+    # convert date column to datetime
+    minDate_symbolHistory['MIN(date)'] = pd.to_datetime(minDate_symbolHistory['MIN(date)'], format='ISO8601')
+
+    # make sure date column is not tzaware
+    minDate_symbolHistory['MIN(date)'] = minDate_symbolHistory['MIN(date)'].dt.tz_localize(None)
 
     #remove space from the interval column
     minDate_symbolHistory['interval'] = minDate_symbolHistory['interval'].apply(lambda x: _removeSpaces(x))
@@ -176,7 +181,7 @@ def _updateLookup_symbolRecords(conn, tablename, type, earliestTimestamp, numMis
         if earliestTimestamp:
             ## set missing business days to the difference between the earliest available date in ibkr and the earliest date in the local db
             minDate_symbolHistory['numMissingBusinessDays'] = numMissingDays
-            minDate_symbolHistory = minDate_symbolHistory.iloc[:,[4,1,2,0,5,3]]
+            #minDate_symbolHistory = minDate_symbolHistory.iloc[:,[4,1,2,0,5,3]]
 
         ## save record to db
         minDate_symbolHistory.to_sql(f"{lookupTablename}", conn, index=False, if_exists='append')
@@ -222,30 +227,38 @@ def _formatpxHistory(pxHistory):
     # get the rows that have timezone info in the date column
     # remove the timezone info from the date column
     # update pxhistory with the formatted date column
-    pxHistory_hasTimezone = pxHistory[pxHistory['date'].str.len() > 19]
-    if not pxHistory_hasTimezone.empty:
-        # remove the timezone info from the date column
-        pxHistory_hasTimezone['date'].str.slice(0,19)
+    #pxHistory_hasTimezone = pxHistory[pxHistory['date'].str.len() > 19]
+    #if not pxHistory_hasTimezone.empty:
+    #    # remove the timezone info from the date column
+    #    pxHistory_hasTimezone['date'].str.slice(0,19)
 
         # update pxhistory with the formatted date column
-        pxHistory.update(pxHistory_hasTimezone)
+    #    pxHistory.update(pxHistory_hasTimezone)
 
-    # final formatting ... 
+    # rename date column and sort 
     pxHistory.rename(columns={'date':'Date'}, inplace=True)
     pxHistory.sort_values(by='Date', inplace=True) #sort by date
-    
+
+    # convert date column to datetime & remove timezone info 
+    pxHistory['Date'] = pd.to_datetime(pxHistory['Date'], format='ISO8601')
+    print(pxHistory.dtypes)
+    print(pxHistory.head(10))
+    pxHistory['Date'] = pxHistory['Date'].dt.tz_localize(None)
+
     # if interval is < 1 day, split the date and time column
     if pxHistory['interval'][0] in ['1min', '5mins', '15mins', '30mins', '1hour']:
         # remove extra timezone info if it exists
         
-        # for any value in the date column of pxhistory where the length is > 19, reduce it to 19
-        pxHistory['Date'] = pxHistory['Date'].apply(lambda x: x[:19] if len(x) > 19 else x) 
+        # select time component of date column
+        pxHistory['Time'] = pxHistory['Date'].dt.time
         
-        # split date into date and time info
-        pxHistory[['Date', 'Time']] = pxHistory['Date'].str.split(' ', expand=True)
+        # select date component of date column
+        pxHistory['Date'] = pxHistory['Date'].dt.date
+
+        #pxHistory[['Date', 'Time']] = pxHistory['Date'].str.split(' ', expand=True)
         # set format for Date and Time columns
-        pxHistory['Date'] = pd.to_datetime(pxHistory['Date'], format='%Y-%m-%d')
-        pxHistory['Time'] = pd.to_datetime(pxHistory['Time'], format='%H:%M:%S')
+        #pxHistory['Date'] = pd.to_datetime(pxHistory['Date'], format='%Y-%m-%d')
+        #pxHistory['Time'] = pd.to_datetime(pxHistory['Time'], format='%H:%M:%S')
     return pxHistory
 
 """
@@ -261,7 +274,7 @@ conn: [Sqlite3 connection object]
 """
 def saveHistoryToDB(history, conn, earliestTimestamp='', type=''):
     ## set type to index if the symbol is in the index list 
-    print(' Adding dates %s to %s'%(history['date'].min(), history['date'].max()))
+    print('%s: Adding %s-%s, dates %s to %s'%(datetime.datetime.now().strftime("%H:%M:%S") , history['symbol'][0], history['interval'][0], history['date'].min(), history['date'].max()))
 
     if type != 'future':
         if history['symbol'][0] in index_list:
@@ -294,7 +307,6 @@ def saveHistoryToDB(history, conn, earliestTimestamp='', type=''):
     else:
         print(' %s: %s-%s[green]...Updated![/green]\n'%(datetime.datetime.now().strftime("%H:%M:%S"), history['symbol'][0], history['interval'][0]))
     
-
 """
 Returns a dataframe of all tables that currently exist in the db with some helpful stats:
 - lastUpdateDate: [datetime] last time the table was updated
@@ -327,7 +339,6 @@ def getRecords(conn):
     
     return records
 
-
 """
 Returns dataframe of px from database 
 
@@ -344,15 +355,26 @@ def getPriceHistory(conn, symbol, interval, withpctchange=False, lastTradeDate='
     tableName = _constructTableName(symbol, interval, lastTradeDate)
     sqlStatement = 'SELECT * FROM '+tableName
     pxHistory = pd.read_sql(sqlStatement, conn)
-    #ensure formatting of retreived data
+    
+    # standardize col formatting 
     pxHistory = _formatpxHistory(pxHistory)
-   
+    
+    # convert date column to datetime
+    #pxHistory['Date'] = pd.to_datetime(pxHistory['Date'], format='ISO8601')
+
+    # remove tzinfo from date column
+    #pxHistory['Date'] = pxHistory['Date'].dt.tz_localize(None)
+
     # calc pct change if requested
     if withpctchange:
         pxHistory['close_pctChange'] = pxHistory['close'].pct_change()
     
     return pxHistory
 
+def getTable(conn, tablename):
+    sqlStatement = 'SELECT * FROM '+tablename
+    table = pd.read_sql(sqlStatement, conn)
+    return table
 """ 
 Returns the lookup table fo records history as df 
 """
@@ -370,13 +392,3 @@ def getLookup_symbolRecords(conn):
         symbolRecords['type'] = symbolRecords['type'].apply(lambda x: 'future' if x.isdigit() else x)
 
     return symbolRecords
-
-"""
-    returns exchange by looking up symbol in database lookup tablee
-"""
-def getLookup_exchange(conn, symbol):
-    exchangeLookupTable = '00-lookup_exchangeMapping'
-    # get exchange from lookup table
-    sql = 'SELECT exchange FROM \'%s\' WHERE symbol=\'%s\'' %(exchangeLookupTable, symbol)
-    
-    return pd.read_sql(sql, conn).values[0][0]
