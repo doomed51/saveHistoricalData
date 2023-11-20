@@ -1,12 +1,12 @@
 # saveHistoricalData
 
-A simple set of scripts to download and store historical data from ibkr
+A simple set of scripts to download and store historical timeseries data for equities and futures from ibkr
 
 Requires ibkr account and appropriate setup for api access. 
 
-Data is stored in SQLite. 
+Data is stored in SQLite3 database files. 
 
-tickerList.csv -> list of symbols to store data for
+tickerList.csv list of symbols to be tracked
 
 
 Basic structure:
