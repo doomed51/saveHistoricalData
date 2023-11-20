@@ -113,9 +113,9 @@ def _updateSingleRecord(ib, symbol, expiry, interval, lookback, endDate=''):
     
     # Get futures history from ibkr
     # Split into multiple calls if interval is 1 min and lookback > 10  
-    if interval == '1 min' and int(lookback.strip(' D')) > 10:
+    if (interval == '1 min') and int(lookback.strip(' D')) > 12:
         # calculate number of calls needed
-        numCalls = int(int(lookback.strip(' D'))/10)
+        numCalls = int(int(lookback.strip(' D'))/12)
         record=pd.DataFrame()
         # loop for numCalls appending records and reducing endDate by lookback each time
         for i in range(1, numCalls):
@@ -132,13 +132,13 @@ def _updateSingleRecord(ib, symbol, expiry, interval, lookback, endDate=''):
         # query ibkr for futures history 
         record = ibkr.getBars_futures(ib, symbol=symbol, lastTradeDate=expiry, interval=interval, endDate=endDate, lookback=lookback, exchange=exchange)
 
+
     # handle case where no records are returned
-    if record is None:
-        print(' [yellow]Skipping to next record[/yellow]\n')
+    if (record is None) or (record.empty):
+        print(' [yellow]End of history[/yellow]')
         # update the lookup table to reflect no records left 
         with db.sqlite_connection(dbName_futures) as conn:
             # set tablename
-
             tablename = symbol+'_'+expiry+'_'+interval.replace(' ', '')
             # get lookuptable
             lookupTable = db.getLookup_symbolRecords(conn)
@@ -157,7 +157,11 @@ def _updateSingleRecord(ib, symbol, expiry, interval, lookback, endDate=''):
 
         # save the data to db 
         with db.sqlite_connection(dbName_futures) as conn:
-            db.saveHistoryToDB(record, conn, earlistTimestamp, type='future')     
+            db.saveHistoryToDB(record, conn, earlistTimestamp, type='future')
+    
+    # sleep
+    print('%s: [yellow]sleeping for %ss...[/yellow]\n'%(datetime.now().strftime('%H:%M:%S'), _defaultSleepTime/6))
+    time.sleep(_defaultSleepTime/6)
         
 """
     returns contracts missing from the db for given specified 
@@ -213,6 +217,8 @@ def _getMissingContracts(ib, symbol, numMonths = numExpiryMonths):
     
     if missingContracts.empty:
         print('  [green]No missing contracts found![/green]')
+    else:
+        print('[yellow] Found %s missing contracts[/yellow]\n'%(str(len(missingContracts))))
     return missingContracts.reset_index(drop=True)
 
 """ 
@@ -249,7 +255,7 @@ def uniqueIDMapper(ib, symbol, expiry):
     - add new contracts, if needed, to maintain numContract number of forward contracts being tracked 
     - finally add new contracts from the watchlist with numConctract number of forward contract 
 """
-def updateRecords():     
+def updateRecords(ib_):     
     
     # get watchlist
     watchlist = pd.read_csv(filename_futuresWatchlist)
@@ -269,30 +275,52 @@ def updateRecords():
     latestRecords = latestRecords.loc[latestRecords['type/expiry'] > datetime.today().strftime('%Y%m%d')].reset_index(drop=True)
 
     # open ibkr connection
-    ib = ibkr.setupConnection()
+    ib = ib_
 
+    # find contracts missing from db 
     missingContracts = pd.DataFrame()
     for symbol in watchlist['symbol']:
         missingContracts = missingContracts._append(_getMissingContracts(ib, symbol))
-
+    
+    # print debug info to console 
+    print('Total missing contracts: %s'%(str(len(missingContracts))))
+    missingContracts['symbol'] = missingContracts['contract'].apply(lambda x: x.symbol)
+    missingContracts['realExpirationDate'] = missingContracts['contract'].apply(lambda x: x.lastTradeDateOrContractMonth)
+    print(missingContracts[['symbol', 'realExpirationDate', 'interval']])
+    print('\n')
+    
     # add lookback columnbased on interval
     missingContracts['lookback'] = missingContracts.apply(
         lambda row: _setLookback(row['interval']), axis=1)
     
-    # update records in our db that have not been updated in the last 24 hours 
-    if not latestRecords.loc[latestRecords['daysSinceLastUpdate'] > 1].empty:
-        for row in (latestRecords.loc[latestRecords['daysSinceLastUpdate'] > 1]).iterrows():
-            _updateSingleRecord(ib, row[1]['symbol'], row[1]['type/expiry'], row[1]['interval'], str(row[1]['daysSinceLastUpdate']+1)+' D')
-
-    # add missing contracts to our db 
+    # add missing contracts to our db
+    if not missingContracts.empty:
+        print('[green]----------------------------------------------[/green]')
+        print('[yellow]---------- Adding missing contracts ---------[/yellow]')
+        print('[green]----------------------------------------------[/green]\n')
     for missingContract in missingContracts.iterrows():
         print('Adding contract %s %s %s'%(missingContract[1]['contract'].symbol, missingContract[1]['realExpirationDate'], missingContract[1]['interval']))
         _updateSingleRecord(ib, missingContract[1]['contract'].symbol, missingContract[1]['realExpirationDate'], missingContract[1]['interval'], missingContract[1]['lookback'])
         # sleep for defaulttime
-        print('%s: sleeping for %ss...'%(datetime.now().strftime('%H:%M:%S'), _defaultSleepTime))
+        print('%s: sleeping for %ss...\n'%(datetime.now().strftime('%H:%M:%S'), _defaultSleepTime))
         time.sleep(_defaultSleepTime)
+
+    print('[green]----------------------------------------------[/green]')
+    print('[green]----- Completed adding missing contracts -----[/green]')
+    print('[green]----------------------------------------------[/green]\n')
+
+    # update records in our db that have not been updated in the last 24 hours 
+    if not latestRecords.loc[latestRecords['daysSinceLastUpdate'] > 1].empty:
+        print('[green]----------------------------------------------[/green]')
+        print('[yellow]--------- Updating outdated records ----------[/yellow]')
+        print('[green]----------------------------------------------[/green]\n')
+        for row in (latestRecords.loc[latestRecords['daysSinceLastUpdate'] > 1]).iterrows():
+            print('%s: Updating contract %s %s %s'%(datetime.now().strftime('%H:%M:%S'), row[1]['symbol'], row[1]['type/expiry'], row[1]['interval']))
+            _updateSingleRecord(ib, row[1]['symbol'], row[1]['type/expiry'], row[1]['interval'], str(row[1]['daysSinceLastUpdate']+1)+' D')
     
-    print('\n[green][underline]All records are up to date![/underline][/green]')
+    print('[green]----------------------------------------------[/green]')
+    print('[green]---- Completed updating outdated records ----[/green]')
+    print('[green]----------------------------------------------[/green]\n')
         
 
 """
@@ -368,6 +396,9 @@ def _dirtyRefreshLookupTable(ib):
                 d. append history to the db
 """
 def _updatePreHistory(lookupTable, ib):
+    print('[green]----------------------------------------------[/green]')
+    print('[yellow]--------- Updating prehistorica data ---------[/yellow]')
+    print('[green]----------------------------------------------[/green]\n')    
     # add a space between digit and alphabet in the interval column 
     lookupTable['interval'] = lookupTable.apply(lambda row: _addspace(row['interval']), axis=1)
     
@@ -380,7 +411,7 @@ def _updatePreHistory(lookupTable, ib):
     # select just the unique symbols from the lookup table
     uniqueSymbol = lookupTable.drop_duplicates(subset=['symbol'])
     with db.sqlite_connection(dbName_futures) as conn:
-        uniqueSymbol = uniqueSymbol.assign(exchange=uniqueSymbol.apply(lambda row: db.getExchange(conn, row['symbol']), axis=1))
+        uniqueSymbol = uniqueSymbol.assign(exchange=uniqueSymbol.apply(lambda row: db.getLookup_exchange(conn, row['symbol']), axis=1))
     
     # set earliestTimestamp to 2 years ago in format YYYYMMDD HH:MM:SS
     uniqueSymbol['earliestTimeStamp'] = (datetime.today() - relativedelta(years=2)).strftime('%Y%m%d %H:%M:%S')
@@ -419,9 +450,6 @@ def _updatePreHistory(lookupTable, ib):
         # query ibkr for history 
         history = ibkr.getBars_futures(ib, symbol=record['symbol'], lastTradeDate=record['lastTradeDate'], interval=record['interval'], endDate=endDate, lookback=lookback, exchange=exchange)
         
-        # if the number of returned records for 1d < lookback, that means we have run out of historical data and should stop updating in the future 
-
-
         # skip to next if no data is returned
         if history is None:
             print(' [yellow]No data found [/yellow]for %s %s %s'%(record['symbol'], record['lastTradeDate'], record['interval']))
@@ -429,6 +457,7 @@ def _updatePreHistory(lookupTable, ib):
             with db.sqlite_connection(dbName_futures) as conn:
                 earliestAvailableTimestamp = db._getFirstRecordDate(record, conn)
                 db._updateLookup_symbolRecords(conn, record['name'], earliestTimestamp=earliestAvailableTimestamp, numMissingDays=0, type='future')
+            print('\n')
             continue
         
         # append symbol, interval, and lastTradeDate columns to align with db schema
@@ -440,12 +469,15 @@ def _updatePreHistory(lookupTable, ib):
         with db.sqlite_connection(dbName_futures) as conn:
             print(' Saving to db...')
             db.saveHistoryToDB(history, conn, earliestAvailableTimestamp)
+        print('\n')
         
         # sleep for 40s every 2 iterations
         if index != len(lookupTable)-1: # dont sleep if we're on the last record
             print('%s: [yellow]Sleeping for %ss...[/yellow]\n'%(datetime.now().strftime('%H:%M:%S'), str(_defaultSleepTime)))
             time.sleep(_defaultSleepTime)
-        
+    print('[green]----------------------------------------------[/green]')
+    print('[green]---- Completed updating prehistoric data -----[/green]')
+    print('[green]----------------------------------------------[/green]\n')
     return
 
 """
@@ -524,12 +556,12 @@ def initializeRecords(ib, watchlist,  updateThresholdDays=1):
 #print('\n[yellow] Checking FUTURES records... [/yellow]')
 #updateRecords()
 ib = ibkr.setupConnection()
+updateRecords(ib)       
 
 with db.sqlite_connection(dbName_futures) as conn:
-    for i in (1,20):
+    for i in (1,3):
         lookupTable = db.getLookup_symbolRecords(conn)
         _updatePreHistory(lookupTable, ib)
 
-#updateRecords()       
 
 
