@@ -127,16 +127,6 @@ def _removeDuplicates(conn, tablename):
     cursor.execute(sql_selectMinId)
 
 """
-    returns exchange:symbol in database lookup tablee
-"""
-def getExchange(conn, symbol):
-    exchangeLookupTable = '00-lookup_exchangeMapping'
-    sql = 'SELECT exchange FROM \'%s\' WHERE symbol=\'%s\'' %(exchangeLookupTable, symbol)
-    exchange = pd.read_sql(sql, conn).values[0][0]
-
-    return exchange
-
-"""
 Utility to update the symbol record lookup table
 This should be called when local db records are updated 
 This should not be run before security history is added to the db 
@@ -294,7 +284,7 @@ def saveHistoryToDB(history, conn, earliestTimestamp='', type=''):
         
     # write history to db
     history.to_sql(f"{tableName}", conn, index=False, if_exists='append')
-    print('[green]  Done! [/green]')
+    print('[green]  Done! [/green]\n')
 
     #make sure there are no duplicates in the resulting table
     _removeDuplicates(conn, tableName)
@@ -303,7 +293,7 @@ def saveHistoryToDB(history, conn, earliestTimestamp='', type=''):
 
     ## print logging info
     if 'lastTradeDate' in history.columns:
-        print(' %s: %s-%s-%s[green]...Updated![/green]\n'%(datetime.datetime.now().strftime("%H:%M:%S"),history['symbol'][0], history['lastTradeDate'][0], history['interval'][0]))
+        print(' %s: %s-%s-%s[green]...Updated![/green]'%(datetime.datetime.now().strftime("%H:%M:%S"),history['symbol'][0], history['lastTradeDate'][0], history['interval'][0]))
     else:
         print(' %s: %s-%s[green]...Updated![/green]\n'%(datetime.datetime.now().strftime("%H:%M:%S"), history['symbol'][0], history['interval'][0]))
     
@@ -392,3 +382,13 @@ def getLookup_symbolRecords(conn):
         symbolRecords['type'] = symbolRecords['type'].apply(lambda x: 'future' if x.isdigit() else x)
 
     return symbolRecords
+
+"""
+    returns exchange:symbol in database lookup tablee
+"""
+def getLookup_exchange(conn, symbol):
+    exchangeLookupTable = '00-lookup_exchangeMapping'
+    sql = 'SELECT exchange FROM \'%s\' WHERE symbol=\'%s\'' %(exchangeLookupTable, symbol)
+    exchange = pd.read_sql(sql, conn).values[0][0]
+
+    return exchange
