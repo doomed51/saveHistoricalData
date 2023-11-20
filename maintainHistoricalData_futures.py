@@ -425,7 +425,7 @@ def _updatePreHistory(lookupTable, ib):
         # print loginfo
         print('%s: [yellow]looking up data for [/yellow]%s-%s, interval: %s'%(datetime.now().strftime("%H:%M:%S"), record.symbol, record['lastTradeDate'], record['interval']))
         
-        # set the endDate to the firstRecordDate minus 1 minute
+        # set the endDate to the firstRecordDate minus 1 time-period
         if record['interval'] == '1 day':
             endDate = (record['firstRecordDate'] - relativedelta(days=1)).strftime('%Y%m%d %H:%M:%S')
         else:
@@ -436,7 +436,7 @@ def _updatePreHistory(lookupTable, ib):
         exchange = uniqueSymbol.loc[uniqueSymbol['symbol'] == record['symbol']]['exchange'].iloc[0]
     
         # set lookback based on history left and interval 
-        if lookback > (record['firstRecordDate'] - earliestAvailableTimestamp).days:
+        if lookback >= (record['firstRecordDate'] - earliestAvailableTimestamp).days:
             lookback = (record['firstRecordDate'] - earliestAvailableTimestamp).days
         elif record['interval'] in ['1 day', '1 month']:
             lookback = 100
@@ -444,15 +444,19 @@ def _updatePreHistory(lookupTable, ib):
             lookback = 3
         else:
             lookback = 30
-        # append ' D' to lookback
-        lookback = str(lookback) + ' D'
 
-        # query ibkr for history 
-        history = ibkr.getBars_futures(ib, symbol=record['symbol'], lastTradeDate=record['lastTradeDate'], interval=record['interval'], endDate=endDate, lookback=lookback, exchange=exchange)
+        # if the lookback is negative, this means we have more data than there is available
+        if lookback < 0:
+            history = None
+        else: # otherwise, get history 
+            # append ' D' to lookback
+            lookback = str(lookback) + ' D'
+            # query for history 
+            history = ibkr.getBars_futures(ib, symbol=record['symbol'], lastTradeDate=record['lastTradeDate'], interval=record['interval'], endDate=endDate, lookback=lookback, exchange=exchange)
         
         # skip to next if no data is returned
         if history is None:
-            print(' [yellow]No data found [/yellow]for %s %s %s'%(record['symbol'], record['lastTradeDate'], record['interval']))
+            print(' [green]No data left [/green]for %s %s %s!'%(record['symbol'], record['lastTradeDate'], record['interval']))
             # set earliestAvailableTimestamp  to min(date) record in the db 
             with db.sqlite_connection(dbName_futures) as conn:
                 earliestAvailableTimestamp = db._getFirstRecordDate(record, conn)
