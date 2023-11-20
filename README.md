@@ -10,15 +10,13 @@ tickerList.csv -> list of symbols to store data for
 
 
 Basic structure:
- - localDbInterface: manages connections and operations on the local store of symbol data 
- - ibkr_gethistoricalData: manages operations on the ibkr api 
- - qt_getHistoricalData: core script that keeps locally available data up-to-date
- 
- Functions in progress: 
- - analysis: seasonal analysis plots 
- - backtest: early experimentation of backtesting functionality 
+ - db interface: manages connections and operations on the local store of symbol data 
+ - ibkr interface: manages operations on the ibkr api 
+ - getHistoricalData: manages equities data
+ - maintainHistoricalData_futures: manages futures data
 
-How to use: 
+Usage: 
 - populate tickerlist.csv with the symbols you want to track
+- Setup config.py (db location, watchlist locations, intervals to track)  
 - open and login to IBKR TWS 
 - run qt_getHistoricalData 
