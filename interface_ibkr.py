@@ -216,7 +216,10 @@ def getEarliestTimeStamp_m(ibkr, symbol='SPY', currency='USD', lastTradeDate='',
     elif lastTradeDate:
         contract = Future(symbol=symbol, lastTradeDateOrContractMonth=lastTradeDate, exchange=exchange, currency=currency)
     else:
-        contract = Stock(symbol, 'SMART', currency)
+        if symbol == 'DXJ':
+            contract = Stock(symbol, 'ARCA', currency)
+        else:
+            contract = Stock(symbol, 'SMART', currency)
     earliestTS = ibkr.reqHeadTimeStamp(contract, useRTH=False, whatToShow='TRADES')
     return pd.to_datetime(earliestTS)
 
