@@ -139,7 +139,6 @@ earliestTimeStamp: earliest timestamp in ibkr
 """
 def _updateLookup_symbolRecords(conn, tablename, type, earliestTimestamp, numMissingDays = 5):
     lookupTablename = '00-lookup_symbolRecords'
-
     ## get the earliest record date as per the db 
     if type == 'future':
         sql_minDate_symbolHistory = 'SELECT MIN(date), symbol, interval, lastTradeDate FROM %s'%(tablename)
@@ -281,10 +280,10 @@ def saveHistoryToDB(history, conn, earliestTimestamp='', type=''):
     else:
         # construct tablename as symbol_type_interval
         tableName = history['symbol'][0]+'_'+type+'_'+history['interval'][0]
-        
+
     # write history to db
     history.to_sql(f"{tableName}", conn, index=False, if_exists='append')
-    print('[green]  Done! [/green]\n')
+    print('[green]  Done! [/green]')
 
     #make sure there are no duplicates in the resulting table
     _removeDuplicates(conn, tableName)
