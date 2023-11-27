@@ -206,13 +206,17 @@ def updateRecordHistory(ibkr, records, indicesWithOutdatedData= pd.DataFrame(), 
                     db.saveHistoryToDB(history, conn, earliestTimestamp=earliestTimestamp)
 
                 print(' [green]Success![/green] New record Added for %s-%s..from %s to %s\n'%(newIndex, _intvl, history['date'].min(), history['date'].max()))
+            
+            print('%s: [yellow]Pausing %ss before next record...[/yellow]\n'%(datetime.datetime.now().strftime("%H:%M:%S"), ibkrThrottleTime))
+            time.sleep(ibkrThrottleTime)
 
     ## update symbols with outdated records 
     if not indicesWithOutdatedData.empty:
         print('\n[blue]Outdated records found. Updating...[/blue]\n')
         pd.to_datetime(indicesWithOutdatedData['lastUpdateDate'], format='ISO8601')
         # reset index
-        indicesWithOutdatedData.reset_index(drop=True, inplace=True)
+        # order by symbol and interval 
+        indicesWithOutdatedData.sort_values(by=['symbol', 'interval'], inplace=True).reset_index(drop=True, inplace=True)
 
         ## regex to add a space between any non-digit and digit (adds a space to interval column)
         indicesWithOutdatedData['interval'].apply(lambda x: re.sub(r'(?<=\d)(?=[a-z])', ' ', x))
@@ -239,7 +243,7 @@ def updateRecordHistory(ibkr, records, indicesWithOutdatedData= pd.DataFrame(), 
 
             # sleep every 3rd record 
             if index % 3 == 0:
-                print('%s: [yellow]Pausing %ss before next record...[/yellow]\n'%(datetime.datetime.now().strftime("%H:%M:%S"), ibkrThrottleTime))
+                print('%s: [yellow]\nPausing %ss before next record...[/yellow]\n'%(datetime.datetime.now().strftime("%H:%M:%S"), ibkrThrottleTime))
                 time.sleep(ibkrThrottleTime)
 
     ##
@@ -268,14 +272,13 @@ def updateRecordHistory(ibkr, records, indicesWithOutdatedData= pd.DataFrame(), 
             with db.sqlite_connection(_dbName_index) as conn:
                 db.saveHistoryToDB(history, conn, earliestTimestamp=earliestTimestamp)
 
-            print('[red]Missing interval[/red] %s-%s...[red]updated![/red]\n'%(_tkr, _intvl))
+            print('[green]Missing interval[/red] %s-%s...[red]updated![/green]\n'%(_tkr, _intvl))
+
+            print('%s: [yellow]\nPausing %ss before next record...[/yellow]\n'%(datetime.datetime.now().strftime("%H:%M:%S"), ibkrThrottleTime))
+            time.sleep(ibkrThrottleTime)
                 
     else: 
         print('\n[green]Existing records are up to date![/green]')
-    
-    # if a connection to the db is open, close it
-    """if conn:
-        conn.close()"""
     
                 
 """
@@ -408,7 +411,7 @@ def updatePreHistoricData(ibkr):
             if currentIterationHistoricalBars.empty:
                 i=numIterations ## quit out of the while loop since there is no data left
                 continue
-
+                        
             ## concatenate history retrieved from ibkr 
             history = pd.concat([history, currentIterationHistoricalBars], ignore_index=True)
             
@@ -419,8 +422,10 @@ def updatePreHistoricData(ibkr):
             ## manual throttling of api requests 
             time.sleep(ibkrThrottleTime/6)
 
+
         # stop updating the symbol as all history has been saved
         if history.empty:
+
             # update the lookup table for the last time 
             with db.sqlite_connection(_dbName_index) as conn:
                 # set type 
@@ -449,7 +454,7 @@ def updatePreHistoricData(ibkr):
             db.saveHistoryToDB(history, conn, earliestAvailableTimestamp)
 
         ## manual throttling: pause before requesting next set of data
-        print('%s: [yellow]Pausing before next record...[/yellow]\n'%(datetime.datetime.now().strftime("%H:%M:%S")))
+        print('%s: [yellow]Pausing %ss before next record...[/yellow]\n'%(datetime.datetime.now().strftime("%H:%M:%S"), ibkrThrottleTime))
         time.sleep(ibkrThrottleTime)
         
 
@@ -539,15 +544,7 @@ def refreshLookupTable(ibkr, dbname):
 """
 function that calls updatePreHistoricData over the course of a night, pausing for 5 minutes between each iteration 
 """
-def bulkUpdate():
-    # check if the time is between 10pm and 4am eastern time
-    #if datetime.datetime.now().hour < 22 or datetime.datetime.now().hour > 4:
-    #    print('[red]Not between 10pm and 4am eastern time. Exiting...[/red]')
-    #    return
-    #print('[yellow]Starting overnight update...[/yellow]')
-    
-    #while datetime.datetime.now().hour > 22 and datetime.datetime.now().hour < 4:
-    
+def bulkUpdate():    
     i=0
     while i < 15:
         i=i+1
@@ -557,16 +554,16 @@ def bulkUpdate():
         if not ibkr.isConnected():  
             print('[red]  Exiting!\n[/red]')
             return
-        
-
+        starttime = datetime.datetime.now()
         refreshLookupTable(ibkr, _dbName_index)
-        
         updatePreHistoricData(ibkr)
         
         ibkr.disconnect()
-        print('%s: Pausing 5 mins before next round\n'%(datetime.datetime.now().strftime("%H:%M:%S")))
-        if i != 5:
+        if i != 15:
+            print('%s: Pausing 5 mins before next round\n'%(datetime.datetime.now().strftime("%H:%M:%S")))
             time.sleep(ibkrThrottleTime * 10)
+        print('Bulk update cycle time: %s'%(datetime.datetime.now() - starttime))
+        print('[green]----------------------------------------[/green]')
 
 updateRecords()
 bulkUpdate()
