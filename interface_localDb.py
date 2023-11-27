@@ -46,7 +46,6 @@ def _removeSpaces(myStr):
     ## remove spaces from mystr
     return myStr.replace(" ", "")
 
-
 """
 lambda function returns numbers of business days since a DBtable was updated
 """
@@ -227,27 +226,18 @@ def _formatpxHistory(pxHistory):
     # rename date column and sort 
     pxHistory.rename(columns={'date':'Date'}, inplace=True)
     pxHistory.sort_values(by='Date', inplace=True) #sort by date
-
-    # convert date column to datetime & remove timezone info 
-    pxHistory['Date'] = pd.to_datetime(pxHistory['Date'], format='ISO8601')
-    print(pxHistory.dtypes)
-    print(pxHistory.head(10))
+    
+    # make sure date column is datetime
+    pxHistory['Date'] = pd.to_datetime(pxHistory['Date'], format='ISO8601', utc=True)
     pxHistory['Date'] = pxHistory['Date'].dt.tz_localize(None)
 
     # if interval is < 1 day, split the date and time column
     if pxHistory['interval'][0] in ['1min', '5mins', '15mins', '30mins', '1hour']:
-        # remove extra timezone info if it exists
-        
         # select time component of date column
-        pxHistory['Time'] = pxHistory['Date'].dt.time
-        
+        pxHistory['Time'] = pxHistory['Date'].dt.time        
         # select date component of date column
         pxHistory['Date'] = pxHistory['Date'].dt.date
 
-        #pxHistory[['Date', 'Time']] = pxHistory['Date'].str.split(' ', expand=True)
-        # set format for Date and Time columns
-        #pxHistory['Date'] = pd.to_datetime(pxHistory['Date'], format='%Y-%m-%d')
-        #pxHistory['Time'] = pd.to_datetime(pxHistory['Time'], format='%H:%M:%S')
     return pxHistory
 
 """
@@ -344,15 +334,9 @@ def getPriceHistory(conn, symbol, interval, withpctchange=False, lastTradeDate='
     tableName = _constructTableName(symbol, interval, lastTradeDate)
     sqlStatement = 'SELECT * FROM '+tableName
     pxHistory = pd.read_sql(sqlStatement, conn)
-    
+
     # standardize col formatting 
     pxHistory = _formatpxHistory(pxHistory)
-    
-    # convert date column to datetime
-    #pxHistory['Date'] = pd.to_datetime(pxHistory['Date'], format='ISO8601')
-
-    # remove tzinfo from date column
-    #pxHistory['Date'] = pxHistory['Date'].dt.tz_localize(None)
 
     # calc pct change if requested
     if withpctchange:
