@@ -4,6 +4,7 @@ import pandas as pd
 ###### DATABASE locations
 dbname_stock = '/workbench/historicalData/venv/saveHistoricalData/historicalData_index.db'
 dbname_future = '/workbench/historicalData/venv/saveHistoricalData/historicalData_futures.db'
+dbname_termstructure = '/workbench/historicalData/venv/saveHistoricalData/termstructure.db'
 
 ###### Watchlist locations 
 watchlist_main = 'tickerList.csv'
@@ -15,8 +16,67 @@ lookupTableName = '00-lookup_symbolRecords'
 intervals = ['1 min', '5 mins', '30 mins', '1 day']
 
 # reference list of indices
-_index = ['VIX', 'VIX3M', 'VVIX', 'SPX', 'VIX1D']
+_index = ['VIX', 'VIX3M', 'VVIX', 'SPX', 'VIX1D', 'TSX']
 
+## dictionary of symbol, currency pairs
+currency_mapping = {
+    'CL': 'USD',
+    'DXJ': 'USD',
+    'ED': 'USD',
+    'ES': 'USD',
+    'FV': 'USD',
+    'GC': 'USD',
+    'GE': 'USD',
+    'HG': 'USD',
+    'NQ': 'USD',
+    'SPX': 'USD',
+    'SI': 'USD',
+    'TN': 'USD',
+    'TSX': 'CAD',
+    'TY': 'USD',
+    'UB': 'USD',
+    'US': 'USD',
+    'VIX': 'USD',
+    'VIX1D': 'USD',
+    'VIX3M': 'USD',
+    'VVIX': 'USD',
+    'XIU': 'CAD',
+    'Z': 'USD',
+    'ZB': 'USD',
+    'ZF': 'USD',
+    'ZN': 'USD',
+    'ZT': 'USD'
+}
+
+
+exchange_mapping = {
+    'CL': 'NYMEX',
+    'DXJ': 'ARCA',
+    'ED': 'GLOBEX',
+    'ES': 'GLOBEX',
+    'FV': 'ECBOT',
+    'GC': 'NYMEX',
+    'GE': 'ECBOT',
+    'HG': 'COMEX',
+    'NQ': 'GLOBEX',
+    'SPX': 'SMART',
+    'SI': 'NYMEX',
+    'TN': 'ECBOT',
+    'TSX': 'TSE',
+    'TY': 'ECBOT',
+    'UB': 'ECBOT',
+    'US': 'ECBOT',
+    'VIX': 'CBOE',
+    'VIX1D': 'CBOE',
+    'VIX3M': 'CBOE',
+    'VVIX': 'CBOE',
+    'XIU': 'SMART',
+    'Z': 'ECBOT',
+    'ZB': 'ECBOT',
+    'ZF': 'ECBOT',
+    'ZN': 'ECBOT',
+    'ZT': 'ECBOT'
+}
 # reference list of symbols with erroneous last historical date in ibkr 
 # create dataframe with columns index, name, earliestTimestamp
 #earliestTimestamp_lookup = pd.DataFrame(columns=['name', 'earliestTimestamp'])
