@@ -13,6 +13,12 @@ import config
 #global list of index symbols
 _index = config._index
 
+# load currency lookup table from config 
+currency_mapping = config.currency_mapping
+
+# load exchange lookup table from config
+exchange_mapping = config.exchange_mapping
+
 ##
 # IBKR API reference: https://interactivebrokers.github.io/tws-api/historical_bars.html
 """
@@ -69,6 +75,12 @@ Returns [DataFrame] of historical data from IBKR with...
         [columns]: date | open | high | low | close | volume | symbol | interval 
 """
 def getBars(ibkr, symbol='SPY', currency='USD', endDate='', lookback='10 D', interval='15 mins', whatToShow='TRADES'):
+    # check if symbol is in currency mapping
+    if symbol in currency_mapping:
+        currency = currency_mapping[symbol]
+    # add exchange
+    if symbol in exchange_mapping:
+        exchange = exchange_mapping[symbol]
     bars = _getHistoricalBars(ibkr, symbol, currency, endDate, lookback, interval, whatToShow)
     
     return bars
@@ -78,21 +90,25 @@ Returns [DataFrame] of historical data for stocks and indexes from IBKR
 
 """
 def _getHistoricalBars(ibkrObj, symbol, currency, endDate, lookback, interval, whatToShow):
-    if symbol in _index:
-        # set the contract to look for
-        contract = Index(symbol, 'CBOE', currency)
+    
+    # set exchange
+    if symbol in exchange_mapping:
+        exchange = exchange_mapping[symbol]
     else:
-        if symbol == 'DXJ':
-            contract = Stock(symbol, 'ARCA', currency) 
-        else:
-            contract = Stock(symbol, 'SMART', currency) 
+        exchange = 'SMART'
+
+    # define contract 
+    if symbol in _index:
+        contract = Index(symbol, exchange, currency)
+    else:
+        contract = Stock(symbol, exchange, currency) 
     
     # make sure endDate is tzaware
     if endDate:
         endDate = endDate.tz_localize('US/Eastern')
-    # grab history from IBKR 
-    try:
-        contractHistory = ibkrObj.reqHistoricalData(
+    
+    # request history from ibkr 
+    contractHistory = ibkrObj.reqHistoricalData(
             contract, 
             endDateTime = endDate,
             durationStr=lookback,
@@ -100,11 +116,8 @@ def _getHistoricalBars(ibkrObj, symbol, currency, endDate, lookback, interval, w
             whatToShow=whatToShow,
             useRTH=False,
             formatDate=1)
-    
-    # except for HistoricalDataError
-    except ib_insync.wrapper.error as e:
-        print(e)
-        
+
+    # convert retrieved data to dataframe    
     contractHistory_df = pd.DataFrame()
     if contractHistory: 
         # convert to dataframe & format for usage
@@ -210,7 +223,11 @@ def _getHistoricalBars_futures_withContract(ibkrObj, contract, endDate, lookback
 Returns [datetime] of earliest datapoint available for index and stock 
 """
 def getEarliestTimeStamp_m(ibkr, symbol='SPY', currency='USD', lastTradeDate='', exchange='SMART'):
-
+    # set currency 
+    if symbol in currency_mapping:
+        currency = currency_mapping[symbol]
+    
+    # set the contract to look for
     if symbol in _index:
         contract = Index(symbol, 'CBOE', currency)
     elif lastTradeDate:
@@ -227,6 +244,9 @@ def getEarliestTimeStamp_m(ibkr, symbol='SPY', currency='USD', lastTradeDate='',
 Returns [datetime] of earliest datapoint available for index and stock, requires Contract object as input
 """
 def getEarliestTimeStamp(ibkr, contract):
+    # check if symbol is in currency mapping
+    if contract.symbol in currency_mapping:
+        contract.currency = currency_mapping[contract.symbol]
 
     earliestTS = ibkr.reqHeadTimeStamp(contract, useRTH=False, whatToShow='TRADES')
     timestamp = pd.to_datetime(earliestTS)
@@ -256,10 +276,16 @@ def getContract(ibkr, symbol, type='stock', currency='USD'):
         currency = 'USD' | 'CAD'
 """
 def getContractDetails(ibkr, symbol, type = 'stock', currency='USD'):
+    
+    # set currency 
+    if symbol in currency_mapping:
+        currency = currency_mapping[symbol]
+    
     # change type to index if in index list
     if type != 'future': 
         if symbol in _index:
             type = 'index'
+
     # grab contract details from IBKR 
     try:
         if type == 'future':
@@ -271,6 +297,6 @@ def getContractDetails(ibkr, symbol, type = 'stock', currency='USD'):
     except Exception as e:
         print(e)
         print('\nCould not retrieve contract details for...%s!'%(symbol))
-        return pd.DataFrame()
+        return pd.DataFrame() 
             
     return contracts
