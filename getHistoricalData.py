@@ -207,16 +207,14 @@ def updateRecordHistory(ibkr, records, indicesWithOutdatedData= pd.DataFrame(), 
 
                 print(' [green]Success![/green] New record Added for %s-%s..from %s to %s\n'%(newIndex, _intvl, history['date'].min(), history['date'].max()))
             
-            print('%s: [yellow]Pausing %ss before next record...[/yellow]\n'%(datetime.datetime.now().strftime("%H:%M:%S"), ibkrThrottleTime))
-            time.sleep(ibkrThrottleTime)
+                print('%s: [yellow]Pausing %ss before next record...[/yellow]\n'%(datetime.datetime.now().strftime("%H:%M:%S"), ibkrThrottleTime/5))
+                time.sleep(ibkrThrottleTime/5)
 
     ## update symbols with outdated records 
     if not indicesWithOutdatedData.empty:
         print('\n[blue]Outdated records found. Updating...[/blue]\n')
         pd.to_datetime(indicesWithOutdatedData['lastUpdateDate'], format='ISO8601')
-        # reset index
-        # order by symbol and interval 
-        indicesWithOutdatedData.sort_values(by=['symbol', 'interval'], inplace=True).reset_index(drop=True, inplace=True)
+        indicesWithOutdatedData = indicesWithOutdatedData.sort_values(by=['symbol', 'interval']).reset_index(drop=True)
 
         ## regex to add a space between any non-digit and digit (adds a space to interval column)
         indicesWithOutdatedData['interval'].apply(lambda x: re.sub(r'(?<=\d)(?=[a-z])', ' ', x))
@@ -241,10 +239,8 @@ def updateRecordHistory(ibkr, records, indicesWithOutdatedData= pd.DataFrame(), 
                 db.saveHistoryToDB(history, conn, earliestTimestamp)
             print('%s-%s...[green]updated![/green]'%(row['symbol'], row['interval']))
 
-            # sleep every 3rd record 
-            if index % 3 == 0:
-                print('%s: [yellow]\nPausing %ss before next record...[/yellow]\n'%(datetime.datetime.now().strftime("%H:%M:%S"), ibkrThrottleTime))
-                time.sleep(ibkrThrottleTime)
+            print('%s: [yellow]\nPausing %ss before next record...[/yellow]\n'%(datetime.datetime.now().strftime("%H:%M:%S"), ibkrThrottleTime/5))
+            time.sleep(ibkrThrottleTime/5)
 
     ##
     ## update missing intervals if we have any 
@@ -400,6 +396,10 @@ def updatePreHistoricData(ibkr):
         while i < numIterations:
             i+=1
             
+            print('%s: [yellow]Pausing %ss before next ibkr call...[/yellow]'%(datetime.datetime.now().strftime("%H:%M:%S"), ibkrThrottleTime/6))
+            ## manual throttling of api requests 
+            time.sleep(ibkrThrottleTime/6)
+            
             # handle error on ib.getbars()
             try:
                 currentIterationHistoricalBars = ib.getBars(ibkr, symbol=row['symbol'], lookback='%s D'%lookback, interval=row['interval'], endDate=endDate)
@@ -419,8 +419,6 @@ def updatePreHistoricData(ibkr):
             endDate = endDate - pd.offsets.BDay(lookback - 1)
             endDate = endDate.replace(hour = 20)
             
-            ## manual throttling of api requests 
-            time.sleep(ibkrThrottleTime/6)
 
 
         # stop updating the symbol as all history has been saved
@@ -545,9 +543,9 @@ def refreshLookupTable(ibkr, dbname):
 function that calls updatePreHistoricData over the course of a night, pausing for 5 minutes between each iteration 
 """
 def bulkUpdate():    
-    i=0
+    i = 0
+    avgcycletime = 0
     while i < 15:
-        i=i+1
         ## connect to ibkr
         ibkr = setupConnection()
 
@@ -559,11 +557,15 @@ def bulkUpdate():
         updatePreHistoricData(ibkr)
         
         ibkr.disconnect()
-        if i != 15:
+        cycletime = (datetime.datetime.now() - starttime).seconds
+        avgcycletime = avgcycletime + cycletime / (i+1)
+        print('Bulk update #%s with cycle time: %s'%(i+1, cycletime))
+        print('Average cycle time: %s'%(avgcycletime ))
+        print('[green]----------------------------------------[/green]')
+        if i != 14:
             print('%s: Pausing 5 mins before next round\n'%(datetime.datetime.now().strftime("%H:%M:%S")))
             time.sleep(ibkrThrottleTime * 10)
-        print('Bulk update cycle time: %s'%(datetime.datetime.now() - starttime))
-        print('[green]----------------------------------------[/green]')
+        i=i+1
 
 updateRecords()
 bulkUpdate()
