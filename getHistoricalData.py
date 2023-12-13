@@ -169,7 +169,7 @@ def updateRecordHistory(ibkr, records, indicesWithOutdatedData= pd.DataFrame(), 
     
     ## add records for symbols newly added to the watchlist 
     if not newlyAddedIndices.empty:
-        print('\n[blue]%s New indicies found[/blue], adding to db...'%(newlyAddedIndices['symbol'].count()))
+        print('\n[blue]%s New symbols found in watchlist[/blue], adding to db...'%(newlyAddedIndices['symbol'].count()))
 
         for newIndex in newlyAddedIndices['symbol']:
             # set type 
@@ -178,7 +178,7 @@ def updateRecordHistory(ibkr, records, indicesWithOutdatedData= pd.DataFrame(), 
             else:
                 type = 'stock'
 
-            ## get earliest record available for ibkr
+            # get earliest datapoint available so we can save it to db 
             earliestTimestamp = ib.getEarliestTimeStamp(ibkr, ib.getContract(ibkr, newIndex, type))
 
             ## add records for each tracked interval 
@@ -193,6 +193,9 @@ def updateRecordHistory(ibkr, records, indicesWithOutdatedData= pd.DataFrame(), 
                 
                 elif (_intvl in ['1 min']):
                     lookback = 15
+                
+                else:
+                    print('[red]Interval not supported![/red]')
                 
                 ## get history from ibkr 
                 print('Adding %s - %s interval - %s day lookback'%(newIndex, _intvl, lookback))
@@ -237,9 +240,8 @@ def updateRecordHistory(ibkr, records, indicesWithOutdatedData= pd.DataFrame(), 
             ## save history to db 
             with db.sqlite_connection(_dbName_index) as conn:
                 db.saveHistoryToDB(history, conn, earliestTimestamp)
-            print('%s-%s...[green]updated![/green]'%(row['symbol'], row['interval']))
-
-            print('%s: [yellow]\nPausing %ss before next record...[/yellow]\n'%(datetime.datetime.now().strftime("%H:%M:%S"), ibkrThrottleTime/5))
+            
+            print('\n%s: [yellow]Pausing %ss before next record...[/yellow]\n'%(datetime.datetime.now().strftime("%H:%M:%S"), ibkrThrottleTime/5))
             time.sleep(ibkrThrottleTime/5)
 
     ##
@@ -544,8 +546,9 @@ function that calls updatePreHistoricData over the course of a night, pausing fo
 """
 def bulkUpdate():    
     i = 0
-    avgcycletime = 0
-    while i < 15:
+    numcycles=15
+    cycletime_= [0] * (numcycles+1)
+    while i < numcycles:
         ## connect to ibkr
         ibkr = setupConnection()
 
@@ -558,14 +561,18 @@ def bulkUpdate():
         
         ibkr.disconnect()
         cycletime = (datetime.datetime.now() - starttime).seconds
-        avgcycletime = avgcycletime + cycletime / (i+1)
-        print('Bulk update #%s with cycle time: %s'%(i+1, cycletime))
-        print('Average cycle time: %s'%(avgcycletime ))
+        
+        cycletime_[i+1] = cycletime
+        print('Bulk update #%s with cycle time: %.2f'%(i+1, cycletime))
+        print('Average cycle time: %s'%(sum(cycletime_)/len(cycletime_) ))
         print('[green]----------------------------------------[/green]')
         if i != 14:
             print('%s: Pausing 5 mins before next round\n'%(datetime.datetime.now().strftime("%H:%M:%S")))
             time.sleep(ibkrThrottleTime * 10)
         i=i+1
 
-updateRecords()
+
+## update existing records after EST market close  
+if (datetime.datetime.today().weekday() < 5 and datetime.datetime.now().hour > 17) or (datetime.datetime.today().weekday() >= 6):
+    updateRecords()
 bulkUpdate()
