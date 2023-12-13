@@ -59,7 +59,7 @@ exchange_mapping = {
     'GE': 'ECBOT',
     'HG': 'COMEX',
     'NQ': 'GLOBEX',
-    'SPX': 'SMART',
+    'SPX': 'CBOE',
     'SI': 'NYMEX',
     'TN': 'ECBOT',
     'TSX': 'TSE',
