@@ -78,9 +78,6 @@ def getBars(ibkr, symbol='SPY', currency='USD', endDate='', lookback='10 D', int
     # check if symbol is in currency mapping
     if symbol in currency_mapping:
         currency = currency_mapping[symbol]
-    # add exchange
-    if symbol in exchange_mapping:
-        exchange = exchange_mapping[symbol]
     bars = _getHistoricalBars(ibkr, symbol, currency, endDate, lookback, interval, whatToShow)
     
     return bars
@@ -227,16 +224,19 @@ def getEarliestTimeStamp_m(ibkr, symbol='SPY', currency='USD', lastTradeDate='',
     if symbol in currency_mapping:
         currency = currency_mapping[symbol]
     
+    # set exchange
+    if symbol in exchange_mapping:
+        exchange = exchange_mapping[symbol]
+    else: 
+        exchange = 'SMART'
+    
     # set the contract to look for
     if symbol in _index:
-        contract = Index(symbol, 'CBOE', currency)
+        contract = Index(symbol, exchange, currency)
     elif lastTradeDate:
         contract = Future(symbol=symbol, lastTradeDateOrContractMonth=lastTradeDate, exchange=exchange, currency=currency)
     else:
-        if symbol == 'DXJ':
-            contract = Stock(symbol, 'ARCA', currency)
-        else:
-            contract = Stock(symbol, 'SMART', currency)
+        contract = Stock(symbol, exchange, currency)
     earliestTS = ibkr.reqHeadTimeStamp(contract, useRTH=False, whatToShow='TRADES')
     return pd.to_datetime(earliestTS)
 
