@@ -8,9 +8,10 @@ This module simplifies interacting with the local database of historical ohlc da
 
 """
 
-import sqlite3
+import config
 import datetime
 import re
+import sqlite3
 
 import pandas as pd
 
@@ -19,7 +20,7 @@ from rich import print
 """ Global vars """
 dbname_stocks = 'historicalData_index.db' ## stock data location
 
-index_list = ['VIX', 'VIX3M', 'VVIX', 'SPX', 'VIX1D'] # global reference list of index symbols, this is some janky ass shit .... 
+index_list = config._index 
 
 """
     A context manager to help manage connections with the sqlite database 
