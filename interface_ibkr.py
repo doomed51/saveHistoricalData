@@ -8,6 +8,7 @@ import ib_insync.wrapper
 import datetime
 import sqlite3
 import sys
+import time
 import config
 
 #global list of index symbols
@@ -275,8 +276,10 @@ def getContract(ibkr, symbol, type='stock', currency='USD'):
         type = 'stock' | 'future' | 'index'
         currency = 'USD' | 'CAD'
 """
-def getContractDetails(ibkr, symbol, type = 'stock', currency='USD'):
-    
+def getContractDetails(ibkr, symbol, type = 'stock', currency='USD', delay=False):
+    if delay:
+        #print(' %s: [yellow]delaying request for 1 seconds...[/yellow]'%(datetime.datetime.now().strftime('%H:%M:%S')))
+        time.sleep(1)
     # set currency 
     if symbol in currency_mapping:
         currency = currency_mapping[symbol]
@@ -285,7 +288,6 @@ def getContractDetails(ibkr, symbol, type = 'stock', currency='USD'):
     if type != 'future': 
         if symbol in _index:
             type = 'index'
-
     # grab contract details from IBKR 
     try:
         if type == 'future':
