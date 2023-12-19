@@ -241,8 +241,8 @@ def updateRecordHistory(ibkr, records, indicesWithOutdatedData= pd.DataFrame(), 
             with db.sqlite_connection(_dbName_index) as conn:
                 db.saveHistoryToDB(history, conn, earliestTimestamp)
             
-            print('\n%s: [yellow]Pausing %ss before next record...[/yellow]\n'%(datetime.datetime.now().strftime("%H:%M:%S"), ibkrThrottleTime/5))
-            time.sleep(ibkrThrottleTime/5)
+            print('%s: [yellow]Pausing %ss before next record...[/yellow]'%(datetime.datetime.now().strftime("%H:%M:%S"), ibkrThrottleTime/4))
+            time.sleep(ibkrThrottleTime/4)
 
     ##
     ## update missing intervals if we have any 
@@ -325,29 +325,26 @@ def updatePreHistoricData(ibkr):
     # read in the lookup table 
     with db.sqlite_connection(_dbName_index) as conn:
         lookupTable = db.getLookup_symbolRecords(conn)
-
     # select records that are missing more than 2 business days of data
     lookupTable = lookupTable.loc[lookupTable['numMissingBusinessDays'] > 2].reset_index(drop=True)
-    
     # exit if nothing to update
     if lookupTable.empty:
         print('[green]All historic data has been loaded![/green]')
         exit()
-
     # format lookupTable
     lookupTable['interval'] = lookupTable['interval'].apply(lambda x: _addspace(x))
     lookupTable.sort_values(by=['symbol'], inplace=True)
-    
     # get earliest availeble timestamp for each symbol in the lookup table 
     uniqueSymbolsInLookupTable = pd.DataFrame({'symbol':lookupTable['symbol'].unique()})
     # set type column 
     uniqueSymbolsInLookupTable['type'] = uniqueSymbolsInLookupTable['symbol'].apply(
         lambda x: 'index' if x in _indexList else 'stock')
     
-    uniqueSymbolsInLookupTable['earliestAvailableTimestamp'] = uniqueSymbolsInLookupTable.apply(lambda x: ib.getEarliestTimeStamp(ibkr, ib.getContractDetails(ibkr, x['symbol'], type = x['type'])[0].contract), axis=1)
+    uniqueSymbolsInLookupTable['earliestAvailableTimestamp'] = uniqueSymbolsInLookupTable.apply(lambda x: ib.getEarliestTimeStamp(ibkr, ib.getContractDetails(ibkr, x['symbol'], type = x['type'], delay=True)[0].contract), axis=1)
 
     # loop through each reccord in the lookup table
     for index, row in lookupTable.iterrows():
+        print('4')
         ## set earliestAvailableTimestamp to the matching symbol in uniqueSymbolsInLookupTable
         earliestAvailableTimestamp = uniqueSymbolsInLookupTable.loc[uniqueSymbolsInLookupTable['symbol'] == row['symbol']]['earliestAvailableTimestamp'].values[0]
         
@@ -368,7 +365,7 @@ def updatePreHistoricData(ibkr):
             lookback = 100
         else:
             lookback = 30
-        
+
         # initiate 'enddate from the last time history was updated, manually set hour 
         # to end of day so no data is missed (duplicates are handled later)
         endDate = row['firstRecordDate']#-pd.offsets.BDay(1)
@@ -489,7 +486,7 @@ def refreshLookupTable(ibkr, dbname):
         lookupRecords_uniqueSymbols = pd.DataFrame({'symbol':lookupRecords['symbol'].unique()})
         lookupRecords_uniqueSymbols['earliestAvailableTimestamp'] = lookupRecords_uniqueSymbols['symbol'].apply(
             lambda x: ib.getEarliestTimeStamp(ibkr, 
-                                              ib.getContractDetails(ibkr,x)[0].contract))
+                                              ib.getContractDetails(ibkr,x, delay=True)[0].contract))
 
         ## merge the earliest availabe timestamp from ibkr with the records table
         records_withEarliestAvailableDate = pd.merge(lookupRecords, lookupRecords_uniqueSymbols, how='left', on='symbol')
@@ -557,6 +554,11 @@ def bulkUpdate():
             return
         starttime = datetime.datetime.now()
         refreshLookupTable(ibkr, _dbName_index)
+        # pause for default time 
+        #print('%s: Pausing %s seconds after ibkr call\n'%(datetime.datetime.now().strftime("%H:%M:%S"), ibkrThrottleTime*3))
+        #time.sleep(ibkrThrottleTime*3)
+        ibkr.disconnect()
+        ibkr = setupConnection()
         updatePreHistoricData(ibkr)
         
         ibkr.disconnect()
@@ -571,8 +573,7 @@ def bulkUpdate():
             time.sleep(ibkrThrottleTime * 10)
         i=i+1
 
-
 ## update existing records after EST market close  
-if (datetime.datetime.today().weekday() < 5 and datetime.datetime.now().hour > 17) or (datetime.datetime.today().weekday() >= 6):
+if (datetime.datetime.today().weekday() < 5 and datetime.datetime.now().hour >= 17) or (datetime.datetime.today().weekday() >= 6):
     updateRecords()
 bulkUpdate()
