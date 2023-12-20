@@ -142,7 +142,6 @@ def _getHistoricalBars_futures(ibkrObj, symbol, exchange, lastTradeDate, currenc
     ## Future contract type definition: https://ib-insync.readthedocs.io/api.html#ib_insync.contract.Future
     ## contract month, or day format: YYYYMM or YYYYMMDD
     contract = Future(symbol=symbol, lastTradeDateOrContractMonth=lastTradeDate, exchange=exchange, currency=currency, includeExpired=True)
-
     # make sure endDate is tzaware
     if endDate:
         # convert to pd series
@@ -228,8 +227,6 @@ def getEarliestTimeStamp_m(ibkr, symbol='SPY', currency='USD', lastTradeDate='',
     # set exchange
     if symbol in exchange_mapping:
         exchange = exchange_mapping[symbol]
-    else: 
-        exchange = 'SMART'
     
     # set the contract to look for
     if symbol in _index:
