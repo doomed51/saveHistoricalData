@@ -147,7 +147,7 @@ def _getHistoricalBars_futures(ibkrObj, symbol, exchange, lastTradeDate, currenc
         # convert to pd series
         endDate = pd.to_datetime(endDate)
         endDate = endDate.tz_localize('US/Eastern')
-    print(' %s: [yellow]calling ibkr[/yellow]'%(datetime.datetime.now().strftime('%H:%M:%S')))
+    print(' %s: [yellow]Calling ibkr for futures data[/yellow]'%(datetime.datetime.now().strftime('%H:%M:%S')))
     try:
         # grab history from IBKR 
         contractHistory = ibkrObj.reqHistoricalData(
@@ -163,7 +163,7 @@ def _getHistoricalBars_futures(ibkrObj, symbol, exchange, lastTradeDate, currenc
         print('\nCould not retrieve history for...%s!'%(symbol))
         return pd.DataFrame()
     finally:
-        print(' %s: ibkr call complete'%(datetime.datetime.now().strftime('%H:%M:%S')))
+        print(' %s: [green]Call successful[/green]'%(datetime.datetime.now().strftime('%H:%M:%S')))
     
     contractHistory_df = pd.DataFrame()
     if contractHistory: 
