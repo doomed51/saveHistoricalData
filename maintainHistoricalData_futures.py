@@ -138,7 +138,7 @@ def _updateSingleRecord(ib, symbol, expiry, interval, lookback, endDate=''):
     print(record)
     # handle case where no records are returned
     if (record is None) or (record.empty):
-        print(' [yellow]End of history[/yellow]')
+        print('[green]End of history![/green]')
         # update the lookup table to reflect no records left 
         with db.sqlite_connection(dbName_futures) as conn:
             # set tablename
