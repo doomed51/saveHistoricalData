@@ -119,20 +119,23 @@ def _updateSingleRecord(ib, symbol, expiry, interval, lookback, endDate=''):
         record=pd.DataFrame()
         # loop for numCalls appending records and reducing endDate by lookback each time
         for i in range(1, numCalls):
-            # get history from ibkr and append to records
-            record = record._append(ibkr.getBars_futures(ib, symbol=symbol, lastTradeDate=expiry, interval=interval, endDate=endDate, lookback='10 D', exchange=exchange))
-            
-            # sleep
-            print('%s: sleeping for %ss...'%(datetime.now().strftime('%H:%M:%S'), _defaultSleepTime/6))
-            time.sleep(_defaultSleepTime/6)
-            # update endDate
-            endDate = record['date'].min()
+            bars = ibkr.getBars_futures(ib, symbol=symbol, lastTradeDate=expiry, interval=interval, endDate=endDate, lookback='10 D', exchange=exchange)
+            if not record.empty:
+                record = record._append(bars)   
+                endDate = record['date'].min() # update endDate for next loop 
+                print('%s: [orange]sleeping for %ss...[/orange]'%(datetime.now().strftime('%H:%M:%S'), _defaultSleepTime/6))
+                time.sleep(_defaultSleepTime/6)
+            elif record.empty:
+                i=numCalls # break loop when record is empty
+        
+        record.reset_index(drop=True, inplace=True)
+    
     # otherwise made a single call to ibkr
     else:
         # query ibkr for futures history 
         record = ibkr.getBars_futures(ib, symbol=symbol, lastTradeDate=expiry, interval=interval, endDate=endDate, lookback=lookback, exchange=exchange)
 
-
+    print(record)
     # handle case where no records are returned
     if (record is None) or (record.empty):
         print(' [yellow]End of history[/yellow]')
@@ -268,8 +271,6 @@ def updateRecords(ib_):
     # get latest data from db
     with db.sqlite_connection(dbName_futures) as conn:
         latestRecords = db.getRecords(conn)
-        # select only records with symbol = symbol
-        #latestRecords = latestRecords.loc[latestRecords['symbol'] == symbol].reset_index(drop=True)
     
     # drop latestRecords where expiry is before current date
     latestRecords = latestRecords.loc[latestRecords['type/expiry'] > datetime.today().strftime('%Y%m%d')].reset_index(drop=True)
@@ -314,6 +315,8 @@ def updateRecords(ib_):
         print('[green]----------------------------------------------[/green]')
         print('[yellow]--------- Updating outdated records ----------[/yellow]')
         print('[green]----------------------------------------------[/green]\n')
+
+        # print recodrs where type/expiry is before current date
         for row in (latestRecords.loc[latestRecords['daysSinceLastUpdate'] > 1]).iterrows():
             print('%s: Updating contract %s %s %s'%(datetime.now().strftime('%H:%M:%S'), row[1]['symbol'], row[1]['type/expiry'], row[1]['interval']))
             _updateSingleRecord(ib, row[1]['symbol'], row[1]['type/expiry'], row[1]['interval'], str(row[1]['daysSinceLastUpdate']+1)+' D')
@@ -563,7 +566,7 @@ ib = ibkr.setupConnection()
 updateRecords(ib)       
 
 with db.sqlite_connection(dbName_futures) as conn:
-    for i in (1,3):
+    for i in range(3):
         lookupTable = db.getLookup_symbolRecords(conn)
         _updatePreHistory(lookupTable, ib)
 
