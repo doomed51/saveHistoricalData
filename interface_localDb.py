@@ -18,8 +18,7 @@ import pandas as pd
 from rich import print
 
 """ Global vars """
-dbname_stocks = 'historicalData_index.db' ## stock data location
-
+dbname_stocks = config.dbname_stock ## stock data location
 index_list = config._index 
 
 """
