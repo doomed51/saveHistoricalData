@@ -2,9 +2,9 @@ import pandas as pd
 
 
 ###### DATABASE locations
-dbname_stock = '/workbench/historicalData/venv/saveHistoricalData/historicalData_index.db'
-dbname_future = '/workbench/historicalData/venv/saveHistoricalData/historicalData_futures.db'
-dbname_termstructure = '/workbench/historicalData/venv/saveHistoricalData/termstructure.db'
+dbname_stock = '/workbench/historicalData/venv/saveHistoricalData/data/historicalData_index.db'
+dbname_futures = '/workbench/historicalData/venv/saveHistoricalData/data/historicalData_futures.db'
+dbname_termstructure = '/workbench/historicalData/venv/saveHistoricalData/data/termstructure.db'
 
 ###### Watchlist locations 
 watchlist_main = 'tickerList.csv'
