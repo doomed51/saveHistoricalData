@@ -44,7 +44,7 @@ import interface_localDb as db
 pd.set_option('display.max_rows', None)
 
 _tickerFilepath = config.watchlist_main ## List of symbols to keep track of
-_dbName_index = 'historicalData_index.db' ## Default DB names 
+_dbName_index = config.dbname_stock ## Default DB names 
 
 intervals_index = config.intervals
 _indexList = config._index
@@ -130,6 +130,7 @@ def updateRecords(updateThresholdDays = 2):
     with db.sqlite_connection(_dbName_index) as conn:
         # merge into master records list 
         records = db.getRecords(conn)
+
         if not records.empty: ## if database contains some records, check if any need to be updated
             symbolsWithOutdatedData = records.loc[records['daysSinceLastUpdate'] >= updateThresholdDays]
             newlyAddedSymbols = symbolList[~symbolList['symbol'].isin(records['symbol'])]
@@ -464,6 +465,7 @@ def refreshLookupTable(ibkr, dbname):
         
         ## get a fresh read of local db records & clean them up
         records = db.getRecords(conn) 
+
         records['interval'] = records['interval'].str.replace(' ', '')
         records.rename(columns={'type/expiry':'type'}, inplace=True)
 
@@ -559,6 +561,7 @@ def bulkUpdate():
         #time.sleep(ibkrThrottleTime*3)
         ibkr.disconnect()
         ibkr = setupConnection()
+        
         updatePreHistoricData(ibkr)
         
         ibkr.disconnect()
