@@ -34,7 +34,7 @@ _defaultSleepTime = 30 #seconds, wait time between ibkr api calls
     global variables
 """
 filename_futuresWatchlist = 'futuresWatchlist.csv'
-dbName_futures = 'historicalData_futures.db'
+dbName_futures = config.dbname_futures
 trackedIntervals = config.intervals
 numExpiryMonths = 14 # number of future expiries we want to track at any given time 
 
