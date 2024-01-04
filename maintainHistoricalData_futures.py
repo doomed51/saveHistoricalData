@@ -135,7 +135,6 @@ def _updateSingleRecord(ib, symbol, expiry, interval, lookback, endDate=''):
         # query ibkr for futures history 
         record = ibkr.getBars_futures(ib, symbol=symbol, lastTradeDate=expiry, interval=interval, endDate=endDate, lookback=lookback, exchange=exchange)
 
-    print(record)
     # handle case where no records are returned
     if (record is None) or (record.empty):
         print('[green]End of history![/green]')
