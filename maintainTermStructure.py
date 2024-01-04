@@ -7,27 +7,66 @@ import config
 import pandas as pd
 import interface_localDb as db 
 
-##################
-########LAMBDA FUNCTIONS ***
-##################
+dbanme_termstructure = config.dbname_termstructure
+dbpath_futures = config.dbname_futures
 
 """
-    returns average volume for given tablename 
+    Lambda function - Returns average volume for given tablename 
 """
 def _averageContractVolume(conn, tablename):
     # get data from tablename 
     sql = "SELECT * FROM %s"%(tablename)
     df = pd.read_sql(sql, conn)
-    #df = db.getSymbolRecords(conn, tablename)
     
     # calculate average volume 
     averageVolume = df['volume'].mean()
     
     return averageVolume
 
-##################
-### LAMBDA FUNCTIONS END ***
-##################
+"""
+Used for when appending data to existing db tables
+    Permanently removes duplicate records from table
+
+Params
+==========
+tablename - [str]
+"""
+def _removeDuplicates(conn, tablename):
+    ## construct SQL qeury that will group on 'date' column and
+    ## select the min row ID of each group; then delete all the ROWIDs from 
+    ## the table that not in this list
+    sql_selectMinId = 'DELETE FROM %s WHERE ROWID NOT IN (SELECT MIN(ROWID) FROM %s GROUP BY date)'%(tablename, tablename)
+    ## run the query 
+    cursor = conn.cursor()
+    cursor.execute(sql_selectMinId)
+
+"""
+    Gets next n contracts in the db for a given symbol
+"""
+def _getNextContracts(conn, symbol, numContracts, interval='1day'):
+        # get lookup table that is an index of all the tables in our db
+        lookupTable = db.getLookup_symbolRecords(conn)
+
+        # explicitly convert lastTradeDate to datetime
+        lookupTable['lastTradeDate'] = pd.to_datetime(lookupTable['lastTradeDate'])
+    
+        # Slect contracts in our db expiring after today  
+        lookupTable = lookupTable.loc[(
+            lookupTable['symbol'] == symbol) & 
+            (lookupTable['interval'] == interval) & 
+            (lookupTable['lastTradeDate'] > pd.Timestamp.today())].sort_values(by='lastTradeDate').reset_index(drop=True)
+        
+        # select highest volume contracts for a given month since we care about the most 
+        # liquid contracts which are generally the standard expiries 
+        lookupTable['averageVolume'] = lookupTable.apply(lambda x: _averageContractVolume(conn, x['name']), axis=1)
+        lookupTable['lastTradeDate_month'] = lookupTable['lastTradeDate'].dt.month
+        lookupTable = lookupTable.groupby(['lastTradeDate_month']).apply(lambda x: x.sort_values(by='averageVolume', ascending=False).head(1)).reset_index(drop=True)
+
+        # sort by lastTradeDate and select just the next n contracts
+        lookupTable = lookupTable.sort_values(by='lastTradeDate').reset_index(drop=True)
+        lookupTable = lookupTable.head(numContracts)
+
+        return lookupTable
 
 """
     Gets term structure data for a given symbol
@@ -36,62 +75,54 @@ def _averageContractVolume(conn, tablename):
     @param lookahead_months: number of months to look ahead
     @return: dataframe of term structure data: [date, close1, close2, ...]
 """
-def getTermStructure(symbol, interval='1day', lookahead_months=8): 
+def getTermStructure(symbol:str, interval='1day', lookahead_months=9): 
     # convert to uppercase to follow db naming conventions 
     symbol = symbol.upper()
-
-    # read current ts data 
-    dbPath_termstructure = config.dbname_termstructure
-    dbpath_futures = config.dbname_future
-
-    # get lookuptable from futures db 
-    with db.sqlite_connection(dbpath_futures) as conn_futures:
-        lookupTable = db.getLookup_symbolRecords(conn_futures)
-
-        # explicitly convert lastTradeDate to datetime
-        lookupTable['lastTradeDate'] = pd.to_datetime(lookupTable['lastTradeDate'])
     
-        # Slect contracts expiring after today  
-        lookupTable = lookupTable.loc[(
-            lookupTable['symbol'] == symbol) & 
-            (lookupTable['interval'] == interval) & 
-            (lookupTable['lastTradeDate'] > pd.Timestamp.today())].sort_values(by='lastTradeDate').reset_index(drop=True)
-        
-        # select highest volume contracts for a given month 
-        lookupTable['averageVolume'] = lookupTable.apply(lambda x: _averageContractVolume(conn_futures, x['name']), axis=1)
-        lookupTable['lastTradeDate_month'] = lookupTable['lastTradeDate'].dt.month
-        lookupTable = lookupTable.groupby(['lastTradeDate_month']).apply(lambda x: x.sort_values(by='averageVolume', ascending=False).head(1)).reset_index(drop=True)
+    # read in pxhistory for next n contracts 
+    with db.sqlite_connection(dbpath_futures) as conn_futures:
+        lookupTable = _getNextContracts(conn_futures, symbol, lookahead_months, interval)
 
-        # sort by lastTradeDate
-        lookupTable = lookupTable.sort_values(by='lastTradeDate').reset_index(drop=True)
-
-        # select only the next 8 contracts
-        lookupTable = lookupTable.head(lookahead_months)
-
-        # create list of dataframes 
-        month = []
-
+        # create list of pxHistory dataframes
+        termStructure_raw = []
         # get price history for each relevant contract 
         for index, row in lookupTable.iterrows():
             pxHistory = db.getTable(conn_futures, row['name'])
             # set index to date column
             pxHistory.set_index('date', inplace=True)
             # rename close column
-            pxHistory.rename(columns={'close': 'close%s(%s)'%(index+1, pxHistory['lastTradeDate'][0])}, inplace=True)
-            month.append(pxHistory['close%s(%s)'%(index+1, pxHistory['lastTradeDate'][0])])
+            pxHistory.rename(columns={'close': 'month%s'%(index+1)}, inplace=True)
+            termStructure_raw.append(pxHistory['month%s'%(index+1)])
     
-    termStructure = pd.concat(month, axis=1).sort_values(by='date').reset_index()
+    termStructure = pd.concat(termStructure_raw, axis=1).sort_values(by='date').reset_index()
     # drop records with NaN values
     termStructure.dropna(inplace=True)
 
-    print( termStructure.reset_index(drop=True) )
+    # add descriptive columns for later reference 
+    termStructure['symbol'] = symbol
+    termStructure['interval'] = interval
 
-    # print description of each dataframe in month list
-    #for df in month:
-    #    print(df.describe())
-    
+    return termStructure.reset_index(drop=True)
 
-    # if latest record is more than 24 hours old, add new data
-        #   get a list of available expiries in the db 
+"""
+    Save term structure data to local db
+"""
+def saveTermStructure(termStructure):
+    # set the tablename for insertion 
+    symbol = termStructure['symbol'][0]
+    interval = termStructure['interval'][0]
+    tablename = '%s_%s'%(symbol, interval)
 
-getTermStructure('ng')
+    # format termstructure dataframe for insertion 
+    termStructure.drop(columns=['symbol', 'interval'], inplace=True)
+
+    # save termstructure to db 
+    dbpath_termstructure = config.dbname_termstructure
+    with db.sqlite_connection(dbpath_termstructure) as conn:
+         termStructure.to_sql(tablename, conn, if_exists='append', index=False)
+         _removeDuplicates(conn, tablename)
+        
+
+x = getTermStructure('ng', interval='5mins')
+#saveTermStructure(x)
+print(x)
