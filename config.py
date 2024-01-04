@@ -60,6 +60,7 @@ exchange_mapping = {
     'GC': 'NYMEX',
     'GE': 'ECBOT',
     'HG': 'COMEX',
+    'IBM': 'NYSE',
     'NQ': 'GLOBEX',
     'SPX': 'CBOE',
     'SI': 'NYMEX',
