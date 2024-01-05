@@ -80,9 +80,3 @@ exchange_mapping = {
     'ZN': 'ECBOT',
     'ZT': 'ECBOT'
 }
-# reference list of symbols with erroneous last historical date in ibkr 
-# create dataframe with columns index, name, earliestTimestamp
-#earliestTimestamp_lookup = pd.DataFrame(columns=['name', 'earliestTimestamp'])
-#earliestTimestamp_lookup.loc[0] = ['VIX_index_1min', '2018-01-03 09:31:00']
-#earliestTimestamp_lookup.loc[1] = ['VIX3M_index_1min', '2012-10-31 09:31:00']
-#earliestTimestamp_lookup.loc[2] = ['VVIX_index_1min', '2014-05-14 09:31:00']
