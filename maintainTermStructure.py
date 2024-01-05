@@ -12,6 +12,8 @@ dbpath_futures = config.dbname_futures
 
 """
     Lambda function - Returns average volume for given tablename 
+        - Used to determine which contract is most liquid for a given month, 
+           and therefore worth tracking data for 
 """
 def _averageContractVolume(conn, tablename):
     # get data from tablename 
@@ -109,20 +111,26 @@ def getTermStructure(symbol:str, interval='1day', lookahead_months=9):
 """
 def saveTermStructure(termStructure):
     # set the tablename for insertion 
-    symbol = termStructure['symbol'][0]
-    interval = termStructure['interval'][0]
-    tablename = '%s_%s'%(symbol, interval)
+    dbpath_termstructure = config.dbname_termstructure
+    tablename = '%s_%s'%(termStructure['symbol'][0], termStructure['interval'][0])
 
+    # Only select dates that we don't already have ts data for
+    with db.sqlite_connection(dbpath_termstructure) as conn:
+        ts_db = db.getTable(conn, tablename)
+
+    # select termstructure records not in ts_db 
+    termStructure = termStructure.loc[~termStructure['date'].isin(ts_db['date'])].copy()
+    
+    # handle case wherewe don't have any new term structure data to update
+    if termStructure.empty:
+        print('Termstructure data up to date for %s'%(tablename))
+        return
     # format termstructure dataframe for insertion 
     termStructure.drop(columns=['symbol', 'interval'], inplace=True)
 
     # save termstructure to db 
-    dbpath_termstructure = config.dbname_termstructure
     with db.sqlite_connection(dbpath_termstructure) as conn:
          termStructure.to_sql(tablename, conn, if_exists='append', index=False)
          _removeDuplicates(conn, tablename)
         
 
-x = getTermStructure('ng', interval='5mins')
-#saveTermStructure(x)
-print(x)
