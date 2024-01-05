@@ -9,6 +9,7 @@ import interface_localDb as db
 
 dbanme_termstructure = config.dbname_termstructure
 dbpath_futures = config.dbname_futures
+trackedIntervals = config.intervals
 
 """
     Lambda function - Returns average volume for given tablename 
@@ -77,7 +78,7 @@ def _getNextContracts(conn, symbol, numContracts, interval='1day'):
     @param lookahead_months: number of months to look ahead
     @return: dataframe of term structure data: [date, close1, close2, ...]
 """
-def getTermStructure(symbol:str, interval='1day', lookahead_months=9): 
+def getTermStructure(symbol:str, interval='1day', lookahead_months=8): 
     # convert to uppercase to follow db naming conventions 
     symbol = symbol.upper()
     
@@ -114,17 +115,20 @@ def saveTermStructure(termStructure):
     dbpath_termstructure = config.dbname_termstructure
     tablename = '%s_%s'%(termStructure['symbol'][0], termStructure['interval'][0])
 
-    # Only select dates that we don't already have ts data for
     with db.sqlite_connection(dbpath_termstructure) as conn:
-        ts_db = db.getTable(conn, tablename)
-
-    # select termstructure records not in ts_db 
-    termStructure = termStructure.loc[~termStructure['date'].isin(ts_db['date'])].copy()
+        # get tablenames in db 
+        sql_tableNames = "SELECT name FROM sqlite_master WHERE type='table'"
+        tableNames = pd.read_sql(sql_tableNames, conn)['name'].tolist()
+        # filter out existing records if termstructure data already exists 
+        if tablename in tableNames:
+            ts_db = db.getTable(conn, tablename)
+            termStructure = termStructure.loc[~termStructure['date'].isin(ts_db['date'])].copy()
     
-    # handle case wherewe don't have any new term structure data to update
+    # handle case where we don't have any new term structure data to update
     if termStructure.empty:
         print('Termstructure data up to date for %s'%(tablename))
         return
+    
     # format termstructure dataframe for insertion 
     termStructure.drop(columns=['symbol', 'interval'], inplace=True)
 
@@ -132,5 +136,22 @@ def saveTermStructure(termStructure):
     with db.sqlite_connection(dbpath_termstructure) as conn:
          termStructure.to_sql(tablename, conn, if_exists='append', index=False)
          _removeDuplicates(conn, tablename)
-        
+
+""" 
+    Updates term structure data for all symbols being tracked in the db 
+"""
+def updateAllTermstructureData():
+    # get list of all symbols being tracked 
+    with db.sqlite_connection(dbpath_futures) as conn_futures:
+        lookupTable = db.getLookup_symbolRecords(conn_futures)
+        symbols = lookupTable['symbol'].unique()
+
+    # Update term structure data for each symbol and tracked interval
+    for symbol in symbols:
+        for interval in trackedIntervals:
+            x = getTermStructure(symbol, interval=interval.replace(' ', ''))
+            saveTermStructure(x)
+
+if __name__ == '__main__':
+    updateAllTermstructureData()
 
