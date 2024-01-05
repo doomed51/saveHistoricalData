@@ -152,6 +152,24 @@ def updateAllTermstructureData():
             x = getTermStructure(symbol, interval=interval.replace(' ', ''))
             saveTermStructure(x)
 
+""" 
+    Returns nicely formatted vix termstrucuture data from csv 
+    - assumes interval=1day 
+"""
+def getVixTermstructureFromCSV(path='vix.csv'): 
+    # read in vix.csv termstructure data 
+    vix_ts_raw = pd.read_csv(path)
+    vix_ts_raw['date'] = pd.to_datetime(vix_ts_raw['date'], format='mixed', dayfirst=True)
+    
+    # drop the last column month8
+    vix_ts_raw.drop(columns=['8'], inplace=True)
+    # rename columns to month1, month2, etc.
+    vix_ts_raw.rename(columns={'0': 'month1', '1': 'month2', '2': 'month3', '3': 'month4', '4': 'month5', '5': 'month6', '6': 'month7', '7':'month8'}, inplace=True)
+    vix_ts_raw['symbol'] = 'VIX'
+    vix_ts_raw['interval'] = '1day'
+    
+    return vix_ts_raw
+
 if __name__ == '__main__':
     updateAllTermstructureData()
 
