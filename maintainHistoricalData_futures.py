@@ -270,7 +270,7 @@ def updateRecords(ib_):
     # get latest data from db
     with db.sqlite_connection(dbName_futures) as conn:
         latestRecords = db.getRecords(conn)
-    
+
     # drop latestRecords where expiry is before current date
     latestRecords = latestRecords.loc[latestRecords['type/expiry'] > datetime.today().strftime('%Y%m%d')].reset_index(drop=True)
 
@@ -316,7 +316,7 @@ def updateRecords(ib_):
         print('[green]----------------------------------------------[/green]\n')
 
         # print recodrs where type/expiry is before current date
-        for row in (latestRecords.loc[latestRecords['daysSinceLastUpdate'] > 1]).iterrows():
+        for row in (latestRecords.loc[latestRecords['daysSinceLastUpdate'] >= 1]).iterrows():
             print('%s: Updating contract %s %s %s'%(datetime.now().strftime('%H:%M:%S'), row[1]['symbol'], row[1]['type/expiry'], row[1]['interval']))
             _updateSingleRecord(ib, row[1]['symbol'], row[1]['type/expiry'], row[1]['interval'], str(row[1]['daysSinceLastUpdate']+1)+' D')
     
@@ -559,8 +559,6 @@ def initializeRecords(ib, watchlist,  updateThresholdDays=1):
     
     return
 
-#print('\n[yellow] Checking FUTURES records... [/yellow]')
-#updateRecords()
 ib = ibkr.setupConnection()
 updateRecords(ib)       
 
