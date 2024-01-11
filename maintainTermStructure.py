@@ -6,6 +6,7 @@ import config
 
 import pandas as pd
 import interface_localDb as db 
+from sys import argv
 
 dbanme_termstructure = config.dbname_termstructure
 dbpath_futures = config.dbname_futures
@@ -81,11 +82,11 @@ def _getNextContracts(conn, symbol, numContracts, interval='1day'):
 def getTermStructure(symbol:str, interval='1day', lookahead_months=8): 
     # convert to uppercase to follow db naming conventions 
     symbol = symbol.upper()
-    
+    interval = '1day'
     # read in pxhistory for next n contracts 
     with db.sqlite_connection(dbpath_futures) as conn_futures:
         lookupTable = _getNextContracts(conn_futures, symbol, lookahead_months, interval)
-
+        print(lookupTable['name'].unique())
         # create list of pxHistory dataframes
         termStructure_raw = []
         # get price history for each relevant contract 
@@ -101,6 +102,11 @@ def getTermStructure(symbol:str, interval='1day', lookahead_months=8):
     # drop records with NaN values
     termStructure.dropna(inplace=True)
 
+    #print(termStructure)
+    # sort termstructure by date 
+    termStructure.sort_values(by='date', inplace=True)
+    print(termStructure.tail(5))
+    exit()
     # add descriptive columns for later reference 
     termStructure['symbol'] = symbol
     termStructure['interval'] = interval
@@ -109,17 +115,19 @@ def getTermStructure(symbol:str, interval='1day', lookahead_months=8):
 
 """
     Save term structure data to local db
+     - Handles duplicate records in input df <termStructure>
 """
 def saveTermStructure(termStructure):
     # set the tablename for insertion 
     dbpath_termstructure = config.dbname_termstructure
     tablename = '%s_%s'%(termStructure['symbol'][0], termStructure['interval'][0])
 
+    # filter out existing records if termstructure data already exists 
     with db.sqlite_connection(dbpath_termstructure) as conn:
         # get tablenames in db 
         sql_tableNames = "SELECT name FROM sqlite_master WHERE type='table'"
         tableNames = pd.read_sql(sql_tableNames, conn)['name'].tolist()
-        # filter out existing records if termstructure data already exists 
+        # filter out duplicates  
         if tablename in tableNames:
             ts_db = db.getTable(conn, tablename)
             termStructure = termStructure.loc[~termStructure['date'].isin(ts_db['date'])].copy()
@@ -171,5 +179,12 @@ def getVixTermstructureFromCSV(path='vix.csv'):
     return vix_ts_raw
 
 if __name__ == '__main__':
-    updateAllTermstructureData()
+    # if console arg = csvupdate then update vix termstructure data from csv
+    if len(argv) > 1 and argv[1] == 'csvupdate':
+        #print("THE PLART HAS STARTED")
+        vix_ts_raw = getVixTermstructureFromCSV()
+        saveTermStructure(vix_ts_raw)
+    
+    else:
+        updateAllTermstructureData()
 
