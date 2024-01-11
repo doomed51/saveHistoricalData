@@ -28,23 +28,6 @@ def _averageContractVolume(conn, tablename):
     return averageVolume
 
 """
-Used for when appending data to existing db tables
-    Permanently removes duplicate records from table
-
-Params
-==========
-tablename - [str]
-"""
-def _removeDuplicates(conn, tablename):
-    ## construct SQL qeury that will group on 'date' column and
-    ## select the min row ID of each group; then delete all the ROWIDs from 
-    ## the table that not in this list
-    sql_selectMinId = 'DELETE FROM %s WHERE ROWID NOT IN (SELECT MIN(ROWID) FROM %s GROUP BY date)'%(tablename, tablename)
-    ## run the query 
-    cursor = conn.cursor()
-    cursor.execute(sql_selectMinId)
-
-"""
     Gets next n contracts in the db for a given symbol
 """
 def _getNextContracts(conn, symbol, numContracts, interval='1day'):
@@ -143,7 +126,7 @@ def saveTermStructure(termStructure):
     # save termstructure to db 
     with db.sqlite_connection(dbpath_termstructure) as conn:
          termStructure.to_sql(tablename, conn, if_exists='append', index=False)
-         _removeDuplicates(conn, tablename)
+         db._removeDuplicates(conn, tablename)
 
 """ 
     Updates term structure data for all symbols being tracked in the db 
