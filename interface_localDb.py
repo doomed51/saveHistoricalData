@@ -344,6 +344,23 @@ def getPriceHistory(conn, symbol, interval, withpctchange=False, lastTradeDate='
     
     return pxHistory
 
+"""
+    Returns dataframe of historical data read from given csv file
+"""
+def getHistoryFromCSV(filepath, symbol, interval):
+    pxHistory_raw = pd.read_csv(filepath)
+    # lowercase column names
+    pxHistory_raw.columns = pxHistory_raw.columns.str.lower()
+    # convert date column to datetime
+    pxHistory_raw['date'] = pd.to_datetime(pxHistory_raw['date'], format='mixed', dayfirst=False, yearfirst=True)
+    pxHistory_raw['symbol'] = symbol
+    pxHistory_raw['interval'] = interval
+    # if there is a adj close column, drop the close column and rename adj close to close
+    if 'adj close' in pxHistory_raw.columns:
+        pxHistory_raw.drop(columns=['close'], inplace=True)
+        pxHistory_raw.rename(columns={'adj close':'close'}, inplace=True)
+    return pxHistory_raw
+
 def getTable(conn, tablename):
     sqlStatement = 'SELECT * FROM '+tablename
     table = pd.read_sql(sqlStatement, conn)
