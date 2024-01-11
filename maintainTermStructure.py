@@ -6,6 +6,7 @@ import config
 
 import pandas as pd
 import interface_localDb as db 
+from rich import print
 from sys import argv
 
 dbanme_termstructure = config.dbname_termstructure
@@ -65,11 +66,9 @@ def _getNextContracts(conn, symbol, numContracts, interval='1day'):
 def getTermStructure(symbol:str, interval='1day', lookahead_months=8): 
     # convert to uppercase to follow db naming conventions 
     symbol = symbol.upper()
-    interval = '1day'
     # read in pxhistory for next n contracts 
     with db.sqlite_connection(dbpath_futures) as conn_futures:
         lookupTable = _getNextContracts(conn_futures, symbol, lookahead_months, interval)
-        print(lookupTable['name'].unique())
         # create list of pxHistory dataframes
         termStructure_raw = []
         # get price history for each relevant contract 
@@ -85,11 +84,9 @@ def getTermStructure(symbol:str, interval='1day', lookahead_months=8):
     # drop records with NaN values
     termStructure.dropna(inplace=True)
 
-    #print(termStructure)
     # sort termstructure by date 
     termStructure.sort_values(by='date', inplace=True)
-    print(termStructure.tail(5))
-    exit()
+
     # add descriptive columns for later reference 
     termStructure['symbol'] = symbol
     termStructure['interval'] = interval
@@ -117,7 +114,7 @@ def saveTermStructure(termStructure):
     
     # handle case where we don't have any new term structure data to update
     if termStructure.empty:
-        print('Termstructure data up to date for %s'%(tablename))
+        print('%s: [green]Termstructure data up to date for %s [/green]'%(pd.Timestamp.today(), tablename))
         return
     
     # format termstructure dataframe for insertion 
@@ -127,6 +124,7 @@ def saveTermStructure(termStructure):
     with db.sqlite_connection(dbpath_termstructure) as conn:
          termStructure.to_sql(tablename, conn, if_exists='append', index=False)
          db._removeDuplicates(conn, tablename)
+    print('%s: [green]Updated term structure data for %s[/green]'%(pd.Timestamp.today(), tablename))
 
 """ 
     Updates term structure data for all symbols being tracked in the db 
