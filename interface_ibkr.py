@@ -158,12 +158,11 @@ def _getHistoricalBars_futures(ibkrObj, symbol, exchange, lastTradeDate, currenc
             whatToShow=whatToShow,
             useRTH=False,
             formatDate=1)
+        
     except Exception as e:
         print(e)
         print('\nCould not retrieve history for...%s!'%(symbol))
         return pd.DataFrame()
-    finally:
-        print(' %s: [green]Call successful[/green]'%(datetime.datetime.now().strftime('%H:%M:%S')))
     
     contractHistory_df = pd.DataFrame()
     if contractHistory: 
