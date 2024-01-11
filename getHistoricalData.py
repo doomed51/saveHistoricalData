@@ -20,6 +20,7 @@ IBKR
 """
 from ib_insync import *
 from matplotlib.pyplot import axis
+from sys import argv
 from numpy import histogram, indices, true_divide
 
 from pytz import timezone, utc
@@ -106,6 +107,14 @@ def saveHistoryToCSV(history, type='stock'):
         filepath.parent.mkdir(parents=True, exist_ok=True)
         history.to_csv(filepath, index=False)
 
+"""
+    Returns dataframe of historical data read from given csv file
+"""
+def updateHistoryFromCSV(filepath, symbol, interval):
+    pxHistory_raw = db.getHistoryFromCSV(filepath, symbol, interval)
+    
+    with db.sqlite_connection(_dbName_index) as conn:
+        db.saveHistoryToDB(pxHistory_raw, conn)
 
 """
 Root function that will check the the watchlist and make sure all records are up to date
@@ -278,7 +287,6 @@ def updateRecordHistory(ibkr, records, indicesWithOutdatedData= pd.DataFrame(), 
                 
     else: 
         print('\n[green]Existing records are up to date![/green]')
-    
                 
 """
 Returns a list of symbol-interval combos that are missing from the local database 
@@ -306,7 +314,6 @@ def getMissingIntervals(records, type = 'stock'):
     
     ## return the missing symbol-interval combos
     return missingCombos
-
 
 """
 Updates a chunk of pre-histric data for existing records  
@@ -454,7 +461,6 @@ def updatePreHistoricData(ibkr):
         ## manual throttling: pause before requesting next set of data
         print('%s: [yellow]Pausing %ss before next record...[/yellow]\n'%(datetime.datetime.now().strftime("%H:%M:%S"), ibkrThrottleTime))
         time.sleep(ibkrThrottleTime)
-        
 
 def refreshLookupTable(ibkr, dbname):
     print('\n[red]Refreshing lookup table...[/red]')
@@ -576,7 +582,12 @@ def bulkUpdate():
             time.sleep(ibkrThrottleTime * 10)
         i=i+1
 
-## update existing records after EST market close  
-if (datetime.datetime.today().weekday() < 5 and datetime.datetime.now().hour >= 17) or (datetime.datetime.today().weekday() >= 6):
-    updateRecords()
-bulkUpdate()
+if argv[1] == 'csv':
+    # if no arg 2 , print 
+    #updateHistoryFromCSV('TLT.csv', 'TLT', '1day')
+    print('error 11 - no csv file specified')
+else:
+    ## update existing records after EST market close  
+    if (datetime.datetime.today().weekday() < 5 and datetime.datetime.now().hour >= 17) or (datetime.datetime.today().weekday() >= 6):
+        updateRecords()
+    bulkUpdate()
