@@ -189,7 +189,7 @@ def _updateLookup_symbolRecords(conn, tablename, type, earliestTimestamp, numMis
 
         ## update lookuptable with the symbolhistory min date
         # if we are saving futures, we have to query on symbol, interval, AND lastTradeDate
-        print(' Updating lookup table...')
+        print(' %s: Updating lookup table...'%(datetime.datetime.now().strftime("%H:%M:%S")))
         sql_updateNumMissingDays=''
         if type == 'future':
             sql_update = 'UPDATE \'%s\' SET firstRecordDate = \'%s\' WHERE symbol = \'%s\' and interval = \'%s\' and lastTradeDate = \'%s\''%(lookupTablename, minDate_symbolHistory['firstRecordDate'][0], minDate_symbolHistory['symbol'][0], minDate_symbolHistory['interval'][0], minDate_symbolHistory['lastTradeDate'][0])
@@ -206,7 +206,7 @@ def _updateLookup_symbolRecords(conn, tablename, type, earliestTimestamp, numMis
         cursor.execute(sql_update)
         if sql_updateNumMissingDays:
             cursor.execute(sql_updateNumMissingDays)
-        print('[green]  Done! [/green]')
+        print('[green]  %s: Done! [/green]'%(datetime.datetime.now().strftime("%H:%M:%S")))
 
 """ ensures proper format of px history tables retrieved from db """
 def _formatpxHistory(pxHistory):
@@ -253,7 +253,7 @@ conn: [Sqlite3 connection object]
 """
 def saveHistoryToDB(history, conn, earliestTimestamp='', type=''):
     ## set type to index if the symbol is in the index list 
-    print('%s: Adding %s-%s, dates %s to %s'%(datetime.datetime.now().strftime("%H:%M:%S") , history['symbol'][0], history['interval'][0], history['date'].min(), history['date'].max()))
+    print('%s: Saving %s-%s, dates %s to %s'%(datetime.datetime.now().strftime("%H:%M:%S") , history['symbol'][0], history['interval'][0], history['date'].min(), history['date'].max()))
 
     if type != 'future':
         if history['symbol'][0] in index_list:
@@ -273,11 +273,11 @@ def saveHistoryToDB(history, conn, earliestTimestamp='', type=''):
 
     # write history to db
     history.to_sql(f"{tableName}", conn, index=False, if_exists='append')
-    print('[green]  Done! [/green]')
 
     #make sure there are no duplicates in the resulting table
     _removeDuplicates(conn, tableName)
 
+    # update the records lookup table
     _updateLookup_symbolRecords(conn, tableName, type, earliestTimestamp=earliestTimestamp)
 
     ## print logging info
