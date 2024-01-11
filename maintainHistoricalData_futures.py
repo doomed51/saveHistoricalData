@@ -11,6 +11,7 @@ General logic:
 import time
 import re 
 import config
+import math
 
 import pandas as pd
 import interface_localDb as db
@@ -113,23 +114,23 @@ def _updateSingleRecord(ib, symbol, expiry, interval, lookback, endDate=''):
     
     # Get futures history from ibkr
     # Split into multiple calls if interval is 1 min and lookback > 10  
-    if (interval == '1 min') and int(lookback.strip(' D')) > 12:
+    if (interval in ['1 min', '5 min']) and int(lookback.strip(' D')) > 12:
         # calculate number of calls needed
-        numCalls = int(int(lookback.strip(' D'))/12)
+        numCalls = math.ceil(int(lookback.strip(' D'))/12)#int(int(int(lookback.strip(' D'))/12))
         record=pd.DataFrame()
         # loop for numCalls appending records and reducing endDate by lookback each time
-        for i in range(1, numCalls):
-            bars = ibkr.getBars_futures(ib, symbol=symbol, lastTradeDate=expiry, interval=interval, endDate=endDate, lookback='10 D', exchange=exchange)
-            if not record.empty:
+        for i in range(0, numCalls):
+            bars = ibkr.getBars_futures(ib, symbol=symbol, lastTradeDate=expiry, interval=interval, endDate=endDate, lookback='12 D', exchange=exchange)
+            if (bars is None) or (bars.empty):
+                i = numCalls
+            else:
                 record = record._append(bars)   
                 endDate = record['date'].min() # update endDate for next loop 
-                print('%s: [orange]sleeping for %ss...[/orange]'%(datetime.now().strftime('%H:%M:%S'), _defaultSleepTime/6))
-                time.sleep(_defaultSleepTime/6)
-            elif record.empty:
-                i=numCalls # break loop when record is empty
-        
+                if i < numCalls-1:
+                    print('%s: [orange]sleeping for %ss...[/orange]'%(datetime.now().strftime('%H:%M:%S'), _defaultSleepTime/6))
+                    time.sleep(_defaultSleepTime/6)
         record.reset_index(drop=True, inplace=True)
-    
+        # print unique dates in date column
     # otherwise made a single call to ibkr
     else:
         # query ibkr for futures history 
@@ -162,7 +163,7 @@ def _updateSingleRecord(ib, symbol, expiry, interval, lookback, endDate=''):
             db.saveHistoryToDB(record, conn, earlistTimestamp, type='future')
     
     # sleep
-    print('%s: [yellow]sleeping for %ss...[/yellow]\n'%(datetime.now().strftime('%H:%M:%S'), _defaultSleepTime/6))
+    print('%s: [green]Record updated, sleeping for %ss...[/green]\n'%(datetime.now().strftime('%H:%M:%S'), _defaultSleepTime/6))
     time.sleep(_defaultSleepTime/6)
         
 """
@@ -272,7 +273,9 @@ def updateRecords(ib_):
         latestRecords = db.getRecords(conn)
 
     # drop latestRecords where expiry is before current date
-    latestRecords = latestRecords.loc[latestRecords['type/expiry'] > datetime.today().strftime('%Y%m%d')].reset_index(drop=True)
+    latestRecords = latestRecords.loc[latestRecords['type/expiry'] > datetime.today().strftime('%Y%m%d')].sort_values(by=['interval']).reset_index(drop=True)
+    # select only records where symbol=vix, and interval = 1 min
+    # latestRecords = latestRecords.loc[(latestRecords['symbol'] == 'VIX') & (latestRecords['interval'] == '1 min')].reset_index(drop=True)
 
     # open ibkr connection
     ib = ib_
@@ -281,7 +284,7 @@ def updateRecords(ib_):
     missingContracts = pd.DataFrame()
     for symbol in watchlist['symbol']:
         missingContracts = missingContracts._append(_getMissingContracts(ib, symbol))
-    
+
     # print debug info to console 
     print('Total missing contracts: %s'%(str(len(missingContracts))))
     missingContracts['symbol'] = missingContracts['contract'].apply(lambda x: x.symbol)
@@ -560,12 +563,21 @@ def initializeRecords(ib, watchlist,  updateThresholdDays=1):
     return
 
 ib = ibkr.setupConnection()
-updateRecords(ib)       
 
-with db.sqlite_connection(dbName_futures) as conn:
-    for i in range(3):
-        lookupTable = db.getLookup_symbolRecords(conn)
-        _updatePreHistory(lookupTable, ib)
+if __name__ == '__main__':
+    ######## debug code 
+    #bars = ibkr.getBars_futures(ib, symbol='VIX', lastTradeDate='20240320', exchange='CFE', interval='1 day', lookback='10 D')
+    #print(bars)
+    #exit()
+    ###################
+    updateRecords(ib)       
+    with db.sqlite_connection(dbName_futures) as conn:
+        for i in range(3):
+            lookupTable = db.getLookup_symbolRecords(conn)
+            _updatePreHistory(lookupTable, ib)
+
+    pass
+
 
 
 
