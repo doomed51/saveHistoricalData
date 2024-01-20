@@ -582,10 +582,12 @@ def bulkUpdate():
             time.sleep(ibkrThrottleTime * 10)
         i=i+1
 
-if argv[1] == 'csv':
-    # if no arg 2 , print 
-    #updateHistoryFromCSV('TLT.csv', 'TLT', '1day')
-    print('error 11 - no csv file specified')
+# if more than 0 args
+if len(argv) > 1:
+    if argv[1] == 'csv':
+        # if no arg 2 , print 
+        #updateHistoryFromCSV('TLT.csv', 'TLT', '1day')
+        print('error 11 - no csv file specified')
 else:
     ## update existing records after EST market close  
     if (datetime.datetime.today().weekday() < 5 and datetime.datetime.now().hour >= 17) or (datetime.datetime.today().weekday() >= 6):
