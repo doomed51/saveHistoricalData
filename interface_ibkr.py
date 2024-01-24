@@ -57,6 +57,14 @@ def setupConnection():
     
     return ibkr
 
+def refreshConnection(ibkr):
+    print('%s: [yellow]Refreshing IBKR connection...[/yellow]'%(datetime.datetime.now().strftime('%H:%M:%S')))
+    clientid = ibkr.client.clientId
+    ibkr.disconnect()
+    ibkr = ibkr.connect('127.0.0.1', 7496, clientId = 10)
+    print('%s:[green]   Success![/green]'%(datetime.datetime.now().strftime('%H:%M:%S')))
+    return ibkr
+
 """ 
     Formats the contract history returned from ibkr 
 """
@@ -244,7 +252,6 @@ def getEarliestTimeStamp(ibkr, contract):
     # check if symbol is in currency mapping
     if contract.symbol in currency_mapping:
         contract.currency = currency_mapping[contract.symbol]
-
     earliestTS = ibkr.reqHeadTimeStamp(contract, useRTH=False, whatToShow='TRADES')
     timestamp = pd.to_datetime(earliestTS)
     # make sure timestamp is tzaware 
