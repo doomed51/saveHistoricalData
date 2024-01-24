@@ -124,7 +124,7 @@ inputs:
         to keep track of. existing records will be kept up to date by default) 
     updateThresholdDays.int -> only updates records that are older than this number of days
 """
-def updateRecords(updateThresholdDays = 2):
+def updateRecords(updateThresholdDays = 1):
 
     #### check for new tickers 
     # read in tickerlist.txt
@@ -140,23 +140,24 @@ def updateRecords(updateThresholdDays = 2):
         # merge into master records list 
         records = db.getRecords(conn)
 
-        if not records.empty: ## if database contains some records, check if any need to be updated
-            symbolsWithOutdatedData = records.loc[records['daysSinceLastUpdate'] >= updateThresholdDays]
-            newlyAddedSymbols = symbolList[~symbolList['symbol'].isin(records['symbol'])]
+    if not records.empty: ## if database contains some records, check if any need to be updated
+        symbolsWithOutdatedData = records.loc[records['daysSinceLastUpdate'] >= updateThresholdDays]
+        newlyAddedSymbols = symbolList[~symbolList['symbol'].isin(records['symbol'])]
 
-        try:
-            ibkr = ib.setupConnection()
-        except:
-            print('[red] Could not connect to IBKR[/red]')
-            return
+    try:
+        ibkr = ib.setupConnection()
+    except:
+        print('[red] Could not connect to IBKR[/red]')
+        return
 
-        # update history in local DB 
-        updateRecordHistory(ibkr, records, symbolsWithOutdatedData, newlyAddedSymbols)
+    # update history in local DB 
+    updateRecordHistory(ibkr, records, symbolsWithOutdatedData, newlyAddedSymbols)
 
-        # disconnect from ibkr
-        if ibkr: ibkr.disconnect()
-
-        # get updated records from db 
+    # disconnect from ibkr
+    if ibkr: ibkr.disconnect()
+    
+    # get updated records from db 
+    with db.sqlite_connection(_dbName_index) as conn:
         updatedRecords = db.getRecords(conn)
 
     updatedRecords['numYearsOfHistory'] = updatedRecords.apply(lambda x: _countWorkdays(pd.to_datetime(x['firstRecordDate']), pd.to_datetime(x['lastUpdateDate']))/260, axis=1)
@@ -234,12 +235,13 @@ def updateRecordHistory(ibkr, records, indicesWithOutdatedData= pd.DataFrame(), 
 
         # Iterate through records with missing data and update the local 
         # database with the latest available data from ibkr
+        count = 1
         for index, row in indicesWithOutdatedData.iterrows():            
-            ## Add column with number of business days that need updating (curr date - last record)
-            
+            # every multiple of 50 refresh the connection
+            if count % config.ibkr_max_consecutive_calls == 0:
+                ibkr = ib.refreshConnection(ibkr)
             ## get history from ibkr 
             history = ib.getBars(ibkr, symbol=row['symbol'], lookback='%s D'%(row['daysSinceLastUpdate']), interval=row['interval']) 
-            
             ## add interval & symbol columns for easier lookup 
             history['interval'] = row['interval'].replace(' ', '')
             history['symbol'] = row['symbol']
@@ -251,6 +253,7 @@ def updateRecordHistory(ibkr, records, indicesWithOutdatedData= pd.DataFrame(), 
             with db.sqlite_connection(_dbName_index) as conn:
                 db.saveHistoryToDB(history, conn, earliestTimestamp)
             
+            count+=1
             print('%s: [yellow]Pausing %ss before next record...[/yellow]'%(datetime.datetime.now().strftime("%H:%M:%S"), ibkrThrottleTime/4))
             time.sleep(ibkrThrottleTime/4)
 
@@ -350,15 +353,13 @@ def updatePreHistoricData(ibkr):
     
     uniqueSymbolsInLookupTable['earliestAvailableTimestamp'] = uniqueSymbolsInLookupTable.apply(lambda x: ib.getEarliestTimeStamp(ibkr, ib.getContractDetails(ibkr, x['symbol'], type = x['type'], delay=True)[0].contract), axis=1)
 
-    # loop through each reccord in the lookup table
+    # loop through each record in the lookup table
     for index, row in lookupTable.iterrows():
-        print('4')
         ## set earliestAvailableTimestamp to the matching symbol in uniqueSymbolsInLookupTable
         earliestAvailableTimestamp = uniqueSymbolsInLookupTable.loc[uniqueSymbolsInLookupTable['symbol'] == row['symbol']]['earliestAvailableTimestamp'].values[0]
         
         # convert to datetime
         earliestAvailableTimestamp = pd.to_datetime(earliestAvailableTimestamp)
-        
         numIterations = 4 #number of subsequent calls to ibkr for the same sybol-interval combo
 
         ## set the lookback based on the history left in ibkr or the interval,
@@ -468,7 +469,6 @@ def refreshLookupTable(ibkr, dbname):
     lookupTableName = config.lookupTableName ##lookup table name in db
     
     with db.sqlite_connection(dbname) as conn:
-        
         ## get a fresh read of local db records & clean them up
         records = db.getRecords(conn) 
 
@@ -495,7 +495,6 @@ def refreshLookupTable(ibkr, dbname):
         lookupRecords_uniqueSymbols['earliestAvailableTimestamp'] = lookupRecords_uniqueSymbols['symbol'].apply(
             lambda x: ib.getEarliestTimeStamp(ibkr, 
                                               ib.getContractDetails(ibkr,x, delay=True)[0].contract))
-
         ## merge the earliest availabe timestamp from ibkr with the records table
         records_withEarliestAvailableDate = pd.merge(lookupRecords, lookupRecords_uniqueSymbols, how='left', on='symbol')
         
