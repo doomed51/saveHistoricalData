@@ -327,7 +327,6 @@ def updateRecords(ib_):
     print('[green]---- Completed updating outdated records ----[/green]')
     print('[green]----------------------------------------------[/green]\n')
         
-
 """
     This function updates the past two years of futures data.
     use this when a symbol is first added from the watchlist  
@@ -450,17 +449,35 @@ def _updatePreHistory(lookupTable, ib):
         else:
             lookback = 30
 
-        # if the lookback is negative, this means we have more data than there is available
+        # initialize empty history dataframe
+        history = pd.DataFrame()
+
+        # Skip to next record if we have run out of missing historical data  
         if lookback < 0:
-            history = None
+            print(' [green]No data left [/green]for %s %s %s!'%(record['symbol'], record['lastTradeDate'], record['interval']))
+            # set earliestAvailableTimestamp  to min(date) record in the db 
+            with db.sqlite_connection(dbName_futures) as conn:
+                earliestAvailableTimestamp = db._getFirstRecordDate(record, conn)
+                db._updateLookup_symbolRecords(conn, record['name'], earliestTimestamp=earliestAvailableTimestamp, numMissingDays=0, type='future')
+            print('\n')
+            continue
         else: # otherwise, get history 
-            # append ' D' to lookback
-            lookback = str(lookback) + ' D'
-            # query for history 
-            history = ibkr.getBars_futures(ib, symbol=record['symbol'], lastTradeDate=record['lastTradeDate'], interval=record['interval'], endDate=endDate, lookback=lookback, exchange=exchange)
+            if record['interval'] in ['1 min', '5 mins']: # Make multiple calls for ltf data
+                for i in range(5): 
+                    print('  [yellow]Iteration %s[/yellow]'%(str(i+1)))
+                    currentIterationBars = ibkr.getBars_futures(ib, symbol=record['symbol'], lastTradeDate=record['lastTradeDate'], interval=record['interval'], endDate=endDate, lookback=(str(lookback) + ' D'), exchange=exchange)
+                    if (currentIterationBars is None): # exit loop when no bars returned
+                        break
+                    else: # append currentIterationBars to history
+                        history = pd.concat([history, currentIterationBars], ignore_index=True)
+                        endDate = history['date'].min() # update endDate for next iteration
+                        
+            else:
+                # query for history 
+                history = ibkr.getBars_futures(ib, symbol=record['symbol'], lastTradeDate=record['lastTradeDate'], interval=record['interval'], endDate=endDate, lookback=(str(lookback) + ' D'), exchange=exchange)
         
         # skip to next if no data is returned
-        if history is None:
+        if history is None or history.empty:
             print(' [green]No data left [/green]for %s %s %s!'%(record['symbol'], record['lastTradeDate'], record['interval']))
             # set earliestAvailableTimestamp  to min(date) record in the db 
             with db.sqlite_connection(dbName_futures) as conn:
