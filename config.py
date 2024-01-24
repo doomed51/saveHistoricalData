@@ -1,6 +1,5 @@
 import pandas as pd 
 
-
 ###### DATABASE locations
 dbname_stock = '/workbench/historicalData/venv/saveHistoricalData/data/historicalData_index.db'
 dbname_futures = '/workbench/historicalData/venv/saveHistoricalData/data/historicalData_futures.db'
@@ -12,10 +11,8 @@ watchlist_futures = 'futuresWatchlist.csv'
 
 lookupTableName = '00-lookup_symbolRecords'
 
-# default list of tracked intervals
+# Reference Lists
 intervals = ['1 min', '5 mins', '30 mins', '1 day']
-
-# reference list of indices
 _index = ['VIX', 'VIX3M', 'VVIX', 'SPX', 'VIX1D', 'TSX']
 
 ## dictionary of symbol, currency pairs
@@ -49,7 +46,6 @@ currency_mapping = {
     'ZT': 'USD'
 }
 
-
 exchange_mapping = {
     'CL': 'NYMEX',
     'DXJ': 'ARCA',
@@ -80,3 +76,7 @@ exchange_mapping = {
     'ZN': 'ECBOT',
     'ZT': 'ECBOT'
 }
+
+###############
+############### API thresholds and timeouts 
+ibkr_max_consecutive_calls = 50
