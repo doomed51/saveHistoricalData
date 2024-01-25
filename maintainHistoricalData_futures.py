@@ -122,7 +122,7 @@ def _updateSingleRecord(ib, symbol, expiry, interval, lookback, endDate=''):
         for i in range(0, numCalls):
             bars = ibkr.getBars_futures(ib, symbol=symbol, lastTradeDate=expiry, interval=interval, endDate=endDate, lookback='12 D', exchange=exchange)
             if (bars is None) or (bars.empty):
-                i = numCalls
+                break
             else:
                 record = record._append(bars)   
                 endDate = record['date'].min() # update endDate for next loop 
