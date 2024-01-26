@@ -4,6 +4,7 @@ import pandas as pd
 dbname_stock = '/workbench/historicalData/venv/saveHistoricalData/data/historicalData_index.db'
 dbname_futures = '/workbench/historicalData/venv/saveHistoricalData/data/historicalData_futures.db'
 dbname_termstructure = '/workbench/historicalData/venv/saveHistoricalData/data/termstructure.db'
+dbname_rwtools_futures_vix_csv = '/workbench/historicalData/venv/saveHistoricalData/data/vix_chunks01.csv'
 
 ###### Watchlist locations 
 watchlist_main = 'tickerList.csv'
