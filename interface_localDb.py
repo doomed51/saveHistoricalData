@@ -316,6 +316,8 @@ def getRecords(conn):
         records['interval'] = records.apply(lambda x: _addspace(x['interval']), axis=1)
         records['firstRecordDate'] = tableNames.apply(_getFirstRecordDate, axis=1, conn=conn)
     
+    # remove symbol UNG 
+    #records = records[records['symbol'] != 'UNG'] # temporary fix for UNG after split 
     return records
 
 """

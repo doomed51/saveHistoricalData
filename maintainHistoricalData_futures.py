@@ -113,7 +113,7 @@ def _updateSingleRecord(ib, symbol, expiry, interval, lookback, endDate=''):
         exchange = db.getLookup_exchange(conn, symbol)
     
     # Get futures history from ibkr
-    # Split into multiple calls if interval is 1 min and lookback > 10  
+    # Split into multiple calls for shorter intervals so we can get more data in 1 go   
     if (interval in ['1 min', '5 min']) and int(lookback.strip(' D')) > 12:
         # calculate number of calls needed
         numCalls = math.ceil(int(lookback.strip(' D'))/12)#int(int(int(lookback.strip(' D'))/12))
@@ -130,8 +130,6 @@ def _updateSingleRecord(ib, symbol, expiry, interval, lookback, endDate=''):
                     print('%s: [orange]sleeping for %ss...[/orange]'%(datetime.now().strftime('%H:%M:%S'), _defaultSleepTime/6))
                     time.sleep(_defaultSleepTime/6)
         record.reset_index(drop=True, inplace=True)
-        # print unique dates in date column
-    # otherwise made a single call to ibkr
     else:
         # query ibkr for futures history 
         record = ibkr.getBars_futures(ib, symbol=symbol, lastTradeDate=expiry, interval=interval, endDate=endDate, lookback=lookback, exchange=exchange)
@@ -589,9 +587,13 @@ if __name__ == '__main__':
     ###################
     updateRecords(ib)       
     with db.sqlite_connection(dbName_futures) as conn:
-        for i in range(3):
+        for i in range(15):
             lookupTable = db.getLookup_symbolRecords(conn)
             _updatePreHistory(lookupTable, ib)
+
+            # on ever 3rd iteration refresh the ib connection 
+            if i%3 == 0:
+                ib = ibkr.refreshConnection(ib)
 
     pass
 
