@@ -117,6 +117,80 @@ def updateHistoryFromCSV(filepath, symbol, interval):
         db.saveHistoryToDB(pxHistory_raw, conn)
 
 """
+     Loads vix futures data from futures data retreived from rwTools 
+"""
+def update_vix_futures_history_from_rwtools(filepath):
+    raw_csv = pd.read_csv(filepath)
+    # explicitly convert date column to datetime
+    raw_csv['date'] = pd.to_datetime(raw_csv['date'], format='%Y-%m-%d')
+    
+    #get recs in db
+    with db.sqlite_connection(config.dbname_futures) as conn:
+        db_recs = db.getRecords(conn)
+        # select only 1day vix 
+        db_recs = db_recs.loc[(db_recs['interval'] == '1 day') & (db_recs['symbol'] == 'VIX')].copy()
+        # convert to datetime
+        db_recs['firstRecordDate'] = pd.to_datetime(db_recs['lastUpdateDate'], format='%Y-%m-%d')
+
+
+    # for each unique expiry in the raw csv, construct tablename, and insert into the db
+    for expiry in raw_csv['expiry'].unique():
+        tablename = 'VIX_%s_1day'%(expiry.replace('-', ''))
+        # check if table exists in db
+        if tablename in db_recs['name'].tolist():
+            print('%s [yellow]already exists in db, appending any missing data...[/yellow]'%(tablename))
+            additionalHistory = raw_csv.loc[raw_csv['expiry'] == expiry].copy()
+            additionalHistory['symbol'] = 'VIX'
+            additionalHistory['interval'] = '1day'
+            additionalHistory.rename(columns={'expiry':'lastTradeDate'}, inplace=True)
+            additionalHistory['lastTradeDate'] = additionalHistory['lastTradeDate'].str.replace('-', '')
+            # drop margin, type, exchange, currency, tick_size, contract_name, ticker
+            additionalHistory.drop(columns=['margin', 'type', 'exchange', 'currency', 'tick_size', 'contract_name', 'ticker', 'point_value', 'open_interest' ], inplace=True)
+
+            # for existing contracts, check if there is new data to add and add it 
+            with db.sqlite_connection(config.dbname_futures) as conn:
+                # get the earliest date saved in the db 
+                lastDateSaved = db_recs.loc[db_recs['name'] == tablename]['firstRecordDate'].values[0]
+                # get the earliest date in the raw csv 
+                lastDateInRawCSV = raw_csv.loc[raw_csv['expiry'] == expiry]['date'].min()
+                # convert 
+                print(lastDateSaved)
+                print(lastDateInRawCSV)
+                print('\n')
+                # if the earliest date in the raw csv is less than the earliest date saved in the db, add the missing data
+                if lastDateInRawCSV < lastDateSaved:
+                    # get the missing data 
+                    #new_data = raw_csv.loc[(raw_csv['expiry'] == expiry) & (raw_csv['date'] < lastDateSaved)].copy()
+                    # add the new data to the db 
+                    db.saveHistoryToDB(additionalHistory.loc[(additionalHistory['date'] < lastDateSaved)].reset_index(drop=True)
+                                       , conn
+                                       , type='future'
+                                       )
+                    print('%s: [green]Added missing data to %s[/green]'%(datetime.datetime.now().strftime("%H:%M:%S"), tablename))
+                    exit()
+        else:
+            history = raw_csv.loc[raw_csv['expiry'] == expiry].copy()
+            # rename the expiry column to lastTradeDate
+            history['symbol'] = 'VIX'
+            history['interval'] = '1day'
+            history.rename(columns={'expiry':'lastTradeDate'}, inplace=True)
+            history['lastTradeDate'] = history['lastTradeDate'].str.replace('-', '')
+            # drop margin, type, exchange, currency, tick_size, contract_name, ticker
+            history.drop(columns=['margin', 'type', 'exchange', 'currency', 'tick_size', 'contract_name', 'ticker', 'point_value', 'open_interest' ], inplace=True)
+            #db.saveHistoryToDB(history, conn, tablename=tablename)
+            print('%s:[yellow] Adding %s to db[/yellow]'%( datetime.datetime.now().strftime("%H:%M:%S") ,tablename))
+            print(history.tail(10))
+            exit()
+        # get the history for the current expiry
+        # add symbol, interval
+
+        # save to db
+        #with db.sqlite_connection(_dbName_index) as conn:
+        #    db.saveHistoryToDB(history, conn, tablename=tablename)
+        #    print('Saved %s to db'%(tablename)) 
+    pass
+
+"""
 Root function that will check the the watchlist and make sure all records are up to date
 --
 inputs: 
@@ -584,9 +658,10 @@ def bulkUpdate():
 # if more than 0 args
 if len(argv) > 1:
     if argv[1] == 'csv':
+        update_vix_futures_history_from_rwtools(config.dbname_rwtools_futures_vix_csv)
         # if no arg 2 , print 
         #updateHistoryFromCSV('TLT.csv', 'TLT', '1day')
-        print('error 11 - no csv file specified')
+        #print('error 11 - no csv file specified')
 else:
     ## update existing records after EST market close  
     if (datetime.datetime.today().weekday() < 5 and datetime.datetime.now().hour >= 17) or (datetime.datetime.today().weekday() >= 6):
