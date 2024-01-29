@@ -42,7 +42,6 @@ import interface_ibkr as ib
 import interface_localDb as db
 
 ######### SET GLOBAL VARS #########
-pd.set_option('display.max_rows', None)
 
 _tickerFilepath = config.watchlist_main ## List of symbols to keep track of
 _dbName_index = config.dbname_stock ## Default DB names 
@@ -112,7 +111,8 @@ def saveHistoryToCSV(history, type='stock'):
 """
 def updateHistoryFromCSV(filepath, symbol, interval):
     pxHistory_raw = db.getHistoryFromCSV(filepath, symbol, interval)
-    
+    # convert date column to datetime
+    pxHistory_raw['date'] = pd.to_datetime(pxHistory_raw['date'])
     with db.sqlite_connection(_dbName_index) as conn:
         db.saveHistoryToDB(pxHistory_raw, conn)
 
@@ -658,9 +658,9 @@ def bulkUpdate():
 # if more than 0 args
 if len(argv) > 1:
     if argv[1] == 'csv':
-        update_vix_futures_history_from_rwtools(config.dbname_rwtools_futures_vix_csv)
+        #update_vix_futures_history_from_rwtools(config.dbname_rwtools_futures_vix_csv)
         # if no arg 2 , print 
-        #updateHistoryFromCSV('TLT.csv', 'TLT', '1day')
+        updateHistoryFromCSV('data/UVXY.csv', 'UVXY', '1day')
         #print('error 11 - no csv file specified')
 else:
     ## update existing records after EST market close  
