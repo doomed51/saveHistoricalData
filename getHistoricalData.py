@@ -663,7 +663,7 @@ if len(argv) > 1:
         updateHistoryFromCSV('data/UVXY.csv', 'UVXY', '1day')
         #print('error 11 - no csv file specified')
 else:
-    ## update existing records after EST market close  
-    if (datetime.datetime.today().weekday() < 5 and datetime.datetime.now().hour >= 17) or (datetime.datetime.today().weekday() >= 6):
+    ## update existing records after EST market close or on weekends
+    if (datetime.datetime.today().weekday() < 5 and datetime.datetime.now().hour >= 17) or (datetime.datetime.today().weekday() >= 5):
         updateRecords()
     bulkUpdate()
