@@ -46,10 +46,10 @@ Returns ibkr connection object
 def setupConnection():
     ## connect with IBKR
     try:
-        print(' %s: [yellow]Connecting with IBKR...[/yellow]'%(datetime.datetime.now().strftime('%H:%M:%S')))
+        print('%s: [yellow]Connecting with IBKR...[/yellow]'%(datetime.datetime.now().strftime('%H:%M:%S')))
         ibkr = IB() 
         ibkr.connect('127.0.0.1', 7496, clientId = 10)
-        print('[green]  Success![/green]\n')
+        print('%s: [green]  Success![/green]'%(datetime.datetime.now().strftime('%H:%M:%S')))
     except Exception as e:
         print('[red]  Could not connect with IBKR![/red]\n')
         print(e)
@@ -61,7 +61,7 @@ def refreshConnection(ibkr):
     print('%s: [yellow]Refreshing IBKR connection...[/yellow]'%(datetime.datetime.now().strftime('%H:%M:%S')))
     clientid = ibkr.client.clientId
     ibkr.disconnect()
-    ibkr = ibkr.connect('127.0.0.1', 7496, clientId = 10)
+    ibkr = ibkr.connect('127.0.0.1', 7496, clientId = clientid)
     print('%s:[green]   Success![/green]'%(datetime.datetime.now().strftime('%H:%M:%S')))
     return ibkr
 
