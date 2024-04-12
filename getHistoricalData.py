@@ -49,7 +49,7 @@ _dbName_index = config.dbname_stock ## Default DB names
 intervals_index = config.intervals
 _indexList = config._index
 
-ibkrThrottleTime = 30 # minimum seconds to wait between api requests to ibkr
+ibkrThrottleTime = 15 # minimum seconds to wait between api requests to ibkr
 
 """
 ######################################################
@@ -72,23 +72,6 @@ def _countWorkdays(startDate, endDate, excluded=(6,7)):
     else:
         return len(pd.bdate_range(startDate, endDate))
 
-"""
-Setup connection to ibkr
-
---
-Returns ibkr connection object 
-"""
-def setupConnection():
-    ## connect with IBKR
-    try:
-        print('[yellow] Connecting with IBKR...[/yellow]')
-        ibkr = IB() 
-        ibkr.connect('127.0.0.1', 7496, clientId = 10)
-        print('[green]  Success![/green]')
-    except:
-        print('[red]  Could not connect with IBKR![/red]\n')
-
-    return ibkr
 
 """
 Save history to a CSV file 
@@ -210,32 +193,33 @@ def updateRecords(updateThresholdDays = 1):
     symbolList['symbol'] = symbolList['symbol'].str.strip(' ').str.upper()
     symbolList.sort_values(by=['symbol'], inplace=True)
 
+    # get record metadata from db
     with db.sqlite_connection(_dbName_index) as conn:
-        # merge into master records list 
         records = db.getRecords(conn)
 
     if not records.empty: ## if database contains some records, check if any need to be updated
         symbolsWithOutdatedData = records.loc[records['daysSinceLastUpdate'] >= updateThresholdDays]
         newlyAddedSymbols = symbolList[~symbolList['symbol'].isin(records['symbol'])]
 
-    try:
-        ibkr = ib.setupConnection()
-    except:
-        print('[red] Could not connect to IBKR[/red]')
-        return
+    if not (symbolsWithOutdatedData.empty or newlyAddedSymbols.empty):
+        try:
+            ibkr = ib.setupConnection()
+        except:
+            print('[red] Could not connect to IBKR[/red]')
+            return
 
-    # update history in local DB 
-    updateRecordHistory(ibkr, records, symbolsWithOutdatedData, newlyAddedSymbols)
+        # update history in local DB 
+        updateRecordHistory(ibkr, records, symbolsWithOutdatedData, newlyAddedSymbols)
 
-    # disconnect from ibkr
-    if ibkr: ibkr.disconnect()
-    
-    # get updated records from db 
-    with db.sqlite_connection(_dbName_index) as conn:
-        updatedRecords = db.getRecords(conn)
+        # disconnect from ibkr
+        if ibkr: ibkr.disconnect()
+        
+        # get updated records from db 
+        with db.sqlite_connection(_dbName_index) as conn:
+            updatedRecords = db.getRecords(conn)
 
-    updatedRecords['numYearsOfHistory'] = updatedRecords.apply(lambda x: _countWorkdays(pd.to_datetime(x['firstRecordDate']), pd.to_datetime(x['lastUpdateDate']))/260, axis=1)
-    updatedRecords.drop(columns=['firstRecordDate', 'name'], inplace=True)
+        updatedRecords['numYearsOfHistory'] = updatedRecords.apply(lambda x: _countWorkdays(pd.to_datetime(x['firstRecordDate']), pd.to_datetime(x['lastUpdateDate']))/260, axis=1)
+        updatedRecords.drop(columns=['firstRecordDate', 'name'], inplace=True)
 
 """
 Updates record history handling the following scenarios:
@@ -478,7 +462,7 @@ def updatePreHistoricData(ibkr):
         while i < numIterations:
             i+=1
             
-            print('%s: [yellow]Pausing %ss before next ibkr call...[/yellow]'%(datetime.datetime.now().strftime("%H:%M:%S"), ibkrThrottleTime/6))
+            print('%s: [yellow]Pausing %ss before next ibkr call...[/yellow]'%(datetime.datetime.now().strftime("%H:%M:%S"), ibkrThrottleTime/30))
             ## manual throttling of api requests 
             time.sleep(ibkrThrottleTime/6)
             
@@ -538,7 +522,7 @@ def updatePreHistoricData(ibkr):
         time.sleep(ibkrThrottleTime)
 
 def refreshLookupTable(ibkr, dbname):
-    print('\n[red]Refreshing lookup table...[/red]')
+    print('%s: [red] Refreshing lookup table...[/red]'%(datetime.datetime.now().strftime("%H:%M:%S")))
     
     lookupTableName = config.lookupTableName ##lookup table name in db
     
@@ -628,24 +612,19 @@ def bulkUpdate():
     cycletime_= [0] * (numcycles+1)
     while i < numcycles:
         ## connect to ibkr
-        ibkr = setupConnection()
+        ibkr = ib.setupConnection()
 
         if not ibkr.isConnected():  
             print('[red]  Exiting!\n[/red]')
             return
         starttime = datetime.datetime.now()
         refreshLookupTable(ibkr, _dbName_index)
-        # pause for default time 
-        #print('%s: Pausing %s seconds after ibkr call\n'%(datetime.datetime.now().strftime("%H:%M:%S"), ibkrThrottleTime*3))
-        #time.sleep(ibkrThrottleTime*3)
-        ibkr.disconnect()
-        ibkr = setupConnection()
         
+        ibkr = ib.refreshConnection(ibkr)        
         updatePreHistoricData(ibkr)
-        
         ibkr.disconnect()
+
         cycletime = (datetime.datetime.now() - starttime).seconds
-        
         cycletime_[i+1] = cycletime
         print('Bulk update #%s with cycle time: %.2f'%(i+1, cycletime))
         print('Average cycle time: %s'%(sum(cycletime_)/len(cycletime_) ))
@@ -660,10 +639,10 @@ if len(argv) > 1:
     if argv[1] == 'csv':
         #update_vix_futures_history_from_rwtools(config.dbname_rwtools_futures_vix_csv)
         # if no arg 2 , print 
-        updateHistoryFromCSV('data/UVXY.csv', 'UVXY', '1day')
+        updateHistoryFromCSV('data/FXB.csv', 'FXB', '1day')
         #print('error 11 - no csv file specified')
 else:
     ## update existing records after EST market close or on weekends
-    if (datetime.datetime.today().weekday() < 5 and datetime.datetime.now().hour >= 17) or (datetime.datetime.today().weekday() >= 5):
+    if (datetime.datetime.today().weekday() < 5 and datetime.datetime.now().hour >= 17) or (datetime.datetime.today().weekday() >= 5): #or (datetime.datetime.today().weekday() < 5 and datetime.datetime.now().hour<= 9):
         updateRecords()
     bulkUpdate()
