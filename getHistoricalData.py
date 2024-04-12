@@ -49,7 +49,7 @@ _dbName_index = config.dbname_stock ## Default DB names
 intervals_index = config.intervals
 _indexList = config._index
 
-ibkrThrottleTime = 15 # minimum seconds to wait between api requests to ibkr
+ibkrThrottleTime = 10 # minimum seconds to wait between api requests to ibkr
 
 """
 ######################################################
@@ -602,7 +602,7 @@ def refreshLookupTable(ibkr, dbname):
             records_forInput = records_forInput[['name', 'symbol', 'type', 'interval', 'numMissingBusinessDays', 'firstRecordDate']]
             # save to db
             records_forInput.to_sql(f"{lookupTableName}", conn, index=False, if_exists='replace')
-            print('[green] Done![/green]\n')
+            print('%s: [green] Done![/green]%(datetime.datetime.now().strftime("%H:%M:%S"))')
 """
 function that calls updatePreHistoricData over the course of a night, pausing for 5 minutes between each iteration 
 """
