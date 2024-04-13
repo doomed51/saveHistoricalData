@@ -196,12 +196,11 @@ def updateRecords(updateThresholdDays = 1):
     # get record metadata from db
     with db.sqlite_connection(_dbName_index) as conn:
         records = db.getRecords(conn)
-
     if not records.empty: ## if database contains some records, check if any need to be updated
         symbolsWithOutdatedData = records.loc[records['daysSinceLastUpdate'] >= updateThresholdDays]
         newlyAddedSymbols = symbolList[~symbolList['symbol'].isin(records['symbol'])]
-
-    if not (symbolsWithOutdatedData.empty or newlyAddedSymbols.empty):
+    
+    if (not symbolsWithOutdatedData.empty or not newlyAddedSymbols.empty):
         try:
             ibkr = ib.setupConnection()
         except:
@@ -229,7 +228,7 @@ Updates record history handling the following scenarios:
  
 """
 def updateRecordHistory(ibkr, records, indicesWithOutdatedData= pd.DataFrame(), newlyAddedIndices  = pd.DataFrame()):
-    print('checking if records need updating...')
+    print('%s: Checking if records need updating...'%(datetime.datetime.now().strftime("%H:%M:%S")))
     # initialize connection object as empty until we need it
 
     ## get a list of missing intervals if any 
@@ -284,7 +283,7 @@ def updateRecordHistory(ibkr, records, indicesWithOutdatedData= pd.DataFrame(), 
 
     ## update symbols with outdated records 
     if not indicesWithOutdatedData.empty:
-        print('\n[blue]Outdated records found. Updating...[/blue]\n')
+        print('%s: [yellow]Outdated records found. Updating...[/yellow]'%(datetime.datetime.now().strftime("%H:%M:%S")))
         pd.to_datetime(indicesWithOutdatedData['lastUpdateDate'], format='ISO8601')
         indicesWithOutdatedData = indicesWithOutdatedData.sort_values(by=['symbol', 'interval']).reset_index(drop=True)
 
@@ -589,7 +588,7 @@ def refreshLookupTable(ibkr, dbname):
             
             ## save to db replacing existing (outdated) records 
             lookupTableRecords.to_sql(f"{lookupTableName}", conn, index=True, if_exists='replace')
-            print('\n[green] Done![/green]')
+            print('%s:[green] Done![/green]'%(datetime.datetime.now().strftime("%H:%M:%S")))
         
         else: # update db lookup table with input records
             if records_forInput.empty:
