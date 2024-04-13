@@ -130,7 +130,7 @@ def _getHistoricalBars(ibkrObj, symbol, currency, endDate, lookback, interval, w
         contractHistory_df = _formatContractHistory(util.df(contractHistory))
     
     else: 
-        print('\nNo history found for...%s!'%(symbol))
+        print('%s: No history found for...%s!'%(datetime.datetime.now().strftime("%H:%M:%S"), symbol))
 
     return contractHistory_df
 
@@ -178,7 +178,7 @@ def _getHistoricalBars_futures(ibkrObj, symbol, exchange, lastTradeDate, currenc
         contractHistory_df = _formatContractHistory(util.df(contractHistory))
     
     else:
-        print('[red]No history found for...%s![/red]'%(symbol))
+        print('%s: [red]No history found for...%s![/red]'%(datetime.datetime.now().strftime("%H:%M:%S"), symbol))
         return None
 
     return contractHistory_df
@@ -218,7 +218,7 @@ def _getHistoricalBars_futures_withContract(ibkrObj, contract, endDate, lookback
         contractHistory_df = _formatContractHistory(util.df(contractHistory))
     
     else:
-        print('[red]No history found for %s...%s!\n[/red]'%(interval, contract))
+        print('%s: [red]No history found for %s...%s![/red]'%(datetime.datetime.now().strftime("%H:%M:%S"), interval, contract))
         return None
 
     return contractHistory_df
