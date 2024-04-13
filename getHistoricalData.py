@@ -318,7 +318,7 @@ def updateRecordHistory(ibkr, records, indicesWithOutdatedData= pd.DataFrame(), 
     ## update missing intervals if we have any 
     ##
     if len(missingIntervals) > 0: 
-        print('[yellow]Some records have missing intervals, updating...[/yellow]')
+        print('%s: [yellow]Some records have missing intervals, updating...[/yellow]'%(datetime.datetime.now().strftime("%H:%M:%S")))
         for item in missingIntervals:
             [_tkr, _intvl] = item.split('-')
             if ( _intvl in ['5 mins', '15 mins']):
@@ -332,17 +332,21 @@ def updateRecordHistory(ibkr, records, indicesWithOutdatedData= pd.DataFrame(), 
 
             elif (_intvl in ['1 month']):
                 history = ib.getBars(ibkr, symbol=_tkr,lookback='2 Y', interval=_intvl )
-                
+            
+            if history.empty:
+                print('%s: [yellow]No data available for %s-%s[/yellow]'%(datetime.datetime.now().strftime("%H:%M:%S"), _tkr, _intvl))
+                continue
+
             history['interval'] = _intvl.replace(' ', '')
             history['symbol'] = _tkr
             ## get earliest record available froms ibkr
-            earliestTimestamp = ib.getEarliestTimeStamp(ibkr, symbol=_tkr)
+            earliestTimestamp = ib.getEarliestTimeStamp(ibkr, ib.getContract(ibkr, symbol=_tkr))
             with db.sqlite_connection(_dbName_index) as conn:
                 db.saveHistoryToDB(history, conn, earliestTimestamp=earliestTimestamp)
 
-            print('[green]Missing interval[/red] %s-%s...[red]updated![/green]\n'%(_tkr, _intvl))
+            print('%s: [green]Missing interval %s-%s...updated![/green]'%(datetime.datetime.now().strftime("%H:%M:%S"), _tkr, _intvl))
 
-            print('%s: [yellow]\nPausing %ss before next record...[/yellow]\n'%(datetime.datetime.now().strftime("%H:%M:%S"), ibkrThrottleTime))
+            print('%s: [yellow]Pausing %ss before next record...[/yellow]\n'%(datetime.datetime.now().strftime("%H:%M:%S"), ibkrThrottleTime))
             time.sleep(ibkrThrottleTime)
                 
     else: 
