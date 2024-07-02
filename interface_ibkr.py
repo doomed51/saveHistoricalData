@@ -59,6 +59,7 @@ def setupConnection():
 
 def refreshConnection(ibkr):
     print('%s: [yellow]Refreshing IBKR connection...[/yellow]'%(datetime.datetime.now().strftime('%H:%M:%S')))
+    #if ibkr.isConnected():
     clientid = ibkr.client.clientId
     ibkr.disconnect()
     ibkr = ibkr.connect('127.0.0.1', 7496, clientId = clientid)
@@ -83,11 +84,12 @@ Returns [DataFrame] of historical data from IBKR with...
     outputs:
         [columns]: date | open | high | low | close | volume | symbol | interval 
 """
-def getBars(ibkr, symbol='SPY', currency='USD', endDate='', lookback='10 D', interval='15 mins', whatToShow='TRADES'):
+def getBars(ibkr, symbol='SPY', currency='USD', endDate='', lookback='10 D', interval='15 mins', whatToShow='TRADES', **kwargs):
+    keepUpToDate = kwargs.get('keepUpToDate', False)
     # check if symbol is in currency mapping
     if symbol in currency_mapping:
         currency = currency_mapping[symbol]
-    bars = _getHistoricalBars(ibkr, symbol, currency, endDate, lookback, interval, whatToShow)
+    bars = _getHistoricalBars(ibkr, symbol, currency, endDate, lookback, interval, whatToShow, keepUpToDate=keepUpToDate)
     
     return bars
 
@@ -95,8 +97,10 @@ def getBars(ibkr, symbol='SPY', currency='USD', endDate='', lookback='10 D', int
 Returns [DataFrame] of historical data for stocks and indexes from IBKR
 
 """
-def _getHistoricalBars(ibkrObj, symbol, currency, endDate, lookback, interval, whatToShow):
+def _getHistoricalBars(ibkrObj, symbol, currency, endDate, lookback, interval, whatToShow, **kwargs):
     
+    keepUpToDate = kwargs.get('keepUpToDate', False)
+
     # set exchange
     if symbol in exchange_mapping:
         exchange = exchange_mapping[symbol]
@@ -121,7 +125,8 @@ def _getHistoricalBars(ibkrObj, symbol, currency, endDate, lookback, interval, w
             barSizeSetting=interval,
             whatToShow=whatToShow,
             useRTH=False,
-            formatDate=1)
+            formatDate=1, 
+            keepUpToDate=keepUpToDate)
 
     # convert retrieved data to dataframe    
     contractHistory_df = pd.DataFrame()
@@ -279,14 +284,10 @@ def getContract(ibkr, symbol, type='stock', currency='USD'):
         type = 'stock' | 'future' | 'index'
         currency = 'USD' | 'CAD'
 """
-def getContractDetails(ibkr, symbol, type = 'stock', currency='USD', delay=False):
-    if delay:
-        #print(' %s: [yellow]delaying request for 1 seconds...[/yellow]'%(datetime.datetime.now().strftime('%H:%M:%S')))
-        time.sleep(1)
+def getContractDetails(ibkr, symbol, type = 'stock', currency='USD'):
     # set currency 
     if symbol in currency_mapping:
         currency = currency_mapping[symbol]
-    
     # change type to index if in index list
     if type != 'future': 
         if symbol in _index:
@@ -300,7 +301,6 @@ def getContractDetails(ibkr, symbol, type = 'stock', currency='USD', delay=False
         else: 
             contracts = ibkr.reqContractDetails(Stock(symbol, currency=currency))
     except Exception as e:
-        print(e)
         print('\nCould not retrieve contract details for...%s!'%(symbol))
         return pd.DataFrame() 
             
