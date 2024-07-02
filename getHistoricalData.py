@@ -39,7 +39,7 @@ import re
 import time
 
 import interface_ibkr as ib
-import interface_localDb as db
+import interface_localDb_old as db
 
 ######### SET GLOBAL VARS #########
 
@@ -71,7 +71,6 @@ def _countWorkdays(startDate, endDate, excluded=(6,7)):
         return (len(pd.bdate_range(endDate, startDate)) * -1)
     else:
         return len(pd.bdate_range(startDate, endDate))
-
 
 """
 Save history to a CSV file 
@@ -278,7 +277,7 @@ def updateRecordHistory(ibkr, records, indicesWithOutdatedData= pd.DataFrame(), 
 
                 print(' [green]Success![/green] New record Added for %s-%s..from %s to %s\n'%(newIndex, _intvl, history['date'].min(), history['date'].max()))
             
-                print('%s: [yellow]Pausing %ss before next record...[/yellow]\n'%(datetime.datetime.now().strftime("%H:%M:%S"), ibkrThrottleTime/5))
+                print('%s: [yellow]Pausing %.2fs before next record...[/yellow]\n'%(datetime.datetime.now().strftime("%H:%M:%S"), ibkrThrottleTime/5))
                 time.sleep(ibkrThrottleTime/5)
 
     ## update symbols with outdated records 
@@ -311,7 +310,7 @@ def updateRecordHistory(ibkr, records, indicesWithOutdatedData= pd.DataFrame(), 
                 db.saveHistoryToDB(history, conn, earliestTimestamp)
             
             count+=1
-            print('%s: [yellow]Pausing %ss before next record...[/yellow]'%(datetime.datetime.now().strftime("%H:%M:%S"), ibkrThrottleTime/4))
+            print('%s: [yellow]Pausing %.2fs before next record...[/yellow]'%(datetime.datetime.now().strftime("%H:%M:%S"), ibkrThrottleTime/4))
             time.sleep(ibkrThrottleTime/4)
 
     ##
@@ -346,7 +345,7 @@ def updateRecordHistory(ibkr, records, indicesWithOutdatedData= pd.DataFrame(), 
 
             print('%s: [green]Missing interval %s-%s...updated![/green]'%(datetime.datetime.now().strftime("%H:%M:%S"), _tkr, _intvl))
 
-            print('%s: [yellow]Pausing %ss before next record...[/yellow]\n'%(datetime.datetime.now().strftime("%H:%M:%S"), ibkrThrottleTime))
+            print('%s: [yellow]Pausing %.2fs before next record...[/yellow]\n'%(datetime.datetime.now().strftime("%H:%M:%S"), ibkrThrottleTime))
             time.sleep(ibkrThrottleTime)
                 
     else: 
@@ -412,7 +411,7 @@ def updatePreHistoricData(ibkr):
     uniqueSymbolsInLookupTable['type'] = uniqueSymbolsInLookupTable['symbol'].apply(
         lambda x: 'index' if x in _indexList else 'stock')
     
-    uniqueSymbolsInLookupTable['earliestAvailableTimestamp'] = uniqueSymbolsInLookupTable.apply(lambda x: ib.getEarliestTimeStamp(ibkr, ib.getContractDetails(ibkr, x['symbol'], type = x['type'], delay=True)[0].contract), axis=1)
+    uniqueSymbolsInLookupTable['earliestAvailableTimestamp'] = uniqueSymbolsInLookupTable.apply(lambda x: ib.getEarliestTimeStamp(ibkr, ib.getContractDetails(ibkr, x['symbol'], type = x['type'])[0].contract), axis=1)
 
     # loop through each record in the lookup table
     for index, row in lookupTable.iterrows():
@@ -465,7 +464,7 @@ def updatePreHistoricData(ibkr):
         while i < numIterations:
             i+=1
             
-            print('%s: [yellow]Pausing %ss before next ibkr call...[/yellow]'%(datetime.datetime.now().strftime("%H:%M:%S"), ibkrThrottleTime/30))
+            print('%s: [yellow]Pausing %.2fs before next ibkr call...[/yellow]'%(datetime.datetime.now().strftime("%H:%M:%S"), ibkrThrottleTime/30))
             ## manual throttling of api requests 
             time.sleep(ibkrThrottleTime/6)
             
@@ -521,11 +520,11 @@ def updatePreHistoricData(ibkr):
             db.saveHistoryToDB(history, conn, earliestAvailableTimestamp)
 
         ## manual throttling: pause before requesting next set of data
-        print('%s: [yellow]Pausing %ss before next record...[/yellow]\n'%(datetime.datetime.now().strftime("%H:%M:%S"), ibkrThrottleTime))
+        print('%s: [yellow]Pausing %.2fs before next record...[/yellow]\n'%(datetime.datetime.now().strftime("%H:%M:%S"), ibkrThrottleTime))
         time.sleep(ibkrThrottleTime)
 
 def refreshLookupTable(ibkr, dbname):
-    print('%s: [red] Refreshing lookup table...[/red]'%(datetime.datetime.now().strftime("%H:%M:%S")))
+    print('%s: [red]Refreshing lookup table...[/red]'%(datetime.datetime.now().strftime("%H:%M:%S")))
     
     lookupTableName = config.lookupTableName ##lookup table name in db
     
@@ -533,6 +532,7 @@ def refreshLookupTable(ibkr, dbname):
         ## get a fresh read of local db records & clean them up
         records = db.getRecords(conn) 
 
+        # clean up column formatting
         records['interval'] = records['interval'].str.replace(' ', '')
         records.rename(columns={'type/expiry':'type'}, inplace=True)
 
@@ -541,21 +541,24 @@ def refreshLookupTable(ibkr, dbname):
 
         # manage case where lookup table is empty
         if lookupTableRecords.empty:
+            print('%s: [yellow]Lookup table is empty, initializing with db records...[/yellow]'%(datetime.datetime.now().strftime("%H:%M:%S")))
             allRecords = records[['name', 'symbol', 'type', 'interval', 'lastUpdateDate', 'daysSinceLastUpdate', 'firstRecordDate']].copy()
             allRecords['numMissingBusinessDays'] = 10
         else:
+            print('%s: [yellow]Lookup table exists, updating...[/yellow]'%(datetime.datetime.now().strftime("%H:%M:%S")))
             allRecords = pd.merge(lookupTableRecords, records, how='right', on=['name', 'symbol', 'interval', 'type'])
             allRecords.drop(columns=['firstRecordDate_x'], inplace=True)
             allRecords.rename(columns={'firstRecordDate_y':'firstRecordDate'}, inplace=True)
 
-        # select records from allRecords where (numMissingBusinessData > 1 or NaN) 
+        # select records that need to be updated based on some threshold 
         lookupRecords = allRecords.loc[(allRecords['numMissingBusinessDays'] > 1) | (allRecords['numMissingBusinessDays'].isnull())].reset_index(drop=True)  
 
         ## get earliestTimeStamp for each unique symbol in the lookup list
+        print('%s: [yellow]looking up records for %s symbols[/yellow]'%(datetime.datetime.now().strftime("%H:%M:%S"), len(lookupRecords['symbol'].unique())))
         lookupRecords_uniqueSymbols = pd.DataFrame({'symbol':lookupRecords['symbol'].unique()})
         lookupRecords_uniqueSymbols['earliestAvailableTimestamp'] = lookupRecords_uniqueSymbols['symbol'].apply(
             lambda x: ib.getEarliestTimeStamp(ibkr, 
-                                              ib.getContractDetails(ibkr,x, delay=True)[0].contract))
+                                              ib.getContractDetails(ibkr,x)[0].contract))
         ## merge the earliest availabe timestamp from ibkr with the records table
         records_withEarliestAvailableDate = pd.merge(lookupRecords, lookupRecords_uniqueSymbols, how='left', on='symbol')
         
@@ -570,7 +573,6 @@ def refreshLookupTable(ibkr, dbname):
         # drop numMissingBusinessDays from allRecords
         allRecords.drop(columns=['numMissingBusinessDays'], inplace=True)
         
-        
         # merge allRecords and records_withNewEarliestAvailableDate 
         updatedRecords = pd.merge(allRecords, records_withNewEarliestAvailableDate, how='left', on='name')
 
@@ -580,6 +582,7 @@ def refreshLookupTable(ibkr, dbname):
         # drop rows with nan in numMissingBusinessDays
         records_forInput.dropna(subset=['numMissingBusinessDays'], inplace=True)
 
+        ## update the lookup table in the db
         if not lookupTableRecords.empty:
             # update the lookuptable with input records 
             lookupTableRecords.set_index('name', inplace=True)
@@ -592,7 +595,7 @@ def refreshLookupTable(ibkr, dbname):
             
             ## save to db replacing existing (outdated) records 
             lookupTableRecords.to_sql(f"{lookupTableName}", conn, index=True, if_exists='replace')
-            print('%s:[green] Done![/green]'%(datetime.datetime.now().strftime("%H:%M:%S")))
+            print('%s:[green]  Done![/green]'%(datetime.datetime.now().strftime("%H:%M:%S")))
         
         else: # update db lookup table with input records
             if records_forInput.empty:
@@ -605,14 +608,14 @@ def refreshLookupTable(ibkr, dbname):
             records_forInput = records_forInput[['name', 'symbol', 'type', 'interval', 'numMissingBusinessDays', 'firstRecordDate']]
             # save to db
             records_forInput.to_sql(f"{lookupTableName}", conn, index=False, if_exists='replace')
-            print('%s: [green] Done![/green]%(datetime.datetime.now().strftime("%H:%M:%S"))')
+            print('%s: [green]  Done![/green]%(datetime.datetime.now().strftime("%H:%M:%S"))')
 """
 function that calls updatePreHistoricData over the course of a night, pausing for 5 minutes between each iteration 
 """
 def bulkUpdate():    
     i = 0
     numcycles=15
-    cycletime_= [0] * (numcycles+1)
+    cycletime_= []
     while i < numcycles:
         ## connect to ibkr
         ibkr = ib.setupConnection()
@@ -621,6 +624,7 @@ def bulkUpdate():
             print('[red]  Exiting!\n[/red]')
             return
         starttime = datetime.datetime.now()
+        
         refreshLookupTable(ibkr, _dbName_index)
         
         ibkr = ib.refreshConnection(ibkr)        
@@ -628,12 +632,15 @@ def bulkUpdate():
         ibkr.disconnect()
 
         cycletime = (datetime.datetime.now() - starttime).seconds
-        cycletime_[i+1] = cycletime
+        # add cycle time to list
+        cycletime_.append(cycletime)        
+        
         print('Bulk update #%s with cycle time: %.2f'%(i+1, cycletime))
         print('Average cycle time: %s'%(sum(cycletime_)/len(cycletime_) ))
+        print(cycletime_)
         print('[green]----------------------------------------[/green]')
         if i != 14:
-            print('%s: Pausing 5 mins before next round\n'%(datetime.datetime.now().strftime("%H:%M:%S")))
+            print('%s: Pausing %.2f mins before next round\n'%(datetime.datetime.now().strftime("%H:%M:%S"), ibkrThrottleTime*10/60))
             time.sleep(ibkrThrottleTime * 10)
         i=i+1
 
