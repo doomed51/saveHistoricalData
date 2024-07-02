@@ -14,6 +14,7 @@ lookupTableName = '00-lookup_symbolRecords'
 
 # Reference Lists
 intervals = ['1 min', '5 mins', '30 mins', '1 day']
+_indexList = ['VIX', 'VIX3M', 'VVIX', 'SPX', 'VIX1D', 'TSX']
 _index = ['VIX', 'VIX3M', 'VVIX', 'SPX', 'VIX1D', 'TSX']
 
 ## dictionary of symbol, currency pairs
