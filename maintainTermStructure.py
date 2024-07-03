@@ -3,16 +3,74 @@
     Data is sourced from the local database with no connections required to the broker api.  
 """
 import config 
+import calendar
+import traceback 
 
 import pandas as pd
+import datetime as dt
 import interface_localDB as db 
 import checkDataIntegrity as cdi
 from rich import print
 from sys import argv
+from dateutil.relativedelta import relativedelta
 
 dbanme_termstructure = config.dbname_termstructure
 dbpath_futures = config.dbname_futures
 trackedIntervals = config.intervals
+
+def _get_expiry_date_for_month(symbol, date): 
+    date = date.date()
+    if symbol.upper() == 'VIX':
+        ### https://www.cboe.com/tradable_products/vix/vix_futures/specifications/
+        
+        if date.month == 12: 
+            third_friday_next_month = dt.date(date.year + 1, 1, 15)
+        else:
+            third_friday_next_month = dt.date(date.year, date.month + 1, 15)
+        
+        one_day = dt.timedelta(days=1)
+        thirty_days = dt.timedelta(days=30)
+        while third_friday_next_month.weekday() != 4:
+            third_friday_next_month = third_friday_next_month + one_day 
+
+        return third_friday_next_month - thirty_days
+
+def _adjust_expiry_date_for_roll_days(expiry_table):
+    """
+        Adjusts the expiry date for each contract in the expiry_table for roll days. 
+        - If the current date is greater than the expiry date, the contract is rolled to the next month
+        - If the current date is equal to the expiry date, the contract is rolled to the next month if the expiry date is the same as the current date
+    """
+    print(expiry_table)
+    # make sure all columns are a date object 
+    for col in expiry_table.columns:
+        if col != 'date':
+            expiry_table[col] = pd.to_datetime(expiry_table[col])
+    month_columns = [col for col in expiry_table.columns if col.startswith('month')]
+    # handle missing month columns
+    if len(month_columns) == 0:
+        print('ERROR: No month columns found in expiry table.', traceback.format_exc())
+        exit() 
+    
+    for i in range(len(month_columns)-1):
+        # first check where contract is expired vs. current date 
+        expiry_table[month_columns[i]] = expiry_table.apply(lambda x: x[month_columns[i+1]] if x['date'] > x[month_columns[i]] else x[month_columns[i]], axis=1)
+        # then roll the following months on the current date 
+        expiry_table[month_columns[i]] = expiry_table.apply(lambda x: x[month_columns[i+1]] if x[month_columns[i]] == x[month_columns[i+1]] else x[month_columns[i]], axis=1)
+
+def _generate_futures_contract_expiry_table(symbol, start_date, end_date, num_months_ahead):
+    start_date = start_date.date()
+    end_date = end_date.date()    
+    date_range = pd.date_range(start=start_date, end=end_date, freq='B')
+    
+    expiry_table = pd.DataFrame({'date': date_range})
+    # create expiry table for each month ahead 
+    for i in range(0, num_months_ahead):
+        expiry_table['month%s'%(i+1)] = expiry_table['date'].apply(lambda x: x + relativedelta(months=i))
+        expiry_table['month%s'%(i+1)] = expiry_table['month%s'%(i+1)].apply(lambda x: _get_expiry_date_for_month(symbol, x))
+    
+    # adjust expiry calendar for roll days (i.e. where date > expiry date) 
+    return _adjust_expiry_date_for_roll_days(expiry_table)
 
 def _averageContractVolume(conn, tablename):
     """
@@ -137,11 +195,9 @@ def updateAllTermstructureData():
     # Update term structure data for each symbol and tracked interval
     for symbol in symbols:
         for interval in trackedIntervals:
-            print(symbol, interval)
             x = getTermStructure(symbol, interval=interval.replace(' ', ''))
-            print(x)
+            exit()
             missing = cdi._check_for_missing_dates_in_timeseries(x)
-            # print(x.head())
             saveTermStructure(x)
 
 def getVixTermstructureFromCSV(path='vix.csv'): 
@@ -164,9 +220,12 @@ def getVixTermstructureFromCSV(path='vix.csv'):
 
 if __name__ == '__main__':
     # if console arg = csvupdate then update vix termstructure data from csv
-    if len(argv) > 1 and argv[1] == 'csvupdate':
-        vix_ts_raw = getVixTermstructureFromCSV()
-        saveTermStructure(vix_ts_raw)
+    if len(argv) > 1:
+        if argv[1] == 'csvupdate':
+            vix_ts_raw = getVixTermstructureFromCSV()
+            saveTermStructure(vix_ts_raw)
+        elif argv[1] == 'test':
+            _generate_futures_contract_expiry_table('VIX', pd.Timestamp.today() - pd.DateOffset(months=2), pd.Timestamp.today() + pd.DateOffset(months=1), 9)
     
     else:
         updateAllTermstructureData()
