@@ -6,17 +6,26 @@ import config
 import calendar
 import traceback 
 
-import pandas as pd
 import datetime as dt
+import holidays as hols 
+import pandas as pd
 import interface_localDB as db 
 import checkDataIntegrity as cdi
 from rich import print
 from sys import argv
 from dateutil.relativedelta import relativedelta
 
-dbanme_termstructure = config.dbname_termstructure
+dbpath_termstructure = config.dbname_termstructure
 dbpath_futures = config.dbname_futures
 trackedIntervals = config.intervals
+
+def _check_if_date_is_holiday(date):
+    """
+        Check if a given date is a holiday for a given country and exchange
+    """
+    holidays = hols.NYSE(years=date.year).keys()
+    return date in holidays
+
 
 def _get_expiry_date_for_month(symbol, date): 
     date = date.date()
@@ -32,8 +41,15 @@ def _get_expiry_date_for_month(symbol, date):
         thirty_days = dt.timedelta(days=30)
         while third_friday_next_month.weekday() != 4:
             third_friday_next_month = third_friday_next_month + one_day 
+        
+        if _check_if_date_is_holiday(third_friday_next_month):
+            third_friday_next_month = third_friday_next_month - one_day
+        
+        expiry = third_friday_next_month - thirty_days
+        if _check_if_date_is_holiday(expiry):
+            expiry = expiry - one_day
 
-        return third_friday_next_month - thirty_days
+        return expiry
 
 def _adjust_expiry_date_for_roll_days(expiry_table):
     """
@@ -41,7 +57,6 @@ def _adjust_expiry_date_for_roll_days(expiry_table):
         - If the current date is greater than the expiry date, the contract is rolled to the next month
         - If the current date is equal to the expiry date, the contract is rolled to the next month if the expiry date is the same as the current date
     """
-    print(expiry_table)
     # make sure all columns are a date object 
     for col in expiry_table.columns:
         if col != 'date':
@@ -56,7 +71,10 @@ def _adjust_expiry_date_for_roll_days(expiry_table):
         # first check where contract is expired vs. current date 
         expiry_table[month_columns[i]] = expiry_table.apply(lambda x: x[month_columns[i+1]] if x['date'] > x[month_columns[i]] else x[month_columns[i]], axis=1)
         # then roll the following months on the current date 
-        expiry_table[month_columns[i]] = expiry_table.apply(lambda x: x[month_columns[i+1]] if x[month_columns[i]] == x[month_columns[i+1]] else x[month_columns[i]], axis=1)
+        # for i in range(2, len(month_columns)-1):
+        expiry_table[month_columns[i]] = expiry_table.apply(lambda x: x[month_columns[i+1]] if x[month_columns[i]] == x[month_columns[i-1]] else x[month_columns[i]], axis=1)
+    
+    return expiry_table
 
 def _generate_futures_contract_expiry_table(symbol, start_date, end_date, num_months_ahead):
     start_date = start_date.date()
@@ -71,6 +89,29 @@ def _generate_futures_contract_expiry_table(symbol, start_date, end_date, num_mo
     
     # adjust expiry calendar for roll days (i.e. where date > expiry date) 
     return _adjust_expiry_date_for_roll_days(expiry_table)
+
+def _get_available_term_structure_data(symbol, interval, expiry_table):
+    """
+        Filters the expiry table for dates where TS can be calculated across the entire curve 
+    """
+    with db.sqlite_connection(dbpath_futures) as conn_futures:
+        records = db.getLookup_symbolRecords(conn_futures)
+    records = records.loc[records['interval'] == interval]
+    records = records.loc[records['symbol'] == symbol]
+    records['lastTradeDate'] = pd.to_datetime(records['lastTradeDate'])
+    
+    # find what data we have available locally for the given expiry table 
+    available_data = expiry_table.copy()
+    for col in available_data.columns:
+        if col != 'date':
+            available_data[col] = available_data[col].apply(lambda x: x in records['lastTradeDate'].values)
+
+    # remove any dates where TS cannot be determined across the entire curve 
+    available_data = available_data.loc[available_data['month1'] == True]
+    first_index = available_data.index[0]
+    expiry_table = expiry_table.iloc[first_index:]
+
+    return expiry_table
 
 def _averageContractVolume(conn, tablename):
     """
@@ -89,7 +130,7 @@ def _averageContractVolume(conn, tablename):
 
 def _getNextContracts(conn, symbol, numContracts, interval='1day'):
     """
-        Gets next n contracts in the db for a given symbol
+        Gets next n contracts with the highest liquidity in the db 
     """
     # get lookup table that is an index of all the tables in our db
     lookupTable = db.getLookup_symbolRecords(conn)
@@ -138,7 +179,7 @@ def getTermStructure(symbol:str, interval='1day', lookahead_months=8):
             pxHistory.rename(columns={'close': 'month%s'%(index+1)}, inplace=True)
             termStructure_raw.append(pxHistory['month%s'%(index+1)])
     termStructure = pd.concat(termStructure_raw, axis=1).sort_values(by='date').reset_index()
-    print(termStructure)    
+    # print(termStructure)    
     # drop records with NaN values
     termStructure.dropna(inplace=True)
 
@@ -149,6 +190,21 @@ def getTermStructure(symbol:str, interval='1day', lookahead_months=8):
     termStructure['symbol'] = symbol
     termStructure['interval'] = interval
     return termStructure.reset_index(drop=True)
+
+def get_term_structure_v2(symbol, interval, expiry_table):
+    available_data = _get_available_term_structure_data(symbol, interval, expiry_table)
+
+    month_columns = [col for col in available_data.columns if col.startswith('month')]
+    unique_expiries = available_data[month_columns].stack().unique().strftime('%Y%m%d')
+
+    # query pxhistory for each unique expiry date, saving to a list with key as expiry date
+    print(unique_expiries)
+    
+    with db.sqlite_connection(dbpath_futures) as conn_futures:
+        pxHistory_dict = {expiry: db.getTable(conn_futures, '%s_%s_%s'%(symbol, expiry, interval)) for expiry in unique_expiries}
+            
+    print(available_data.head(30))    
+    exit()
 
 def saveTermStructure(termStructure):
     """
@@ -183,19 +239,22 @@ def saveTermStructure(termStructure):
          db._removeDuplicates(conn, tablename)
     print('%s: [green]Updated term structure data for %s[/green]'%(pd.Timestamp.today(), tablename))
 
-def updateAllTermstructureData():
+def update_term_structure_data(symbol):
     """ 
         Updates term structure data for all symbols being tracked in the db 
     """
     # get list of all symbols being tracked 
-    with db.sqlite_connection(dbpath_futures) as conn_futures:
-        lookupTable = db.getLookup_symbolRecords(conn_futures)
-        symbols = lookupTable['symbol'].unique()
+    # with db.sqlite_connection(dbpath_futures) as conn_futures:
+    #     lookupTable = db.getLookup_symbolRecords(conn_futures)
+    #     symbols = lookupTable['symbol'].unique()
+    symbols = ['VIX']
+
+    expiry_table = _generate_futures_contract_expiry_table(symbol, pd.Timestamp.today() - pd.DateOffset(months=24), pd.Timestamp.today(), 9)
 
     # Update term structure data for each symbol and tracked interval
     for symbol in symbols:
         for interval in trackedIntervals:
-            x = getTermStructure(symbol, interval=interval.replace(' ', ''))
+            x = get_term_structure_v2(symbol, interval=interval.replace(' ', ''), expiry_table=expiry_table)
             exit()
             missing = cdi._check_for_missing_dates_in_timeseries(x)
             saveTermStructure(x)
@@ -225,8 +284,8 @@ if __name__ == '__main__':
             vix_ts_raw = getVixTermstructureFromCSV()
             saveTermStructure(vix_ts_raw)
         elif argv[1] == 'test':
-            _generate_futures_contract_expiry_table('VIX', pd.Timestamp.today() - pd.DateOffset(months=2), pd.Timestamp.today() + pd.DateOffset(months=1), 9)
+            _generate_futures_contract_expiry_table('VIX', pd.Timestamp.today() - pd.DateOffset(months=24), pd.Timestamp.today(), 9)
     
     else:
-        updateAllTermstructureData()
+        update_term_structure_data('VIX')
 
