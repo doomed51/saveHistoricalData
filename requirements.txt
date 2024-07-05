@@ -5,3 +5,4 @@ rich
 ffn
 pytz
 seaborn
+holidays
