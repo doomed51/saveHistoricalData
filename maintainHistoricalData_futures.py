@@ -14,8 +14,9 @@ import config
 import math
 
 import pandas as pd
-import interface_localDb as db
+import interface_localDb_old as db
 import interface_ibkr as ibkr
+import checkDataIntegrity as cdi
 
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
@@ -39,16 +40,16 @@ dbName_futures = config.dbname_futures
 trackedIntervals = config.intervals
 numExpiryMonths = 14 # number of future expiries we want to track at any given time 
 
-"""
-    adds a space between num and alphabet
-"""
 def _addspace(myStr): 
+    """
+        adds a space between num and alphabet
+    """
     return re.sub("[A-Za-z]+", lambda elm: " "+elm[0],myStr )
 
-"""
-    lambda function to set lookback based on interval
-"""
 def _setLookback(interval):
+    """
+        lambda function to set lookback based on interval
+    """
     lookback = '10 D'
     if interval in ['1 day']:
         lookback = '300 D'
@@ -58,10 +59,10 @@ def _setLookback(interval):
         lookback = '5 D'
     return lookback
 
-"""
-    returns [DataFrame] of watchlist (csv of futures)
-"""
 def _getWatchlist(filename):
+    """
+        returns [DataFrame] of watchlist (csv of futures)
+    """
     # read watchlist csv file
     watchlist = pd.read_csv(filename)
 
@@ -74,28 +75,28 @@ def _getWatchlist(filename):
 
     return watchlist
 
-"""
-    Returns dataframe of records in the db  
-"""
 def _getLatestRecords():
+    """
+        Returns dataframe of records in the db  
+    """
     # get latest data from db
     with db.sqlite_connection(dbName_futures) as conn:
         latestData = db.getRecords(conn)
     return latestData
 
-"""
-    returns the minimum record date from target table
-"""
 def _getMinRecordDate(conn, tablename):
+    """
+        returns the minimum record date from target table
+    """
     sqlStatement = 'SELECT MIN(date) FROM \'%s\''%(tablename)
     minDate = pd.read_sql(sqlStatement, conn)
 
     return minDate.iloc[0]['MIN(date)']
 
-""" returns number of business days 
-    between two provided datetimes 
-""" 
 def _countWorkdays(startDate, endDate, excluded=(6,7)):
+    """ returns number of business days 
+        between two provided datetimes 
+    """ 
     #make sure startDate and endDate are datetime objects
     if not isinstance(startDate, datetime):
         startDate = datetime.strptime(startDate, '%Y-%m-%d %H:%M:%S')
@@ -150,7 +151,6 @@ def _updateSingleRecord(ib, symbol, expiry, interval, lookback, endDate=''):
                     _earliestTimeStamp = datetime.today().strftime('%Y%m%d %H:%M:%S')
                 db._updateLookup_symbolRecords(conn, tablename, type = 'future', earliestTimestamp = _earliestTimeStamp, numMissingDays = 0)
     else:
-        # format records before saving to db 
         record['symbol'] = symbol
         record['interval'] = interval
         record['lastTradeDate'] = expiry
@@ -164,24 +164,23 @@ def _updateSingleRecord(ib, symbol, expiry, interval, lookback, endDate=''):
     print('%s: [green]Record updated, sleeping for %ss...[/green]\n'%(datetime.now().strftime('%H:%M:%S'), _defaultSleepTime/6))
     time.sleep(_defaultSleepTime/6)
         
-"""
-    returns contracts missing from the db for given specified 
-    inputs: 
-        latestRectords: [DataFrame] of latest records from the db (limited to 1 symbol)
-        numMonths: [int] number of months into the future we want to track
-    returns:
-        [DataFrame] of missing contracts informat symbol_expiry_interval 
-"""
 def _getMissingContracts(ib, symbol, numMonths = numExpiryMonths):
+    """
+        returns contracts missing from the db for given symbol 
+        inputs: 
+            latestRectords: [DataFrame] of latest records from the db (limited to 1 symbol)
+            numMonths: [int] num months into future to look for available contracts
+        returns:
+            [DataFrame] of missing contracts informat symbol_expiry_interval 
+    """
     print(' %s:[yellow] Checking missing contracts for %s...[/yellow]'%(datetime.now().strftime('%H:%M:%S'), symbol))
     # get latest records from db 
     with db.sqlite_connection(dbName_futures) as conn:
         latestRecords = db.getRecords(conn)
         # select only records with symbol = symbol
         latestRecords = latestRecords.loc[latestRecords['symbol'] == symbol].reset_index(drop=True)
-
     # get contracts from ibkr 
-    contracts = ibkr.getContractDetails(ib, symbol, 'future')
+    contracts = ibkr.getContractDetails(ib, symbol, type='future')
     contracts = ibkr.util.df(contracts)
     
     # if symbol = VIX, drop the weekly contracts 
@@ -222,11 +221,11 @@ def _getMissingContracts(ib, symbol, numMonths = numExpiryMonths):
         print('[yellow] Found %s missing contracts[/yellow]\n'%(str(len(missingContracts))))
     return missingContracts.reset_index(drop=True)
 
-""" 
-    maps future expiry, symbol combo to ibkr unique id 
-    TODO not implemented fully
-"""
 def uniqueIDMapper(ib, symbol, expiry): 
+    """ 
+        maps future expiry, symbol combo to ibkr unique id 
+        TODO not implemented fully
+    """
     # get contract details 
     contractDetails = ibkr.getContractDetails(ib, symbol=symbol, type='future')
     # convert to dataframe 
@@ -249,14 +248,14 @@ def uniqueIDMapper(ib, symbol, expiry):
     print(contractDetails[['localSymbol', 'realExpirationDate']])
     exit()
 
-"""
-    Updates existing, and adds missing records to the db
-    logic: 
-    - update existing records
-    - add new contracts, if needed, to maintain numContract number of forward contracts being tracked 
-    - finally add new contracts from the watchlist with numConctract number of forward contract 
-"""
 def updateRecords(ib_):     
+    """
+        Updates existing, and adds missing records to the db
+        logic: 
+        - update existing records
+        - add new contracts, if needed, to maintain numContract number of forward contracts being tracked 
+        - finally add new contracts from the watchlist with numConctract number of forward contract 
+    """
     
     # get watchlist
     watchlist = pd.read_csv(filename_futuresWatchlist)
@@ -272,16 +271,11 @@ def updateRecords(ib_):
 
     # drop latestRecords where expiry is before current date
     latestRecords = latestRecords.loc[latestRecords['type/expiry'] > datetime.today().strftime('%Y%m%d')].sort_values(by=['interval']).reset_index(drop=True)
-    # select only records where symbol=vix, and interval = 1 min
-    # latestRecords = latestRecords.loc[(latestRecords['symbol'] == 'VIX') & (latestRecords['interval'] == '1 min')].reset_index(drop=True)
-
-    # open ibkr connection
-    ib = ib_
 
     # find contracts missing from db 
     missingContracts = pd.DataFrame()
     for symbol in watchlist['symbol']:
-        missingContracts = missingContracts._append(_getMissingContracts(ib, symbol))
+        missingContracts = missingContracts._append(_getMissingContracts(ib_, symbol))
 
     # print debug info to console 
     print('Total missing contracts: %s'%(str(len(missingContracts))))
@@ -301,7 +295,7 @@ def updateRecords(ib_):
         print('[green]----------------------------------------------[/green]\n')
     for missingContract in missingContracts.iterrows():
         print('Adding contract %s %s %s'%(missingContract[1]['contract'].symbol, missingContract[1]['realExpirationDate'], missingContract[1]['interval']))
-        _updateSingleRecord(ib, missingContract[1]['contract'].symbol, missingContract[1]['realExpirationDate'], missingContract[1]['interval'], missingContract[1]['lookback'])
+        _updateSingleRecord(ib_, missingContract[1]['contract'].symbol, missingContract[1]['realExpirationDate'], missingContract[1]['interval'], missingContract[1]['lookback'])
         # sleep for defaulttime
         print('%s: sleeping for %ss...\n'%(datetime.now().strftime('%H:%M:%S'), _defaultSleepTime))
         time.sleep(_defaultSleepTime)
@@ -319,17 +313,17 @@ def updateRecords(ib_):
         # print recodrs where type/expiry is before current date
         for row in (latestRecords.loc[latestRecords['daysSinceLastUpdate'] >= 1]).iterrows():
             print('%s: Updating contract %s %s %s'%(datetime.now().strftime('%H:%M:%S'), row[1]['symbol'], row[1]['type/expiry'], row[1]['interval']))
-            _updateSingleRecord(ib, row[1]['symbol'], row[1]['type/expiry'], row[1]['interval'], str(row[1]['daysSinceLastUpdate']+1)+' D')
+            _updateSingleRecord(ib_, row[1]['symbol'], row[1]['type/expiry'], row[1]['interval'], str(row[1]['daysSinceLastUpdate']+1)+' D')
     
     print('[green]----------------------------------------------[/green]')
     print('[green]---- Completed updating outdated records ----[/green]')
     print('[green]----------------------------------------------[/green]\n')
         
-"""
-    This function updates the past two years of futures data.
-    use this when a symbol is first added from the watchlist  
-"""
-def loadExpiredContracts(ib, symbol, lastTradeDate, interval):
+def DELETE_loadExpiredContracts(ib, symbol, lastTradeDate, interval):
+    """
+        This function updates the past two years of futures data.
+        use this when a symbol is first added from the watchlist  
+    """
     ###############
     ## placeholder!!! needs to be implemented
     ###############
@@ -340,11 +334,11 @@ def loadExpiredContracts(ib, symbol, lastTradeDate, interval):
     conDetails[2].contract.lastTradeDateOrContractMonth = '20230820'
     record2 = ibkr._getHistoricalBars_futures(ib, conDetails[2].contract, interval=interval, endDate=datetime.today(), lookback='300 D', whatToShow='BID')
 
-"""
-    Gross. but use if necessary. 
-    Use when lookup table hasnt been updated after a new contract is added 
-"""
 def _dirtyRefreshLookupTable(ib): 
+    """
+        Gross. but use if necessary. 
+        Use when lookup table hasnt been updated after a new contract is added 
+    """
     with db.sqlite_connection(dbName_futures) as conn:
         # get lookup table 
         lookupTable = db.getLookup_symbolRecords(conn)
@@ -383,21 +377,21 @@ def _dirtyRefreshLookupTable(ib):
     # get the number of business days between calcdate and the firstRecordDate
     return
 
-"""
-    update pre-history for records in the db 
-        inputs: 
-            pd.lookuptable of records that need to be updated
-            ibkr object 
-        algo:
-            1. add a space between digit and alphabet in the interval column 
-            2. set lookback to 60
-            3. iterate through each records and:
-                a. set the endDate to the firstRecordDate
-                b. query ibkr for history 
-                c. skip to next if no data is returned
-                d. append history to the db
-"""
 def _updatePreHistory(lookupTable, ib):
+    """
+        update pre-history for records in the db 
+            inputs: 
+                pd.lookuptable of records that need to be updated
+                ibkr object 
+            algo:
+                1. add a space between digit and alphabet in the interval column 
+                2. set lookback to 60
+                3. iterate through each records and:
+                    a. set the endDate to the firstRecordDate
+                    b. query ibkr for history 
+                    c. skip to next if no data is returned
+                    d. append history to the db
+    """
     print('[green]----------------------------------------------[/green]')
     print('[yellow]--------- Updating prehistorica data ---------[/yellow]')
     print('[green]----------------------------------------------[/green]\n')    
@@ -504,10 +498,10 @@ def _updatePreHistory(lookupTable, ib):
     print('[green]----------------------------------------------[/green]\n')
     return
 
-"""
-    Run this to initialize records in the db based on the watchlist 
-"""
 def initializeRecords(ib, watchlist,  updateThresholdDays=1):
+    """
+        Run this to initialize records in the db based on the watchlist 
+    """
     # get watchlist
     watchlist = _getWatchlist(filename_futuresWatchlist)
     # get latest data from db
@@ -577,14 +571,37 @@ def initializeRecords(ib, watchlist,  updateThresholdDays=1):
     
     return
 
-ib = ibkr.setupConnection()
+def _check_missing_dates(record):
+        with db.sqlite_connection(dbName_futures) as conn:
+            data = db.getTable(conn, record['name'])
+        # Check for missing dates in the data
+        missingDates = cdi._check_for_missing_dates_in_timeseries(data)
+        return missingDates
+
+def check_futures_data_integrity():
+    """
+        Check, and plugs gaps in data for active futures contracts 
+        Note: This will not work for expired contracts (due to IBKR data limitations)
+    """
+    ## get latest data records in db.
+    with db.sqlite_connection(dbName_futures) as conn:
+        latestData = db.getRecords(conn)
+    active_contracts = latestData.loc[latestData['type/expiry'] > datetime.today().strftime('%Y%m%d')]
+    active_contracts = active_contracts.loc[active_contracts['interval'] == '1 day']
+
+    for index, record in active_contracts.iterrows():
+        with db.sqlite_connection(dbName_futures) as conn:
+            data = db.getTable(conn, record['name'])
+        missingDates = cdi._check_for_missing_dates_in_timeseries(data)
+
+        if not missingDates.empty:
+            print('[yellow]Warning: Missing dates found in %s[/yellow]'%(record['name']))
+            print('\n')
 
 if __name__ == '__main__':
-    ######## debug code 
-    #bars = ibkr.getBars_futures(ib, symbol='VIX', lastTradeDate='20240320', exchange='CFE', interval='1 day', lookback='10 D')
-    #print(bars)
-    #exit()
-    ###################
+    check_futures_data_integrity()
+
+    ib = ibkr.setupConnection()
     updateRecords(ib)       
     with db.sqlite_connection(dbName_futures) as conn:
         for i in range(15):
