@@ -22,20 +22,6 @@ exchange_mapping = config.exchange_mapping
 
 ##
 # IBKR API reference: https://interactivebrokers.github.io/tws-api/historical_bars.html
-"""
-    IBKR def'n for [lookback] = [Duration String] = [durationStr]
-    
-    Valid Duration String units
-    Unit	Description
-    S	    Seconds
-    D	    Day
-    W	    Week
-    M	    Month
-    Y	    Year
-
-    if barsize = 5m -> durationStr max = 100
-    if barsize >= 30m -> durationStr max = 365
-"""
 
 """
 Setup connection to ibkr
