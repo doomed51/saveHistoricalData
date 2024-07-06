@@ -8,6 +8,7 @@ import traceback
 
 import datetime as dt
 import holidays as hols 
+import matplotlib.pyplot as plt ######################## *** TEST CODE *** 
 import pandas as pd
 import interface_localDB as db 
 import checkDataIntegrity as cdi
@@ -82,12 +83,12 @@ def _generate_futures_contract_expiry_table(symbol, start_date, end_date, num_mo
     date_range = pd.date_range(start=start_date, end=end_date, freq='B')
     
     expiry_table = pd.DataFrame({'date': date_range})
+
     # create expiry table for each month ahead 
     for i in range(0, num_months_ahead):
         expiry_table['month%s'%(i+1)] = expiry_table['date'].apply(lambda x: x + relativedelta(months=i))
         expiry_table['month%s'%(i+1)] = expiry_table['month%s'%(i+1)].apply(lambda x: _get_expiry_date_for_month(symbol, x))
-    
-    # adjust expiry calendar for roll days (i.e. where date > expiry date) 
+
     return _adjust_expiry_date_for_roll_days(expiry_table)
 
 def _get_available_term_structure_data(symbol, interval, expiry_table):
@@ -110,7 +111,7 @@ def _get_available_term_structure_data(symbol, interval, expiry_table):
     available_data = available_data.loc[available_data['month1'] == True]
     first_index = available_data.index[0]
     expiry_table = expiry_table.iloc[first_index:]
-
+    
     return expiry_table
 
 def _averageContractVolume(conn, tablename):
@@ -193,18 +194,45 @@ def getTermStructure(symbol:str, interval='1day', lookahead_months=8):
 
 def get_term_structure_v2(symbol, interval, expiry_table):
     available_data = _get_available_term_structure_data(symbol, interval, expiry_table)
-
     month_columns = [col for col in available_data.columns if col.startswith('month')]
     unique_expiries = available_data[month_columns].stack().unique().strftime('%Y%m%d')
 
-    # query pxhistory for each unique expiry date, saving to a list with key as expiry date
-    print(unique_expiries)
-    
+    # create dict of pxhistories
     with db.sqlite_connection(dbpath_futures) as conn_futures:
         pxHistory_dict = {expiry: db.getTable(conn_futures, '%s_%s_%s'%(symbol, expiry, interval)) for expiry in unique_expiries}
-            
-    print(available_data.head(30))    
+        # make sure date is set as index for each pxHistory
+        for key in pxHistory_dict.keys():
+            pxHistory_dict[key]['date_only'] = pxHistory_dict[key]['date'].dt.date
+            pxHistory_dict[key].set_index('date', inplace=True)
+
+    columns = [f'month{i+1}' for i in range(0, 8)]
+    # columns.insert(0, 'date')
+    term_structure = pd.DataFrame(columns=columns)
+    _term_structure = pd.DataFrame(columns=columns)
+    for index, row in available_data.iterrows():
+        for col in term_structure.columns :
+            if col != 'date':
+                # get contract expiry date needed for the current date and month forward  
+                current_expiry = row[col].date().strftime('%Y%m%d')
+                
+                # select the contract, and filter its pxHistory by current date 
+                filtered_pxHistory = pxHistory_dict[current_expiry].loc[pxHistory_dict[current_expiry]['date_only'] == row['date'].date() ]
+                
+                # append pld['close'] to terms structure col 
+                _term_structure[col] = filtered_pxHistory['close']
+                
+        term_structure = term_structure._append(_term_structure)
+        _term_structure = pd.DataFrame(columns=columns)
+
+    print(term_structure)
+    print(expiry_table)
+    
+    ####### Test plots to see how much missing data there is 
+    # plot each month as seperate lineplot on the same graph, replacing NaN values with 0
+    term_structure.plot.line()
+    plt.show()
     exit()
+
 
 def saveTermStructure(termStructure):
     """
