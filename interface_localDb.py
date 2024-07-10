@@ -23,8 +23,8 @@ dbname_index = config.dbname_stock
 
 index_list = config._indexList # global reference list of index symbols, this is some janky ass shit .... 
 
-""" implements contextmanager for db connection """
 class sqlite_connection(object): 
+    """ Context manager for connecting to sqlite db """
     
     def __init__(self, db_name):
         self.db_name = db_name
@@ -37,16 +37,16 @@ class sqlite_connection(object):
         self.conn.commit()
         self.conn.close()
 
-"""
-constructs the appropriate tablename to call local DB 
-
-Params
-===========
-symbol - [str]
-interval - [str] 
-
-"""
 def _constructTableName(symbol, interval):
+    """
+    constructs the appropriate tablename to call local DB 
+
+    Params
+    ===========
+    symbol - [str]
+    interval - [str] 
+
+    """
     type_ = 'stock'
     if symbol.upper() in index_list:
         type_ = 'index'
@@ -55,37 +55,37 @@ def _constructTableName(symbol, interval):
 
     return tableName
 
-"""
-utility - permanently remove duplicate records from ohlc table
-
-Params
-==========
-tablename - [str]
-"""
-def _removeDuplicates(tablename, conn=None):
-    if conn is None:
-        conn = _connectToDb() # connect to DB
-    
-    ## construct SQL qeury that will group on 'date' column and
-    ## select the min row ID of each group; then delete all the ROWIDs from 
-    ## the table that not in this list
-    sql_selectMinId = 'DELETE FROM %s WHERE ROWID NOT IN (SELECT MIN(ROWID) FROM %s GROUP BY date)'%(tablename, tablename)
-
-    ## run the query 
-    cursor = conn.cursor()
-    cursor.execute(sql_selectMinId)
-
-"""
-sub to update the symbol record lookup table
-This should be called when local db records are updated 
-This should not be run before security history is added to the db 
-
-Params
-----------
-tablename: table that needs to be updated 
-numMissingDays: number of days we do not have locally  
-"""
 def _updateLookup_symbolRecords(conn, tablename, earliestTimestamp, numMissingDays = 5):
+    """
+    utility - permanently remove duplicate records from ohlc table
+
+    Params
+    ==========
+    tablename - [str]
+    """
+    def _removeDuplicates(tablename, conn=None):
+        if conn is None:
+            conn = _connectToDb() # connect to DB
+        
+        ## construct SQL qeury that will group on 'date' column and
+        ## select the min row ID of each group; then delete all the ROWIDs from 
+        ## the table that not in this list
+        sql_selectMinId = 'DELETE FROM %s WHERE ROWID NOT IN (SELECT MIN(ROWID) FROM %s GROUP BY date)'%(tablename, tablename)
+
+        ## run the query 
+        cursor = conn.cursor()
+        cursor.execute(sql_selectMinId)
+
+    """
+    sub to update the symbol record lookup table
+    This should be called when local db records are updated 
+    This should not be run before security history is added to the db 
+
+    Params
+    ----------
+    tablename: table that needs to be updated 
+    numMissingDays: number of days we do not have locally  
+    """
     lookupTablename = '00-lookup_symbolRecords'
     
     ## get the earliest record date saved for the target symbol 
@@ -156,18 +156,18 @@ def _formatpxHistory(pxHistory, type=None):
     
     return pxHistory
 
-"""
-Save history to a sqlite3 database
-###
-
-Params
-------------
-history: [DataFrame]
-    pandas dataframe with security timeseries data
-conn: [Sqlite3 connection object]
-    connection to the local db 
-"""
 def saveHistoryToDB(history, conn, earliestTimestamp=''):
+    """
+    Save history to a sqlite3 database
+    ###
+
+    Params
+    ------------
+    history: [DataFrame]
+        pandas dataframe with security timeseries data
+    conn: [Sqlite3 connection object]
+        connection to the local db 
+    """
     
     ## set type to index if the symbol is in the index list 
     if history['symbol'][0] in index_list:
@@ -186,17 +186,17 @@ def saveHistoryToDB(history, conn, earliestTimestamp=''):
     #if earliestTimestamp:
     _updateLookup_symbolRecords(conn, tableName, earliestTimestamp=earliestTimestamp)
 
-"""
-Returns dataframe of px from database 
-
-Params
-===========
-symbol - [str]
-interval - [str] 
-lookback - [str] optional 
-
-"""
 def getPriceHistory(conn, symbol, interval, withpctChange=True, lastTradeMonth=''):
+    """
+    Returns dataframe of px from database 
+
+    Params
+    ===========
+    symbol - [str]
+    interval - [str] 
+    lookback - [str] optional 
+
+    """
     if lastTradeMonth:
         tableName = symbol+'_'+lastTradeMonth+'_'+interval
     else:
@@ -235,36 +235,36 @@ def getTable(conn, tablename):
     # pxHistory = ut.calcLogReturns(pxHistory, 'close')
     return pxHistory
 
-""" 
-Returns the lookup table fo records history as df 
-"""
 def getLookup_symbolRecords(conn):
+    """ 
+    Returns the lookup table fo records history as df 
+    """
     sqlStatement_selectRecordsTable = 'SELECT * FROM \'00-lookup_symbolRecords\''
     symbolRecords = pd.read_sql(sqlStatement_selectRecordsTable, conn)
     # convert firstRecordDate column to datetime
     symbolRecords['firstRecordDate'] = pd.to_datetime(symbolRecords['firstRecordDate'])
     return symbolRecords
 
-"""
-lists the unique symbols in the lookup table
-"""
 def listSymbols(conn):
+    """
+    lists the unique symbols in the lookup table
+    """
     sqlStatement_selectRecordsTable = 'SELECT DISTINCT symbol FROM \'00-lookup_symbolRecords\' ORDER BY symbol ASC'
     symbols = pd.read_sql(sqlStatement_selectRecordsTable, conn)
     return symbols
 
-"""
-    Returns value of a specified cell for the target futures contract
-    inputs:
-        symbol: str
-        interval: str
-        expiryMonth: str as YYYYMM
-        targetColumn: str, column we want from the db table 
-        targetDate: str as YYYY-MM-DD, date of the column we want
-    outputs:
-        value of the target cell
-"""
 def futures_getCellValue(conn, symbol, interval='1day', lastTradeMonth='202308', targetColumn='close', targetDate='2023-07-21'):
+    """
+        Returns value of a specified cell for the target futures contract
+        inputs:
+            symbol: str
+            interval: str
+            expiryMonth: str as YYYYMM
+            targetColumn: str, column we want from the db table 
+            targetDate: str as YYYY-MM-DD, date of the column we want
+        outputs:
+            value of the target cell
+    """
     # construct tablename
     tableName = symbol+'_'+str(lastTradeMonth)+'_'+interval
     targetDate = '2023-07-21 00:00:00'
