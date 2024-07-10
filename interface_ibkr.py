@@ -134,21 +134,28 @@ def getBars_futures(ibkr, symbol, lastTradeDate, exchange, lookback, interval, e
     
     return bars
 
-"""
-    Returns [DataFrame] of historical data for futures from IBKR
-"""
 def _getHistoricalBars_futures(ibkrObj, symbol, exchange, lastTradeDate, currency, endDate, lookback, interval, whatToShow):
+    """
+        Returns [DataFrame] of historical data for futures from IBKR
+    """
     ## Future contract type definition: https://ib-insync.readthedocs.io/api.html#ib_insync.contract.Future
     ## contract month, or day format: YYYYMM or YYYYMMDD
     contract = Future(symbol=symbol, lastTradeDateOrContractMonth=lastTradeDate, exchange=exchange, currency=currency, includeExpired=True)
     # make sure endDate is tzaware
     if endDate:
-        # convert to pd series
         endDate = pd.to_datetime(endDate)
         endDate = endDate.tz_localize('US/Eastern')
+    
+    # handle expired contracts 
+    if lastTradeDate < datetime.datetime.now().strftime('%Y%m%d'):
+        print(' %s: [yellow]Contract has expired, updating lastTradeDate...[/yellow]'%(datetime.datetime.now().strftime('%H:%M:%S')))
+        lastTradeDate = pd.to_datetime(lastTradeDate) + pd.DateOffset(days=1)  
+        # lastTradeDate = lastTradeDate +  
+        endDate = pd.to_datetime(lastTradeDate)
+        endDate = endDate.tz_localize('US/Eastern')
+
     print(' %s: [yellow]Calling ibkr for futures data[/yellow]'%(datetime.datetime.now().strftime('%H:%M:%S')))
     try:
-        # grab history from IBKR 
         contractHistory = ibkrObj.reqHistoricalData(
             contract, 
             endDateTime = endDate,
