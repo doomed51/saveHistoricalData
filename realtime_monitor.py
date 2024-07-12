@@ -293,9 +293,13 @@ def getRealtime_v5():
     symbol2 = 'VIX'
     
     fig, ax = plt.subplots(1, 2, figsize=(15, 5))
+    ax1_twin = ax[1].twinx()
 
     def animate(i):
-        plt.cla()
+        # for a in ax:
+        #     a.clear()
+        # plt.clf()
+        # fig.clear()
         wma_period_long = 60
         wma_period_short = 15
 
@@ -327,13 +331,17 @@ def getRealtime_v5():
         merged.rename(columns={'ratio_wma': 'ratio_wma_short'}, inplace=True)
         merged = indicators.moving_average_crossover(merged, colname_long = 'ratio_wma_long', colname_short = 'ratio_wma_short')
         merged = indicators.intra_day_cumulative_signal(merged, 'ratio_wma_long_ratio_wma_short_crossover', intraday_reset=True)
+        
         # convert date to datetime 
+        ax[0].clear()
         sns.lineplot(y=merged['ratio'], x=merged['date'], ax=ax[0], color='blue')
         sns.lineplot(y=merged['ratio_wma_long'], x=merged['date'], ax=ax[0], color='red', alpha=0.7)
         sns.lineplot(y=merged['ratio_wma_short'], x=merged['date'], ax=ax[0], color='red', alpha=0.2)
 
+        ax[1].clear()
         sns.lineplot(y=merged['ratio_wma_long_ratio_wma_short_crossover'], x=merged['date'], ax=ax[1], color='green')
-        sns.lineplot(y=merged['ratio_wma_long_ratio_wma_short_crossover_cumsum'], x=merged['date'], ax=ax[1].twinx(), color='grey')
+        # ax1_twin.clear()
+        sns.lineplot(y=merged['ratio_wma_long_ratio_wma_short_crossover_cumsum'], x=merged['date'], ax=ax1_twin, color='grey')
         ax[1].axhline(y=0, color='grey', linestyle='-', alpha=0.3)
 
         print('%s: VIX3M: %.4f'%(datetime.now().strftime('%Y-%m-%d %H:%M:%S'), merged['close_vix3m'].iloc[-1]))
