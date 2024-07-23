@@ -1,4 +1,7 @@
-import pandas as pd 
+
+###### Local library paths 
+path_lib_analysis_backtests = '/workbench/analysis/venv/backtests'
+path_lib_analysis_strategies = '/workbench/analysis/venv/strategy_implementation'
 
 ###### DATABASE locations
 dbname_stock = '/workbench/historicalData/venv/saveHistoricalData/data/historicalData_index.db'
@@ -9,8 +12,8 @@ dbname_rwtools_futures_vix_csv = '/workbench/historicalData/venv/saveHistoricalD
 ###### Watchlist locations 
 watchlist_main = 'tickerList.csv'
 watchlist_futures = 'futuresWatchlist.csv'
-
 lookupTableName = '00-lookup_symbolRecords'
+table_name_futures_pxhistory_metadata = '00-lookup_pxhistory_metadata'
 
 # Reference Lists
 intervals = ['1 min', '5 mins', '30 mins', '1 day']
@@ -59,7 +62,7 @@ exchange_mapping = {
     'GE': 'ECBOT',
     'HG': 'COMEX',
     'IBM': 'NYSE',
-    'NQ': 'GLOBEX',
+    'NG': 'NYMEX',
     'SPX': 'CBOE',
     'SI': 'NYMEX',
     'TN': 'ECBOT',
@@ -79,6 +82,5 @@ exchange_mapping = {
     'ZT': 'ECBOT'
 }
 
-###############
 ############### API thresholds and timeouts 
 ibkr_max_consecutive_calls = 50
