@@ -14,7 +14,9 @@ import config
 import math
 
 import pandas as pd
-import interface_localDb_old as db
+import numpy as np
+# import interface_localDb_old as db
+import interface_localDB as db
 import interface_ibkr as ibkr
 import checkDataIntegrity as cdi
 
@@ -23,7 +25,7 @@ from dateutil.relativedelta import relativedelta
 from rich import print
 
 # set pands to print all rows in df 
-pd.set_option('display.max_rows', None)
+# pd.set_option('display.max_rows', None)
 # set pandas to print entire col
 pd.set_option('display.max_colwidth', None)
 
@@ -334,47 +336,258 @@ def DELETE_loadExpiredContracts(ib, symbol, lastTradeDate, interval):
     conDetails[2].contract.lastTradeDateOrContractMonth = '20230820'
     record2 = ibkr._getHistoricalBars_futures(ib, conDetails[2].contract, interval=interval, endDate=datetime.today(), lookback='300 D', whatToShow='BID')
 
-def _dirtyRefreshLookupTable(ib): 
+def calculate_datetime_counts(pxhistory):
+    """
+        Calculates the number of unique datetime counts per date in pxHistory
+        Returns df['date_only', 'count']
+    """
+    pxhistory['date'] = pd.to_datetime(pxhistory['date'], format='%Y-%m-%d %H:%M:%S' )
+    pxhistory['date_only'] = (pxhistory['date'].dt.date)
+    pxhistory['date_only'] = pd.to_datetime(pxhistory['date_only']).dt.strftime('%Y-%m-%d')
+    pxhistory.sort_values(by=['date'], inplace=True)
+    pxhistory.set_index('date', inplace=True)
+
+    return pxhistory[['date_only', 'open']].groupby('date_only').count().reset_index().rename(columns={'open':'count'})
+
+def check_gaps_in_pxhistory_metadata_up_to_date(conn, threshold_days=1):
+    """
+        checks if metadata is up to date
+         Returns true if data is up to date
+    """
+    pxhistory_metada = db.getTable(conn, config.table_name_futures_pxhistory_metadata)
+
+    if pxhistory_metada.empty:
+        print('[yellow]No records found in table %s[/yellow]'%(config.table_name_futures_pxhistory_metadata))
+        return False
+    else: 
+        latestDate = pd.to_datetime(pxhistory_metada['update_date'].max())
+        if (datetime.now() - latestDate).days <= threshold_days:
+            print('%s: [green]pxhistory_metadata is up to date! Last updated %s[/green]'%(datetime.now().strftime('%H:%M:%S'), latestDate.strftime('%Y-%m-%d %H:%M:%S')))
+            return True
+        else: 
+            print('%s: [yellow]pxhistory_metadata is outdated![/yellow]'%(datetime.now().strftime('%H:%M:%S')))
+            return False
+
+def generate_pxhistory_metadata_master_table(conn):
+    """
+        Generates a master table of tablename, # of unique gap counts, and datetime recorded
+        Includes dates missing between current data and expiry date
+    """
+    lookupTable = db.getLookup_symbolRecords(conn)
+    lookupTable = lookupTable.loc[lookupTable['interval'] != '1day']
+    lookupTable = lookupTable.loc[lookupTable['interval'] == '30mins']
+    pxhistory_metadata_table = db.getTable(conn, config.table_name_futures_pxhistory_metadata)
+
+    record_unique_datetime_count = pd.DataFrame(columns=['tablename', 'num_unique_gaps', 'update_date','date_of_last_gap_date_polled'])
+    for idx, row in lookupTable.iterrows():
+        tablename = row['name']
+        pxHistory = db.getTable(conn, tablename)
+        number_of_datetime_in_each_date = calculate_datetime_counts(pxHistory)
+        # if contract is expired, make sure the expiry date is in pxhistory, if not add a dummy row with the expiry date
+        pxHistory.reset_index(inplace=True)
+        if pd.to_datetime(row['lastTradeDate']) not in pxHistory.index.to_list():
+            # pxHistory = pxHistory.append({'date': pd.to_datetime(row['lastTradingDate']), 'open': 0, 'high': 0, 'low': 0, 'close': 0, 'volume': 0, 'symbol':row['symbol'], 'interval':row['interval'], 'lastTradeDate':row['lastTradeDate']}, ignore_index=True)
+            pxHistory = pd.concat([pxHistory, pd.DataFrame([{'date': (pd.to_datetime(row['lastTradeDate'])), 'date_only': (pd.to_datetime(row['lastTradeDate']).date()), 'open': 0, 'high': 0, 'low': 0, 'close': 0, 'volume': 0, 'symbol':row['symbol'], 'interval':row['interval'], 'lastTradeDate':row['lastTradeDate']}])], ignore_index=True)
+        missing_dates = cdi._check_for_missing_dates_in_timeseries(pxHistory, date_col_name='index')
+        # drop the dummy row if it exists
+        if pd.to_datetime(row['lastTradeDate']) not in pxHistory.index.to_list():
+            pxHistory.drop(pxHistory.index[-1], inplace=True)
+
+        # add missing dates to number_of_datetime_in_each_date setting count to 500
+        # missing_dates = pd.DataFrame(missing_dates.date, columns=['date_only'])
+        # missing_dates['count'] = 500 + np.random.randint(1, 100, missing_dates.shape[0])
+
+        # print(missing_dates)
+        # print(number_of_datetime_in_each_date)
+        # import matplotlib.pyplot as plt
+        # fig, ax = plt.subplots()
+        # number_of_datetime_in_each_date.plot(y='count', x='date_only', kind='line', ax=ax)
+        # plt.show()
+        # exit()
+        number_of_datetime_in_each_date = number_of_datetime_in_each_date.groupby('count').count().reset_index().rename(columns={'date_only':'frequency'})
+        # number_of_datetime_in_each_date = pd.concat([number_of_datetime_in_each_date, missing_dates], ignore_index=True)
+        
+        # record_unique_datetime_count[tablename] = number_of_datetime_in_each_date['frequency'].count()
+        record_unique_datetime_count = pd.concat([record_unique_datetime_count, pd.DataFrame({'tablename':tablename, 'num_unique_gaps':number_of_datetime_in_each_date['frequency'].count(), 'update_date':datetime.now(), 'date_of_last_gap_date_polled':missing_dates.max().date()}, index=[0])], ignore_index=True)
+        print(record_unique_datetime_count)
+    
+    # create master dataframe of tablename, gap, datetime recorded 
+    # record_unique_datetime_count_df = pd.DataFrame.from_dict(record_unique_datetime_count, orient='index').reset_index().rename(columns={0:'num_unique_gaps', 'index':'tablename'})
+    # conver update_date in pxhistory_metadata_table to datetime
+    pxhistory_metadata_table['update_date'] = pd.to_datetime(pxhistory_metadata_table['update_date'])
+    record_unique_datetime_count['update_date'] = datetime.now()
+
+    pxhistory_metadata_table['date_of_last_gap_date_polled'] = pd.to_datetime(pxhistory_metadata_table['date_of_last_gap_date_polled']).dt.date
+    record_unique_datetime_count['date_of_last_gap_date_polled'] = pd.to_datetime(record_unique_datetime_count['date_of_last_gap_date_polled']).dt.date
+    print(pxhistory_metadata_table.dtypes)
+    print(record_unique_datetime_count.dtypes)
+
+    # merge record_unique_datetime_count into pxhistory_metadata_table on tablename, set date_of_last_gap_date_polled to the min of date_of_last_gap_date_polled in both tables
+    record_unique_datetime_count_df = pd.concat([pxhistory_metadata_table, record_unique_datetime_count], ignore_index=True)
+    record_unique_datetime_count_df = record_unique_datetime_count_df.groupby('tablename').agg({'num_unique_gaps':'max', 'update_date':'max', 'date_of_last_gap_date_polled':'min'}).reset_index()
+    
+    exit()
+
+    # current_pxhistory_metadata = db.getTable(conn, config.table_name_futures_pxhistory_metadata)
+    # if not current_pxhistory_metadata.empty:
+    #     current_pxhistory_metadata = current_pxhistory_metadata.loc[current_pxhistory_metadata['update_date'] == current_pxhistory_metadata['update_date'].max()]
+
+    print(record_unique_datetime_count_df)
+    exit()
+    return record_unique_datetime_count_df
+
+def update_gaps_in_pxhistory_metadata(conn):
+    """
+        updates pxhistory_metadata table from db records 
+    """
+    if check_gaps_in_pxhistory_metadata_up_to_date(conn):
+        return
+    else: 
+        record_unique_datetime_count = generate_pxhistory_metadata_master_table(conn)
+        db.save_table_to_db(conn = conn, tablename=config.table_name_futures_pxhistory_metadata, metadata_df = record_unique_datetime_count)
+
+def update_gaps_in_pxhistory(conn, ib, ibkr_lookback_period = '5 D'): 
+    """
+        Most recent missing data gets updated first 
+    """
+    # get pxhistory_metadata and locate max update_date 
+    master_table = generate_pxhistory_metadata_master_table(conn)
+    print(master_table)
+    exit()
+    lookup_table = db.getTable(conn, config.lookupTableName)
+    pxhistory_metadata = db.getTable(conn, config.table_name_futures_pxhistory_metadata)
+    pxhistory_metadata = pxhistory_metadata.loc[pxhistory_metadata['update_date'] == pxhistory_metadata['update_date'].max()]
+
+    # select records in lookuptable that are not in pxhistory_metadata
+    records_missing_from_metadata = lookup_table.loc[~lookup_table['name'].isin(pxhistory_metadata['tablename'])]
+    for idx, row in pxhistory_metadata.iterrows():
+        tablename = row['tablename']
+        pxHistory = db.getTable(conn, tablename)
+        symbol, expiry, interval = tablename.split('_')
+        number_of_datetime_in_each_date = calculate_datetime_counts(pxHistory)
+        
+        # get the date immediately before the last gap polled in metadata
+        last_gap_polled = pd.to_datetime(row['date_of_last_gap_date_polled'])
+        
+        if not pd.isna(last_gap_polled):
+            number_of_datetime_in_each_date = number_of_datetime_in_each_date.loc[number_of_datetime_in_each_date['date_only'] < last_gap_polled]
+        
+        date_to_update = pd.to_datetime(number_of_datetime_in_each_date['date_only'].max()) + pd.to_timedelta(1, unit='D')
+        
+        # if pd.isna(last_gap_polled): # this means that no gaps have been scanned yet
+        # else: 
+        #     # Get the date we need to poll ibkr for 
+        #     date_to_update = number_of_datetime_in_each_date['date_only'].max() + pd.to_timedelta(1, unit='D')
+        # get exchange from config.exchange_mapping
+        exchange = config.exchange_mapping[tablename.split('_')[0]]
+        
+        ibkr_pxhistory = ibkr.getBars_futures(ib, symbol=symbol, lastTradeDate=expiry, interval=_addspace(interval), endDate=date_to_update, lookback=ibkr_lookback_period, exchange=exchange)
+        
+        # print(row,'\n') 
+        # print(date_to_update,'\n')
+        # print(ibkr_pxhistory,'\n')
+        # print(number_of_datetime_in_each_date.tail(),'\n')
+
+        
+        # db.saveHistoryToDB(ibkr_pxhistory, conn, type='future')
+
+        # Update the polling date 
+        days = int(re.findall(r'\d+', ibkr_lookback_period)[0]) # get the digit from lookback
+        row['date_of_last_gap_date_polled'] = date_to_update - pd.to_timedelta(days)
+        print(row,'\n') 
+        exit()
+    
+    pxhistory_metadata['update_date'] = datetime.now()
+    db.save_table_to_db(conn = conn, tablename=config.table_name_futures_pxhistory_metadata, metadata_df = pxhistory_metadata)
+
+    # for tablename in pxhistory_metadata, calc datetime counts and get the gaps in the table 
+    # from metadata, check the date of last gap polled 
+    # hit up ibkr for the date before the last gap polled + 1 day 
+    # save records to the db 
+    # set the date of last gap polled to the end date minus the lookback period
+    # note make sure that, for intra-day data, the endDate is set to the final hour of the day i.e. 23:59:59
+
+def _dirtyRefreshLookupTable(ib, mode): 
     """
         Gross. but use if necessary. 
         Use when lookup table hasnt been updated after a new contract is added 
     """
-    with db.sqlite_connection(dbName_futures) as conn:
-        # get lookup table 
-        lookupTable = db.getLookup_symbolRecords(conn)
-    # new df without duplicates in the symbol column
-    trackedSymbols = lookupTable.drop_duplicates(subset=['symbol'])
+
+    mode = 'SET_FIRST_MISSING_RECORD_DATE'
+    if mode == 'SET_FIRST_MISSING_RECORD_DATE': 
+        tablename = 'VIX_20240117_1min'
+
+        # get table from db 
+        with db.sqlite_connection(dbName_futures) as conn:
+            lookupTable = db.getLookup_symbolRecords(conn)
+            pxHistory = db.getTable(conn, tablename)
+        # remove rows with interval = 1day
+        lookupTable = lookupTable.loc[lookupTable['interval'] != '1day']
+        print(lookupTable)
+
+        # create empty dict of tablename, and count 
+        record_unique_datetime_count = {}
+        for idx, row in lookupTable.iterrows():
+            tablename = row['name']
+            with db.sqlite_connection(dbName_futures) as conn:
+                pxHistory = db.getTable(conn, tablename)
+            
+            number_of_datetime_in_each_date = calculate_datetime_counts(pxHistory)
+            number_of_datetime_in_each_date = number_of_datetime_in_each_date.groupby('count').count().reset_index().rename(columns={'date_only':'frequency'})
+            # add tablename and count to dict 
+            record_unique_datetime_count[tablename] = number_of_datetime_in_each_date['frequency'].count()
+            
+        # create master dataframe of tablename, gap, datetime recorded 
+        record_unique_datetime_count = pd.DataFrame.from_dict(record_unique_datetime_count, orient='index').reset_index().rename(columns={0:'num_unique_gaps', 'index':'tablename'})
+        record_unique_datetime_count['datetime'] = datetime.now()
+        record_unique_datetime_count = record_unique_datetime_count.loc[record_unique_datetime_count['num_unique_gaps'] > 1]
+
+        print(record_unique_datetime_count)
+        record_unique_datetime_count.sort_values(by=['num_unique_gaps'], inplace=True)
+        # plot grouped 
+        import matplotlib.pyplot as plt
+        fig, ax = plt.subplots()
+        record_unique_datetime_count.plot(y='num_unique_gaps', x='tablename', kind='bar', ax=ax)
+        plt.show()
+
+        # print(pxHistory)
+        # print(grouped)
+        exit()
+
+        # # selected.plot(y='close', kind='line', ax=ax)
+        # grouped.plot(y='numDates',x='count', kind='bar', ax=ax)
+        # # ax.xaxis.set_major_formatter(MyFormatter(selected.index, '%Y-%m-%d %H:%M:%S'))
+        # plt.show()
     
-    # add a new column with lambda function to get earliestimestamp from ibkr
-    trackedSymbols['earliestTimestamp'] = trackedSymbols.apply(lambda row: ibkr.getEarliestTimeStamp(ib, symbol=row['symbol'], lastTradeDate=row['lastTradingDate']), axis=1)
+    elif mode == 'ADD_MISSING_RECORDS_TO_LOOKUP_TABLE':
+        with db.sqlite_connection(dbName_futures) as conn:
+            lookupTable = db.getLookup_symbolRecords(conn)
 
-    # get list of all tablenames in the db
-    with db.sqlite_connection(dbName_futures) as conn:
-        # construct sql statement, excluding table names like '00-%'
-        sqlStatement = "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE '00-%'"
-        # get tablenames
-        tablenames = pd.read_sql(sqlStatement, conn)
-    
-    # select only tablesnames that are not in the lookup table
-    tablenames = tablenames.loc[~tablenames['name'].isin(lookupTable['name'])]
+        trackedSymbols = lookupTable.drop_duplicates(subset=['symbol'])
+        
+        trackedSymbols['earliestTimestamp'] = trackedSymbols.apply(lambda row: ibkr.getEarliestTimeStamp(ib, symbol=row['symbol'], lastTradeDate=row['lastTradingDate']), axis=1)
 
-    # addd symbol, interval, and lastTradingDate columns to tablenames by splitting the name column by _
-    tablenames[['symbol', 'lastTradingDate', 'interval']] = tablenames['name'].str.split('_', expand=True)
+        # get list of all tablenames in the db
+        with db.sqlite_connection(dbName_futures) as conn:
+            sqlStatement = "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE '00-%'"
+            tablenames = pd.read_sql(sqlStatement, conn)
+        
+        # select only tablesnames that are not in the lookup table
+        tablenames = tablenames.loc[~tablenames['name'].isin(lookupTable['name'])]
+        tablenames[['symbol', 'lastTradingDate', 'interval']] = tablenames['name'].str.split('_', expand=True)
 
-    # add new column firstRecordDate by applying lambda function _getMinRecordDate(tableName)
-    with db.sqlite_connection(dbName_futures) as conn:
-        tablenames['firstRecordDate'] = tablenames.apply(lambda row: _getMinRecordDate(conn, row['name']), axis=1)
+        # add new column firstRecordDate by applying lambda function _getMinRecordDate(tableName)
+        with db.sqlite_connection(dbName_futures) as conn:
+            tablenames['firstRecordDate'] = tablenames.apply(lambda row: _getMinRecordDate(conn, row['name']), axis=1)
 
-    tablenames = tablenames.assign(numMissingBusinessDays=tablenames.apply(lambda row: _countWorkdays(row['firstRecordDate'], trackedSymbols.loc[trackedSymbols['symbol'] == row['symbol']]['earliestTimestamp'].iloc[0]), axis=1))
+        tablenames = tablenames.assign(numMissingBusinessDays=tablenames.apply(lambda row: _countWorkdays(row['firstRecordDate'], trackedSymbols.loc[trackedSymbols['symbol'] == row['symbol']]['earliestTimestamp'].iloc[0]), axis=1))
 
-    # reorder columns as: 0, 1, 3, 4, 5, 2
-    tablenames = tablenames.iloc[:,[0,1,3,4,5,2]]
-    # connect to the futures db and append tablenames to the lookup table
-    with db.sqlite_connection(dbName_futures) as conn:
-        tablenames.to_sql('00-lookup_symbolRecords', conn, index=False, if_exists='append')
+        # reorder columns as: 0, 1, 3, 4, 5, 2
+        tablenames = tablenames.iloc[:,[0,1,3,4,5,2]]
 
-    
-    # get the number of business days between calcdate and the firstRecordDate
+        with db.sqlite_connection(dbName_futures) as conn:
+            tablenames.to_sql('00-lookup_symbolRecords', conn, index=False, if_exists='append')
+
     return
 
 def _updatePreHistory(lookupTable, ib):
@@ -384,9 +597,11 @@ def _updatePreHistory(lookupTable, ib):
                 pd.lookuptable of records that need to be updated
                 ibkr object 
             algo:
-                1. add a space between digit and alphabet in the interval column 
+                1. set interval
                 2. set lookback to 60
-                3. iterate through each records and:
+                3. set end date
+                4. set earliestTimeStamp
+                5. iterate through each records:
                     a. set the endDate to the firstRecordDate
                     b. query ibkr for history 
                     c. skip to next if no data is returned
@@ -395,43 +610,36 @@ def _updatePreHistory(lookupTable, ib):
     print('[green]----------------------------------------------[/green]')
     print('[yellow]--------- Updating prehistorica data ---------[/yellow]')
     print('[green]----------------------------------------------[/green]\n')    
-    # add a space between digit and alphabet in the interval column 
+    # make sure interval formatting matches ibkr rqmts e.g. 5 mins, 1 day 
     lookupTable['interval'] = lookupTable.apply(lambda row: _addspace(row['interval']), axis=1)
     
     # drop records where lastTradeDate <= todays date in format YYYYMM
-    lookupTable = lookupTable.loc[lookupTable['lastTradeDate'] > datetime.today().strftime('%Y%m')].reset_index(drop=True)
+    # lookupTable = lookupTable.loc[lookupTable['lastTradeDate'] > datetime.today().strftime('%Y%m')].reset_index(drop=True)
 
-    # select records that are still missing dates 
     lookupTable = lookupTable.loc[lookupTable['numMissingBusinessDays'] > 0].reset_index(drop=True)
-
-    # select just the unique symbols from the lookup table
+    # set Exchange lookup 
     uniqueSymbol = lookupTable.drop_duplicates(subset=['symbol'])
     with db.sqlite_connection(dbName_futures) as conn:
         uniqueSymbol = uniqueSymbol.assign(exchange=uniqueSymbol.apply(lambda row: db.getLookup_exchange(conn, row['symbol']), axis=1))
     
-    # set earliestTimestamp to 2 years ago in format YYYYMMDD HH:MM:SS
     uniqueSymbol['earliestTimeStamp'] = (datetime.today() - relativedelta(years=2)).strftime('%Y%m%d %H:%M:%S')
-    
-    # sort lookuptable by name
     lookupTable.sort_values(by=['name'], inplace=True)
 
-    # iterate through each record in the lookup table
     for index, record in lookupTable.iterrows():  
         lookback = 100
-        # print loginfo
-        print('%s: [yellow]looking up data for [/yellow]%s-%s, interval: %s'%(datetime.now().strftime("%H:%M:%S"), record.symbol, record['lastTradeDate'], record['interval']))
+        print('%s: [yellow]looking up data for [/yellow]%s-%s-%s'%(datetime.now().strftime("%H:%M:%S"), record.symbol, record['lastTradeDate'], record['interval']))
         
-        # set the endDate to the firstRecordDate minus 1 time-period
-        if record['interval'] == '1 day':
-            endDate = (record['firstRecordDate'] - relativedelta(days=1)).strftime('%Y%m%d %H:%M:%S')
-        else:
-            endDate = record['firstRecordDate'] - relativedelta(minutes=1)
+        # set end date 
+        endDate = (record['firstRecordDate'] + relativedelta(days=1)).strftime('%Y%m%d %H:%M:%S')
+        # if record['interval'] == '1 day':
+        # else:
+            # endDate = record['firstRecordDate'] - relativedelta(minutes=1)
 
-        # set earliestTimeStamp from the constructed lookup table
+        # set earliestTimeStamp
         earliestAvailableTimestamp = pd.to_datetime(uniqueSymbol.loc[uniqueSymbol['symbol'] == record['symbol']]['earliestTimeStamp'].iloc[0])
         exchange = uniqueSymbol.loc[uniqueSymbol['symbol'] == record['symbol']]['exchange'].iloc[0]
     
-        # set lookback based on history left and interval 
+        # set lookback
         if lookback >= (record['firstRecordDate'] - earliestAvailableTimestamp).days:
             lookback = (record['firstRecordDate'] - earliestAvailableTimestamp).days
         elif record['interval'] in ['1 day', '1 month']:
@@ -441,58 +649,51 @@ def _updatePreHistory(lookupTable, ib):
         else:
             lookback = 30
 
-        # initialize empty history dataframe
         history = pd.DataFrame()
-
-        # Skip to next record if we have run out of missing historical data  
         if lookback < 0:
             print(' [green]No data left [/green]for %s %s %s!'%(record['symbol'], record['lastTradeDate'], record['interval']))
-            # set earliestAvailableTimestamp  to min(date) record in the db 
             with db.sqlite_connection(dbName_futures) as conn:
                 earliestAvailableTimestamp = db._getFirstRecordDate(record, conn)
                 db._updateLookup_symbolRecords(conn, record['name'], earliestTimestamp=earliestAvailableTimestamp, numMissingDays=0, type='future')
             print('\n')
             continue
-        else: # otherwise, get history 
+        else: 
             if record['interval'] in ['1 min', '5 mins']: # Make multiple calls for ltf data
                 for i in range(5): 
-                    print('  [yellow]Iteration %s[/yellow]'%(str(i+1)))
                     currentIterationBars = ibkr.getBars_futures(ib, symbol=record['symbol'], lastTradeDate=record['lastTradeDate'], interval=record['interval'], endDate=endDate, lookback=(str(lookback) + ' D'), exchange=exchange)
-                    if (currentIterationBars is None): # exit loop when no bars returned
+                    if (currentIterationBars is None): 
                         break
-                    else: # append currentIterationBars to history
+                    else: 
                         history = pd.concat([history, currentIterationBars], ignore_index=True)
-                        endDate = history['date'].min() # update endDate for next iteration
+                        endDate = history['date'].min()
                         
             else:
-                # query for history 
                 history = ibkr.getBars_futures(ib, symbol=record['symbol'], lastTradeDate=record['lastTradeDate'], interval=record['interval'], endDate=endDate, lookback=(str(lookback) + ' D'), exchange=exchange)
         
         # skip to next if no data is returned
         if history is None or history.empty:
             print(' [green]No data left [/green]for %s %s %s!'%(record['symbol'], record['lastTradeDate'], record['interval']))
-            # set earliestAvailableTimestamp  to min(date) record in the db 
             with db.sqlite_connection(dbName_futures) as conn:
                 earliestAvailableTimestamp = db._getFirstRecordDate(record, conn)
                 db._updateLookup_symbolRecords(conn, record['name'], earliestTimestamp=earliestAvailableTimestamp, numMissingDays=0, type='future')
             print('\n')
             continue
         
-        # append symbol, interval, and lastTradeDate columns to align with db schema
+        # update history to the db
         history['symbol'] = record['symbol']
         history['interval'] = record['interval'].replace(' ', '')
-        history['lastTradeDate'] = record['lastTradeDate']
-        
-        # update history to the db
+        history['lastTradeDate'] = record['lastTradeDate']        
         with db.sqlite_connection(dbName_futures) as conn:
             print(' Saving to db...')
             db.saveHistoryToDB(history, conn, earliestAvailableTimestamp)
         print('\n')
         
-        # sleep for 40s every 2 iterations
-        if index != len(lookupTable)-1: # dont sleep if we're on the last record
+        if index != len(lookupTable)-1:
             print('%s: [yellow]Sleeping for %ss...[/yellow]\n'%(datetime.now().strftime('%H:%M:%S'), str(_defaultSleepTime)))
             time.sleep(_defaultSleepTime)
+
+        # update metadata 
+        update_gaps_in_pxhistory_metadata(conn)
     print('[green]----------------------------------------------[/green]')
     print('[green]---- Completed updating prehistoric data -----[/green]')
     print('[green]----------------------------------------------[/green]\n')
@@ -599,9 +800,18 @@ def check_futures_data_integrity():
             print('\n')
 
 if __name__ == '__main__':
-    check_futures_data_integrity()
-
-    ib = ibkr.setupConnection()
+    # ib = ibkr.setupConnection()
+    ib = True
+    # _dirtyRefreshLookupTable(ib, 'SET_FIRST_MISSING_RECORD_DATE')
+    with db.sqlite_connection(dbName_futures) as conn:
+        # generate_pxhistory_metadata_master_table(conn)
+        # update_gaps_in_pxhistory_metadata(conn)
+        update_gaps_in_pxhistory(conn, ib)
+    exit()
+    # df = ibkr.getBars_futures(ib, symbol='VIX', exchange = 'CFE', lastTradeDate='20240618', interval='1 min', lookback='2 D', endDate='20240618')
+    # df = ibkr.getBars_futures(ib, symbol='VIX', exchange = 'CFE', lastTradeDate='20240618', interval='1 min', lookback='2 D')
+    # print(df)
+    # exit()
     updateRecords(ib)       
     with db.sqlite_connection(dbName_futures) as conn:
         for i in range(15):
