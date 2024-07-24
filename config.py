@@ -1,7 +1,8 @@
 
 ###### Local library paths 
+path_lib_analysis = '/workbench/analysis/venv'
 path_lib_analysis_backtests = '/workbench/analysis/venv/backtests'
-path_lib_analysis_strategies = '/workbench/analysis/venv/strategy_implementation'
+path_lib_analysis_strategies = '../workbench/analysis/venv/strategy_implementation'
 
 ###### DATABASE locations
 dbname_stock = '/workbench/historicalData/venv/saveHistoricalData/data/historicalData_index.db'
@@ -19,8 +20,9 @@ table_name_futures_pxhistory_metadata = '00-lookup_pxhistory_metadata'
 intervals = ['1 min', '5 mins', '30 mins', '1 day']
 _indexList = ['VIX', 'VIX3M', 'VVIX', 'SPX', 'VIX1D', 'TSX']
 _index = ['VIX', 'VIX3M', 'VVIX', 'SPX', 'VIX1D', 'TSX']
+delisted_symbols = ['BURU']
 
-## dictionary of symbol, currency pairs
+## Lookup dicts 
 currency_mapping = {
     'CL': 'USD',
     'DXJ': 'USD',

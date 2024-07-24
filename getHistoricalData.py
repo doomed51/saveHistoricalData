@@ -198,6 +198,10 @@ def updateRecords(updateThresholdDays = 1):
     if not records.empty: ## if database contains some records, check if any need to be updated
         symbolsWithOutdatedData = records.loc[records['daysSinceLastUpdate'] >= updateThresholdDays]
         newlyAddedSymbols = symbolList[~symbolList['symbol'].isin(records['symbol'])]
+
+        newlyAddedSymbols = newlyAddedSymbols.loc[~newlyAddedSymbols['symbol'].isin(config.delisted_symbols)] # remove delisted symbols
+        symbolsWithOutdatedData = symbolsWithOutdatedData.loc[~symbolsWithOutdatedData['symbol'].isin(config.delisted_symbols)] # remove delisted symbols
+
     
     if (not symbolsWithOutdatedData.empty or not newlyAddedSymbols.empty):
         try:
