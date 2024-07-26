@@ -402,6 +402,7 @@ def updatePreHistoricData(ibkr):
         lookupTable = db.getLookup_symbolRecords(conn)
     # select records that are missing more than 2 business days of data
     lookupTable = lookupTable.loc[lookupTable['numMissingBusinessDays'] > 2].reset_index(drop=True)
+    lookupTable = lookupTable.loc[~lookupTable['symbol'].isin(config.delisted_symbols)]
     # exit if nothing to update
     if lookupTable.empty:
         print('[green]All historic data has been loaded![/green]')
