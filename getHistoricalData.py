@@ -543,7 +543,8 @@ def refreshLookupTable(ibkr, dbname):
 
         # get the lookup table that is currently saved in the db 
         lookupTableRecords = db.getLookup_symbolRecords(conn)
-
+        records = records.loc[~records['symbol'].isin(config.delisted_symbols)]
+        lookupTableRecords = lookupTableRecords.loc[~lookupTableRecords['symbol'].isin(config.delisted_symbols)]
         # manage case where lookup table is empty
         if lookupTableRecords.empty:
             print('%s: [yellow]Lookup table is empty, initializing with db records...[/yellow]'%(datetime.datetime.now().strftime("%H:%M:%S")))
