@@ -55,7 +55,7 @@ def _constructTableName(symbol, interval):
 
     return tableName
 
-def _updateLookup_symbolRecords(conn, tablename, earliestTimestamp, numMissingDays = 5):
+def _removeDuplicates(tablename, conn=None):
     """
     utility - permanently remove duplicate records from ohlc table
 
@@ -63,18 +63,28 @@ def _updateLookup_symbolRecords(conn, tablename, earliestTimestamp, numMissingDa
     ==========
     tablename - [str]
     """
-    def _removeDuplicates(tablename, conn=None):
-        if conn is None:
-            conn = _connectToDb() # connect to DB
-        
-        ## construct SQL qeury that will group on 'date' column and
-        ## select the min row ID of each group; then delete all the ROWIDs from 
-        ## the table that not in this list
-        sql_selectMinId = 'DELETE FROM %s WHERE ROWID NOT IN (SELECT MIN(ROWID) FROM %s GROUP BY date)'%(tablename, tablename)
+    if conn is None:
+        conn = _connectToDb() # connect to DB
+    
+    ## construct SQL qeury that will group on 'date' column and
+    ## select the min row ID of each group; then delete all the ROWIDs from 
+    ## the table that not in this list
+    sql_selectMinId = 'DELETE FROM %s WHERE ROWID NOT IN (SELECT MIN(ROWID) FROM %s GROUP BY date)'%(tablename, tablename)
 
-        ## run the query 
-        cursor = conn.cursor()
-        cursor.execute(sql_selectMinId)
+    ## run the query 
+    cursor = conn.cursor()
+    cursor.execute(sql_selectMinId)
+
+def remove_duplicates_from_pxhistory_gaps_metadata(conn, tablename):
+    """
+    Remove duplicates from the pxhistory gaps metadata table
+    """
+    sqlStatement = 'DELETE FROM \'%s\' WHERE ROWID NOT IN (SELECT ROWID FROM \'%s\' AS sub WHERE (tablename, update_date) IN (SELECT tablename, MAX(update_date) FROM \'%s\' GROUP BY tablename))'%(tablename, tablename, tablename)
+    cursor = conn.cursor()
+    cursor.execute(sqlStatement)
+    
+
+def _updateLookup_symbolRecords(conn, tablename, earliestTimestamp, numMissingDays = 5):
 
     """
     sub to update the symbol record lookup table
@@ -156,7 +166,7 @@ def _formatpxHistory(pxHistory, type=None):
     
     return pxHistory
 
-def saveHistoryToDB(history, conn, earliestTimestamp=''):
+def saveHistoryToDB(history, conn, earliestTimestamp='', type=''):
     """
     Save history to a sqlite3 database
     ###
@@ -170,21 +180,25 @@ def saveHistoryToDB(history, conn, earliestTimestamp=''):
     """
     
     ## set type to index if the symbol is in the index list 
-    if history['symbol'][0] in index_list:
-        type = 'index'
-    else: 
-        type='stock'
+    if 'lastTradeDate' in history.columns:
+        type = 'future'
+        tableName = history['symbol'][0]+'_'+history['lastTradeDate'][0]+'_'+history['interval'][0]
+    else:
+        if history['symbol'][0] in index_list:
+            type = 'index'
+        else: 
+            type='stock'
+        tableName = history['symbol'][0]+'_'+type+'_'+history['interval'][0]
     
-    # Write the dataframe to the database with the correctly formatted table name
-    tableName = history['symbol'][0]+'_'+type+'_'+history['interval'][0]
     history.to_sql(f"{tableName}", conn, index=False, if_exists='append')
-    
-    #make sure there are no duplicates in the resulting table
-    _removeDuplicates(tableName)
-
-    ## make sure the records lookup table is kept updated
-    #if earliestTimestamp:
+    _removeDuplicates(tableName, conn)
     _updateLookup_symbolRecords(conn, tableName, earliestTimestamp=earliestTimestamp)
+
+def save_table_to_db(conn, tablename, metadata_df, if_exists='append'):
+    """
+    Save metadata to the db
+    """
+    metadata_df.to_sql(tablename, conn, index=False, if_exists=if_exists)
 
 def getPriceHistory(conn, symbol, interval, withpctChange=True, lastTradeMonth=''):
     """
@@ -221,19 +235,18 @@ def getPriceHistoryWithTablename(conn, tablename):
     pxHistory = ut.calcLogReturns(pxHistory, 'close')
     return pxHistory
 
-def getTable(conn, tablename):
-    sqlStatement = 'SELECT * FROM '+tablename
-    pxHistory = pd.read_sql(sqlStatement, conn)
+def getTable(conn, tablename, is_pxhistory=False):
+    sqlStatement = 'SELECT * FROM \'%s\''%(tablename)
+    table_data = pd.read_sql(sqlStatement, conn)
 
     # handle termstrcuture case by adding interval and symbol to the df. first splot tablename by _ 
-    tableNameSplit = tablename.split('_')
-    # if there are 2 elements it is termstructure data 
-    if len(tableNameSplit) == 2:
-        pxHistory['symbol'] = tableNameSplit[0]
-        pxHistory['interval'] = tableNameSplit[1]
-    pxHistory = _formatpxHistory(pxHistory)
-    # pxHistory = ut.calcLogReturns(pxHistory, 'close')
-    return pxHistory
+    if is_pxhistory:
+        tableNameSplit = tablename.split('_')
+        table_data['symbol'] = tableNameSplit[0]
+        table_data['interval'] = tableNameSplit[1]
+        table_data = _formatpxHistory(table_data)
+
+    return table_data
 
 def getLookup_symbolRecords(conn):
     """ 
