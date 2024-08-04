@@ -349,7 +349,7 @@ def calculate_datetime_counts(pxhistory):
 
     return pxhistory[['date_only', 'open']].groupby('date_only').count().reset_index().rename(columns={'open':'count'})
 
-def check_gaps_in_pxhistory_metadata_up_to_date(conn, threshold_days=1):
+def check_gaps_in_pxhistory_metadata_up_to_date(conn, threshold_days=10):
     """
         checks if metadata is up to date
          Returns true if data is up to date
@@ -374,67 +374,46 @@ def generate_pxhistory_metadata_master_table(conn):
         Includes dates missing between current data and expiry date
     """
     lookupTable = db.getLookup_symbolRecords(conn)
-    lookupTable = lookupTable.loc[lookupTable['interval'] != '1day']
-    lookupTable = lookupTable.loc[lookupTable['interval'] == '30mins']
-    pxhistory_metadata_table = db.getTable(conn, config.table_name_futures_pxhistory_metadata)
 
-    record_unique_datetime_count = pd.DataFrame(columns=['tablename', 'num_unique_gaps', 'update_date','date_of_last_gap_date_polled'])
+    print('%s: [yellow]Generating pxhistory_metadata master table...[/yellow]'%(datetime.now().strftime('%H:%M:%S')))
+
+    futures_pxhistory_metadata_table = db.getTable(conn, config.table_name_futures_pxhistory_metadata)
+    futures_pxhistory_metadata_current_db_snapshot = pd.DataFrame(columns=['tablename', 'num_unique_gaps', 'update_date','date_of_last_gap_date_polled'])
     for idx, row in lookupTable.iterrows():
+        print('%s: [yellow]Scanning gaps for %s...[/yellow]'%(datetime.now().strftime('%H:%M:%S'), row['name']))
         tablename = row['name']
         pxHistory = db.getTable(conn, tablename)
         number_of_datetime_in_each_date = calculate_datetime_counts(pxHistory)
         # if contract is expired, make sure the expiry date is in pxhistory, if not add a dummy row with the expiry date
         pxHistory.reset_index(inplace=True)
         if pd.to_datetime(row['lastTradeDate']) not in pxHistory.index.to_list():
-            # pxHistory = pxHistory.append({'date': pd.to_datetime(row['lastTradingDate']), 'open': 0, 'high': 0, 'low': 0, 'close': 0, 'volume': 0, 'symbol':row['symbol'], 'interval':row['interval'], 'lastTradeDate':row['lastTradeDate']}, ignore_index=True)
             pxHistory = pd.concat([pxHistory, pd.DataFrame([{'date': (pd.to_datetime(row['lastTradeDate'])), 'date_only': (pd.to_datetime(row['lastTradeDate']).date()), 'open': 0, 'high': 0, 'low': 0, 'close': 0, 'volume': 0, 'symbol':row['symbol'], 'interval':row['interval'], 'lastTradeDate':row['lastTradeDate']}])], ignore_index=True)
         missing_dates = cdi._check_for_missing_dates_in_timeseries(pxHistory, date_col_name='index')
+        
         # drop the dummy row if it exists
         if pd.to_datetime(row['lastTradeDate']) not in pxHistory.index.to_list():
             pxHistory.drop(pxHistory.index[-1], inplace=True)
 
-        # add missing dates to number_of_datetime_in_each_date setting count to 500
-        # missing_dates = pd.DataFrame(missing_dates.date, columns=['date_only'])
-        # missing_dates['count'] = 500 + np.random.randint(1, 100, missing_dates.shape[0])
-
-        # print(missing_dates)
-        # print(number_of_datetime_in_each_date)
-        # import matplotlib.pyplot as plt
-        # fig, ax = plt.subplots()
-        # number_of_datetime_in_each_date.plot(y='count', x='date_only', kind='line', ax=ax)
-        # plt.show()
-        # exit()
+        date_of_last_gap = max(pd.to_datetime(missing_dates.max()), pd.to_datetime(number_of_datetime_in_each_date['date_only'].max()))
+       
         number_of_datetime_in_each_date = number_of_datetime_in_each_date.groupby('count').count().reset_index().rename(columns={'date_only':'frequency'})
-        # number_of_datetime_in_each_date = pd.concat([number_of_datetime_in_each_date, missing_dates], ignore_index=True)
-        
-        # record_unique_datetime_count[tablename] = number_of_datetime_in_each_date['frequency'].count()
-        record_unique_datetime_count = pd.concat([record_unique_datetime_count, pd.DataFrame({'tablename':tablename, 'num_unique_gaps':number_of_datetime_in_each_date['frequency'].count(), 'update_date':datetime.now(), 'date_of_last_gap_date_polled':missing_dates.max().date()}, index=[0])], ignore_index=True)
-        print(record_unique_datetime_count)
+        futures_pxhistory_metadata_current_db_snapshot = pd.concat([futures_pxhistory_metadata_current_db_snapshot, pd.DataFrame({'tablename':tablename, 'num_unique_gaps':number_of_datetime_in_each_date['frequency'].count(), 'update_date':datetime.now(), 'date_of_last_gap_date_polled':date_of_last_gap}, index=[0])], ignore_index=True)
     
     # create master dataframe of tablename, gap, datetime recorded 
-    # record_unique_datetime_count_df = pd.DataFrame.from_dict(record_unique_datetime_count, orient='index').reset_index().rename(columns={0:'num_unique_gaps', 'index':'tablename'})
-    # conver update_date in pxhistory_metadata_table to datetime
-    pxhistory_metadata_table['update_date'] = pd.to_datetime(pxhistory_metadata_table['update_date'])
-    record_unique_datetime_count['update_date'] = datetime.now()
+    futures_pxhistory_metadata_current_db_snapshot['update_date'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    futures_pxhistory_metadata_current_db_snapshot['date_of_last_gap_date_polled'] = pd.to_datetime(futures_pxhistory_metadata_current_db_snapshot['date_of_last_gap_date_polled']).dt.date
 
-    pxhistory_metadata_table['date_of_last_gap_date_polled'] = pd.to_datetime(pxhistory_metadata_table['date_of_last_gap_date_polled']).dt.date
-    record_unique_datetime_count['date_of_last_gap_date_polled'] = pd.to_datetime(record_unique_datetime_count['date_of_last_gap_date_polled']).dt.date
-    print(pxhistory_metadata_table.dtypes)
-    print(record_unique_datetime_count.dtypes)
-
-    # merge record_unique_datetime_count into pxhistory_metadata_table on tablename, set date_of_last_gap_date_polled to the min of date_of_last_gap_date_polled in both tables
-    record_unique_datetime_count_df = pd.concat([pxhistory_metadata_table, record_unique_datetime_count], ignore_index=True)
-    record_unique_datetime_count_df = record_unique_datetime_count_df.groupby('tablename').agg({'num_unique_gaps':'max', 'update_date':'max', 'date_of_last_gap_date_polled':'min'}).reset_index()
+    # merge db snapshot with metadata table    
+    if futures_pxhistory_metadata_table.empty: # init metadata table with db snapshot 
+        updated = futures_pxhistory_metadata_current_db_snapshot
+    else:
+        updated = pd.merge(futures_pxhistory_metadata_current_db_snapshot, futures_pxhistory_metadata_table, on='tablename', how='inner', suffixes=('', '_metadata'))
+        # in updated, set date_of_last_gap_date_polled to metadata if it is not None 
+        updated.loc[updated['date_of_last_gap_date_polled_metadata'].notnull(), 'date_of_last_gap_date_polled'] = updated['date_of_last_gap_date_polled_metadata']
+        # drop _metadata columns
+        updated.drop([col for col in updated.columns if '_metadata' in col], axis=1, inplace=True)
     
-    exit()
-
-    # current_pxhistory_metadata = db.getTable(conn, config.table_name_futures_pxhistory_metadata)
-    # if not current_pxhistory_metadata.empty:
-    #     current_pxhistory_metadata = current_pxhistory_metadata.loc[current_pxhistory_metadata['update_date'] == current_pxhistory_metadata['update_date'].max()]
-
-    print(record_unique_datetime_count_df)
-    exit()
-    return record_unique_datetime_count_df
+    return updated
 
 def update_gaps_in_pxhistory_metadata(conn):
     """
@@ -444,68 +423,60 @@ def update_gaps_in_pxhistory_metadata(conn):
         return
     else: 
         record_unique_datetime_count = generate_pxhistory_metadata_master_table(conn)
-        db.save_table_to_db(conn = conn, tablename=config.table_name_futures_pxhistory_metadata, metadata_df = record_unique_datetime_count)
+        db.save_table_to_db(conn = conn, tablename=config.table_name_futures_pxhistory_metadata, metadata_df = record_unique_datetime_count, if_exists='replace')
 
 def update_gaps_in_pxhistory(conn, ib, ibkr_lookback_period = '5 D'): 
     """
-        Most recent missing data gets updated first 
+        updates gaps in pxhistory, usees the pxhistory_metadata table to determine which tables need to be updated. 
     """
-    # get pxhistory_metadata and locate max update_date 
-    master_table = generate_pxhistory_metadata_master_table(conn)
-    print(master_table)
-    exit()
-    lookup_table = db.getTable(conn, config.lookupTableName)
+    # get table metadata, and filter out non-gapped tables 
     pxhistory_metadata = db.getTable(conn, config.table_name_futures_pxhistory_metadata)
-    pxhistory_metadata = pxhistory_metadata.loc[pxhistory_metadata['update_date'] == pxhistory_metadata['update_date'].max()]
+    pxhistory_metadata = pxhistory_metadata.loc[pxhistory_metadata['date_of_last_gap_date_polled'] != 1989-12-30]
 
-    # select records in lookuptable that are not in pxhistory_metadata
-    records_missing_from_metadata = lookup_table.loc[~lookup_table['name'].isin(pxhistory_metadata['tablename'])]
+    # update gaps for each table in the db 
     for idx, row in pxhistory_metadata.iterrows():
         tablename = row['tablename']
         pxHistory = db.getTable(conn, tablename)
         symbol, expiry, interval = tablename.split('_')
-        number_of_datetime_in_each_date = calculate_datetime_counts(pxHistory)
         
-        # get the date immediately before the last gap polled in metadata
+        # Determine the gap date that should be updated 
         last_gap_polled = pd.to_datetime(row['date_of_last_gap_date_polled'])
-        
+        number_of_datetime_in_each_date = calculate_datetime_counts(pxHistory)
         if not pd.isna(last_gap_polled):
-            number_of_datetime_in_each_date = number_of_datetime_in_each_date.loc[number_of_datetime_in_each_date['date_only'] < last_gap_polled]
-        
+            number_of_datetime_in_each_date = number_of_datetime_in_each_date.loc[pd.to_datetime(number_of_datetime_in_each_date['date_only']) < last_gap_polled]
+            # if this returns empty, 
+            # that means there are no more gaps left to update. Update metadata to reflect this 
+            if number_of_datetime_in_each_date.empty:
+                pxhistory_metadata.loc[pxhistory_metadata['tablename'] == tablename, 'date_of_last_gap_date_polled'] = pd.to_datetime('1989-12-30').date()
+                pxhistory_metadata.loc[pxhistory_metadata['tablename'] == tablename, 'update_date'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                continue
         date_to_update = pd.to_datetime(number_of_datetime_in_each_date['date_only'].max()) + pd.to_timedelta(1, unit='D')
-        
-        # if pd.isna(last_gap_polled): # this means that no gaps have been scanned yet
-        # else: 
-        #     # Get the date we need to poll ibkr for 
-        #     date_to_update = number_of_datetime_in_each_date['date_only'].max() + pd.to_timedelta(1, unit='D')
-        # get exchange from config.exchange_mapping
+
+        # get gap data from ibkr 
+        print('%s: [yellow]Updating gap history for %s, gap date: %s...[/yellow]'%(datetime.now().strftime('%H:%M:%S'), tablename, date_to_update.strftime('%Y-%m-%d')))     
         exchange = config.exchange_mapping[tablename.split('_')[0]]
-        
         ibkr_pxhistory = ibkr.getBars_futures(ib, symbol=symbol, lastTradeDate=expiry, interval=_addspace(interval), endDate=date_to_update, lookback=ibkr_lookback_period, exchange=exchange)
-        
-        # print(row,'\n') 
-        # print(date_to_update,'\n')
-        # print(ibkr_pxhistory,'\n')
-        # print(number_of_datetime_in_each_date.tail(),'\n')
+        if ibkr_pxhistory.empty:
+            print('%s: [green]No records found for %s, with endDate: %s [/green]'%(datetime.now().strftime('%H:%M:%S'), tablename, date_to_update.strftime('%Y-%m-%d')))
+            pxhistory_metadata.loc[pxhistory_metadata['tablename'] == tablename, 'date_of_last_gap_date_polled'] = pd.to_datetime('1989-12-30').date()
+            pxhistory_metadata.loc[pxhistory_metadata['tablename'] == tablename, 'update_date'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            continue        
+        ibkr_pxhistory['symbol'] = symbol
+        ibkr_pxhistory['interval'] = interval
+        ibkr_pxhistory['lastTradeDate'] = expiry                 
 
+        # save it to db 
+        db.saveHistoryToDB(ibkr_pxhistory, conn, type='future')
+        print('%s: [green]Records updated for %s, sleeping for %ss...[/green]\n'%(datetime.now().strftime('%H:%M:%S'), tablename, _defaultSleepTime/30))
+        time.sleep(_defaultSleepTime/30)
         
-        # db.saveHistoryToDB(ibkr_pxhistory, conn, type='future')
+        # Update metadata 
+        pxhistory_metadata.loc[pxhistory_metadata['tablename'] == tablename, 'date_of_last_gap_date_polled'] = ibkr_pxhistory['date'].min().date()
+        pxhistory_metadata.loc[pxhistory_metadata['tablename'] == tablename, 'update_date'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
-        # Update the polling date 
-        days = int(re.findall(r'\d+', ibkr_lookback_period)[0]) # get the digit from lookback
-        row['date_of_last_gap_date_polled'] = date_to_update - pd.to_timedelta(days)
-        print(row,'\n') 
-        exit()
-    
-    pxhistory_metadata['update_date'] = datetime.now()
+    print('%s: [green]DONE! Completed updating gaps in pxhistory_metadata, cleaning up metadata[/green]\n'%(datetime.now().strftime('%H:%M:%S')))
     db.save_table_to_db(conn = conn, tablename=config.table_name_futures_pxhistory_metadata, metadata_df = pxhistory_metadata)
-
-    # for tablename in pxhistory_metadata, calc datetime counts and get the gaps in the table 
-    # from metadata, check the date of last gap polled 
-    # hit up ibkr for the date before the last gap polled + 1 day 
-    # save records to the db 
-    # set the date of last gap polled to the end date minus the lookback period
-    # note make sure that, for intra-day data, the endDate is set to the final hour of the day i.e. 23:59:59
+    db.remove_duplicates_from_pxhistory_gaps_metadata(conn, config.table_name_futures_pxhistory_metadata)
 
 def _dirtyRefreshLookupTable(ib, mode): 
     """
@@ -800,13 +771,15 @@ def check_futures_data_integrity():
             print('\n')
 
 if __name__ == '__main__':
-    # ib = ibkr.setupConnection()
-    ib = True
-    # _dirtyRefreshLookupTable(ib, 'SET_FIRST_MISSING_RECORD_DATE')
-    with db.sqlite_connection(dbName_futures) as conn:
-        # generate_pxhistory_metadata_master_table(conn)
-        # update_gaps_in_pxhistory_metadata(conn)
-        update_gaps_in_pxhistory(conn, ib)
+    while True:
+        ib = ibkr.setupConnection()
+        # ib = True
+        # _dirtyRefreshLookupTable(ib, 'SET_FIRST_MISSING_RECORD_DATE')
+        with db.sqlite_connection(dbName_futures) as conn:
+            # generate_pxhistory_metadata_master_table(conn)
+            update_gaps_in_pxhistory_metadata(conn)
+            update_gaps_in_pxhistory(conn, ib)
+        ib.disconnect()
     exit()
     # df = ibkr.getBars_futures(ib, symbol='VIX', exchange = 'CFE', lastTradeDate='20240618', interval='1 min', lookback='2 D', endDate='20240618')
     # df = ibkr.getBars_futures(ib, symbol='VIX', exchange = 'CFE', lastTradeDate='20240618', interval='1 min', lookback='2 D')
@@ -821,9 +794,4 @@ if __name__ == '__main__':
             # on ever 3rd iteration refresh the ib connection 
             if i%3 == 0:
                 ib = ibkr.refreshConnection(ib)
-
     pass
-
-
-
-
