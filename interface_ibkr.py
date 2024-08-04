@@ -147,9 +147,9 @@ def _getHistoricalBars_futures(ibkrObj, symbol, exchange, lastTradeDate, currenc
         endDate = endDate.tz_localize('US/Eastern')
     
     # handle expired contracts 
-    if lastTradeDate < datetime.datetime.now().strftime('%Y%m%d'):
-        print(' %s: [yellow]Contract has expired, updating lastTradeDate...[/yellow]'%(datetime.datetime.now().strftime('%H:%M:%S')))
-        lastTradeDate = pd.to_datetime(lastTradeDate) + pd.DateOffset(days=1)  
+    if (lastTradeDate < datetime.datetime.now().strftime('%Y%m%d')) & (endDate > pd.to_datetime(lastTradeDate).tz_localize('US/Eastern')):
+        print(' %s: [yellow]Requesting invalid historical data for expired contract, resetting request end date...[/yellow]'%(datetime.datetime.now().strftime('%H:%M:%S')))
+        lastTradeDate = pd.to_datetime(lastTradeDate)
         # lastTradeDate = lastTradeDate +  
         endDate = pd.to_datetime(lastTradeDate)
         endDate = endDate.tz_localize('US/Eastern')
