@@ -27,7 +27,6 @@ def _check_if_date_is_holiday(date):
     holidays = hols.NYSE(years=date.year).keys()
     return date in holidays
 
-
 def _get_expiry_date_for_month(symbol, date): 
     date = date.date()
     if symbol.upper() == 'VIX':
@@ -173,7 +172,7 @@ def getTermStructure(symbol:str, interval='1day', lookahead_months=8):
         termStructure_raw = []
         # get price history for each relevant contract 
         for index, row in lookupTable.iterrows():
-            pxHistory = db.getTable(conn_futures, row['name'])
+            pxHistory = db.getTable(conn_futures, row['name'], is_pxhistory = True)
             # set index to date column
             pxHistory.set_index('date', inplace=True)
             # rename close column
@@ -199,7 +198,7 @@ def get_term_structure_v2(symbol, interval, expiry_table):
 
     # create dict of pxhistories
     with db.sqlite_connection(dbpath_futures) as conn_futures:
-        pxHistory_dict = {expiry: db.getTable(conn_futures, '%s_%s_%s'%(symbol, expiry, interval)) for expiry in unique_expiries}
+        pxHistory_dict = {expiry: db.getTable(conn_futures, '%s_%s_%s'%(symbol, expiry, interval), is_pxhistory=True) for expiry in unique_expiries}
         # make sure date is set as index for each pxHistory
         for key in pxHistory_dict.keys():
             pxHistory_dict[key]['date_only'] = pxHistory_dict[key]['date'].dt.date
