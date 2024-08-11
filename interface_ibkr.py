@@ -48,8 +48,11 @@ def refreshConnection(ibkr):
     #if ibkr.isConnected():
     clientid = ibkr.client.clientId
     ibkr.disconnect()
+    print('%s: [yellow] Connection terminated...[/yellow]'%(datetime.datetime.now().strftime('%H:%M:%S')))
+    time.sleep(3) 
+    print('%s: [yellow] Reconnecting...[/yellow]'%(datetime.datetime.now().strftime('%H:%M:%S')))
     ibkr = ibkr.connect('127.0.0.1', 7496, clientId = clientid)
-    print('%s:[green]   Success![/green]'%(datetime.datetime.now().strftime('%H:%M:%S')))
+    print('%s:[green]Success![/green]'%(datetime.datetime.now().strftime('%H:%M:%S')))
     return ibkr
 
 """ 
