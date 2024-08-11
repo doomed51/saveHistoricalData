@@ -46,6 +46,9 @@ def _addspace(myStr):
     """
         adds a space between num and alphabet
     """
+    # check if there is a space in the string 
+    if ' ' in myStr:
+        return myStr
     return re.sub("[A-Za-z]+", lambda elm: " "+elm[0],myStr )
 
 def _setLookback(interval):
@@ -117,7 +120,7 @@ def _updateSingleRecord(ib, symbol, expiry, interval, lookback, endDate=''):
     
     # Get futures history from ibkr
     # Split into multiple calls for shorter intervals so we can get more data in 1 go   
-    if (interval in ['1 min', '5 min']) and int(lookback.strip(' D')) > 12:
+    if (interval in ['1 min', '5 mins']) and int(lookback.strip(' D')) > 12:
         # calculate number of calls needed
         numCalls = math.ceil(int(lookback.strip(' D'))/12)#int(int(int(lookback.strip(' D'))/12))
         record=pd.DataFrame()
@@ -130,8 +133,8 @@ def _updateSingleRecord(ib, symbol, expiry, interval, lookback, endDate=''):
                 record = record._append(bars)   
                 endDate = record['date'].min() # update endDate for next loop 
                 if i < numCalls-1:
-                    print('%s: [orange]sleeping for %ss...[/orange]'%(datetime.now().strftime('%H:%M:%S'), _defaultSleepTime/6))
-                    time.sleep(_defaultSleepTime/6)
+                    print('%s: [orange]sleeping for %ss...[/orange]'%(datetime.now().strftime('%H:%M:%S'), _defaultSleepTime/30))
+                    time.sleep(_defaultSleepTime/30)
         record.reset_index(drop=True, inplace=True)
     else:
         # query ibkr for futures history 
@@ -147,24 +150,22 @@ def _updateSingleRecord(ib, symbol, expiry, interval, lookback, endDate=''):
             # get lookuptable
             lookupTable = db.getLookup_symbolRecords(conn)
             if tablename in lookupTable['name'].values:
-                if interval in ['1day', '1month']:
+                if interval in ['1 day', '1 month']:
                     _earliestTimeStamp = datetime.today().strftime('%Y%m%d')
                 else:
                     _earliestTimeStamp = datetime.today().strftime('%Y%m%d %H:%M:%S')
                 db._updateLookup_symbolRecords(conn, tablename, type = 'future', earliestTimestamp = _earliestTimeStamp, numMissingDays = 0)
     else:
         record['symbol'] = symbol
-        record['interval'] = interval
+        record['interval'] = interval.replace(' ', '')
         record['lastTradeDate'] = expiry
         earlistTimestamp = ibkr.getEarliestTimeStamp_m(ib, symbol=symbol, lastTradeDate=expiry, exchange=exchange)
-
-        # save the data to db 
         with db.sqlite_connection(dbName_futures) as conn:
             db.saveHistoryToDB(record, conn, earlistTimestamp, type='future')
     
     # sleep
-    print('%s: [green]Record updated, sleeping for %ss...[/green]\n'%(datetime.now().strftime('%H:%M:%S'), _defaultSleepTime/6))
-    time.sleep(_defaultSleepTime/6)
+    print('%s: [green]Record updated, sleeping for %ss...[/green]\n'%(datetime.now().strftime('%H:%M:%S'), _defaultSleepTime/30))
+    time.sleep(_defaultSleepTime/30)
         
 def _getMissingContracts(ib, symbol, numMonths = numExpiryMonths):
     """
@@ -175,7 +176,7 @@ def _getMissingContracts(ib, symbol, numMonths = numExpiryMonths):
         returns:
             [DataFrame] of missing contracts informat symbol_expiry_interval 
     """
-    print(' %s:[yellow] Checking missing contracts for %s...[/yellow]'%(datetime.now().strftime('%H:%M:%S'), symbol))
+    print('%s:[yellow] Checking missing contracts for %s...[/yellow]'%(datetime.now().strftime('%H:%M:%S'), symbol))
     # get latest records from db 
     with db.sqlite_connection(dbName_futures) as conn:
         latestRecords = db.getRecords(conn)
@@ -218,9 +219,9 @@ def _getMissingContracts(ib, symbol, numMonths = numExpiryMonths):
             missingContracts = missingContracts._append(contracts.loc[~contracts['realExpirationDate'].isin(latestRecords_interval['type/expiry'])][['interval', 'realExpirationDate', 'contract']])
     
     if missingContracts.empty:
-        print('  [green]No missing contracts found![/green]')
+        print('%s: [green]No missing contracts found![/green]'%(datetime.now().strftime('%H:%M:%S')))
     else:
-        print('[yellow] Found %s missing contracts[/yellow]\n'%(str(len(missingContracts))))
+        print('%s:[yellow] Found %s missing contracts[/yellow]\n'%(datetime.now().strftime('%H:%M:%S'), str(len(missingContracts))))
     return missingContracts.reset_index(drop=True)
 
 def uniqueIDMapper(ib, symbol, expiry): 
@@ -279,8 +280,7 @@ def updateRecords(ib_):
     for symbol in watchlist['symbol']:
         missingContracts = missingContracts._append(_getMissingContracts(ib_, symbol))
 
-    # print debug info to console 
-    print('Total missing contracts: %s'%(str(len(missingContracts))))
+    print('%s: Total missing contracts: %s'%(datetime.now().strftime("HH:MM:SS"),str(len(missingContracts))))
     missingContracts['symbol'] = missingContracts['contract'].apply(lambda x: x.symbol)
     missingContracts['realExpirationDate'] = missingContracts['contract'].apply(lambda x: x.lastTradeDateOrContractMonth)
     print(missingContracts[['symbol', 'realExpirationDate', 'interval']])
@@ -289,6 +289,8 @@ def updateRecords(ib_):
     # add lookback columnbased on interval
     missingContracts['lookback'] = missingContracts.apply(
         lambda row: _setLookback(row['interval']), axis=1)
+    # remove spac efrom the interval column
+    # missingContracts['interval'] = missingContracts['interval'].apply(lambda x: db._removeSpaces(x))
     
     # add missing contracts to our db
     if not missingContracts.empty:
@@ -299,8 +301,8 @@ def updateRecords(ib_):
         print('Adding contract %s %s %s'%(missingContract[1]['contract'].symbol, missingContract[1]['realExpirationDate'], missingContract[1]['interval']))
         _updateSingleRecord(ib_, missingContract[1]['contract'].symbol, missingContract[1]['realExpirationDate'], missingContract[1]['interval'], missingContract[1]['lookback'])
         # sleep for defaulttime
-        print('%s: sleeping for %ss...\n'%(datetime.now().strftime('%H:%M:%S'), _defaultSleepTime))
-        time.sleep(_defaultSleepTime)
+        print('%s: sleeping for %ss...\n'%(datetime.now().strftime('%H:%M:%S'), _defaultSleepTime/30))
+        time.sleep(_defaultSleepTime/30)
 
     print('[green]----------------------------------------------[/green]')
     print('[green]----- Completed adding missing contracts -----[/green]')
@@ -313,9 +315,11 @@ def updateRecords(ib_):
         print('[green]----------------------------------------------[/green]\n')
 
         # print recodrs where type/expiry is before current date
+        i=1
         for row in (latestRecords.loc[latestRecords['daysSinceLastUpdate'] >= 1]).iterrows():
-            print('%s: Updating contract %s %s %s'%(datetime.now().strftime('%H:%M:%S'), row[1]['symbol'], row[1]['type/expiry'], row[1]['interval']))
+            print('%s: (%s/%s) Updating contract %s %s %s'%(datetime.now().strftime('%H:%M:%S'), i,latestRecords.loc[latestRecords['daysSinceLastUpdate']>=1]['symbol'].count(), row[1]['symbol'], row[1]['type/expiry'], row[1]['interval'].replace(' ', '')) )
             _updateSingleRecord(ib_, row[1]['symbol'], row[1]['type/expiry'], row[1]['interval'], str(row[1]['daysSinceLastUpdate']+1)+' D')
+            i+=1
     
     print('[green]----------------------------------------------[/green]')
     print('[green]---- Completed updating outdated records ----[/green]')
@@ -429,7 +433,7 @@ def update_gaps_in_pxhistory(conn, ib, ibkr_lookback_period = '5 D'):
     """
         updates gaps in pxhistory, usees the pxhistory_metadata table to determine which tables need to be updated. 
     """
-    # get table metadata, and filter out non-gapped tables 
+    # get table metadata, and filter out tables that no longer have gaps 
     pxhistory_metadata = db.getTable(conn, config.table_name_futures_pxhistory_metadata)
     pxhistory_metadata = pxhistory_metadata.loc[pxhistory_metadata['date_of_last_gap_date_polled'] != 1989-12-30]
 
@@ -456,7 +460,7 @@ def update_gaps_in_pxhistory(conn, ib, ibkr_lookback_period = '5 D'):
         print('%s: [yellow]Updating gap history for %s, gap date: %s...[/yellow]'%(datetime.now().strftime('%H:%M:%S'), tablename, date_to_update.strftime('%Y-%m-%d')))     
         exchange = config.exchange_mapping[tablename.split('_')[0]]
         ibkr_pxhistory = ibkr.getBars_futures(ib, symbol=symbol, lastTradeDate=expiry, interval=_addspace(interval), endDate=date_to_update, lookback=ibkr_lookback_period, exchange=exchange)
-        if ibkr_pxhistory.empty:
+        if ibkr_pxhistory is None:
             print('%s: [green]No records found for %s, with endDate: %s [/green]'%(datetime.now().strftime('%H:%M:%S'), tablename, date_to_update.strftime('%Y-%m-%d')))
             pxhistory_metadata.loc[pxhistory_metadata['tablename'] == tablename, 'date_of_last_gap_date_polled'] = pd.to_datetime('1989-12-30').date()
             pxhistory_metadata.loc[pxhistory_metadata['tablename'] == tablename, 'update_date'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -467,7 +471,7 @@ def update_gaps_in_pxhistory(conn, ib, ibkr_lookback_period = '5 D'):
 
         # save it to db 
         db.saveHistoryToDB(ibkr_pxhistory, conn, type='future')
-        print('%s: [green]Records updated for %s, sleeping for %ss...[/green]\n'%(datetime.now().strftime('%H:%M:%S'), tablename, _defaultSleepTime/30))
+        print('%s: [green]Record %s of %s updated for %s, sleeping for %ss...[/green]\n'%(datetime.now().strftime('%H:%M:%S'),idx,len(pxhistory_metadata), tablename, _defaultSleepTime/30))
         time.sleep(_defaultSleepTime/30)
         
         # Update metadata 
@@ -594,11 +598,12 @@ def _updatePreHistory(lookupTable, ib):
         uniqueSymbol = uniqueSymbol.assign(exchange=uniqueSymbol.apply(lambda row: db.getLookup_exchange(conn, row['symbol']), axis=1))
     
     uniqueSymbol['earliestTimeStamp'] = (datetime.today() - relativedelta(years=2)).strftime('%Y%m%d %H:%M:%S')
-    lookupTable.sort_values(by=['name'], inplace=True)
-
+    lookupTable.sort_values(by=['name'], inplace=True).reset_index(drop=True)
+    i=0
     for index, record in lookupTable.iterrows():  
         lookback = 100
-        print('%s: [yellow]looking up data for [/yellow]%s-%s-%s'%(datetime.now().strftime("%H:%M:%S"), record.symbol, record['lastTradeDate'], record['interval']))
+        i+=1
+        print('%s: [yellow]Record [/yellow]%s of %s: %s-%s-%s'%(datetime.now().strftime("%H:%M:%S"),i, len(lookupTable), record.symbol, record['lastTradeDate'], record['interval']))
         
         # set end date 
         endDate = (record['firstRecordDate'] + relativedelta(days=1)).strftime('%Y%m%d %H:%M:%S')
@@ -655,16 +660,17 @@ def _updatePreHistory(lookupTable, ib):
         history['interval'] = record['interval'].replace(' ', '')
         history['lastTradeDate'] = record['lastTradeDate']        
         with db.sqlite_connection(dbName_futures) as conn:
-            print(' Saving to db...')
             db.saveHistoryToDB(history, conn, earliestAvailableTimestamp)
         print('\n')
         
         if index != len(lookupTable)-1:
-            print('%s: [yellow]Sleeping for %ss...[/yellow]\n'%(datetime.now().strftime('%H:%M:%S'), str(_defaultSleepTime)))
-            time.sleep(_defaultSleepTime)
+            print('%s: [yellow]Sleeping for %ss...[/yellow]\n'%(datetime.now().strftime('%H:%M:%S'), str(_defaultSleepTime/30)))
+            time.sleep(_defaultSleepTime/30)
 
         # update metadata 
+    with db.sqlite_connection(dbName_futures) as conn:
         update_gaps_in_pxhistory_metadata(conn)
+    
     print('[green]----------------------------------------------[/green]')
     print('[green]---- Completed updating prehistoric data -----[/green]')
     print('[green]----------------------------------------------[/green]\n')
@@ -714,8 +720,8 @@ def initializeRecords(ib, watchlist,  updateThresholdDays=1):
                         db.saveHistoryToDB( data, conn, earlistTimestamp)
                     
                     # sleep for 40s
-                    print('sleeping for %ss...'%(str(_defaultSleepTime)))
-                    time.sleep(_defaultSleepTime)
+                    print('sleeping for %ss...'%(str(_defaultSleepTime/30)))
+                    time.sleep(_defaultSleepTime/30)
                 # increment expiry date
                 expiryStr += relativedelta(months=1) 
     exit()
@@ -771,27 +777,18 @@ def check_futures_data_integrity():
             print('\n')
 
 if __name__ == '__main__':
-    while True:
-        ib = ibkr.setupConnection()
-        # ib = True
-        # _dirtyRefreshLookupTable(ib, 'SET_FIRST_MISSING_RECORD_DATE')
+    ib = ibkr.setupConnection()
+    updateRecords(ib)       
+    for i in range(15):
+        with db.sqlite_connection(dbName_futures) as conn:
+            lookupTable = db.getLookup_symbolRecords(conn)
+        _updatePreHistory(lookupTable, ib)
+
         with db.sqlite_connection(dbName_futures) as conn:
             # generate_pxhistory_metadata_master_table(conn)
             update_gaps_in_pxhistory_metadata(conn)
             update_gaps_in_pxhistory(conn, ib)
-        ib.disconnect()
-    exit()
-    # df = ibkr.getBars_futures(ib, symbol='VIX', exchange = 'CFE', lastTradeDate='20240618', interval='1 min', lookback='2 D', endDate='20240618')
-    # df = ibkr.getBars_futures(ib, symbol='VIX', exchange = 'CFE', lastTradeDate='20240618', interval='1 min', lookback='2 D')
-    # print(df)
-    # exit()
-    updateRecords(ib)       
-    with db.sqlite_connection(dbName_futures) as conn:
-        for i in range(15):
-            lookupTable = db.getLookup_symbolRecords(conn)
-            _updatePreHistory(lookupTable, ib)
-
-            # on ever 3rd iteration refresh the ib connection 
-            if i%3 == 0:
-                ib = ibkr.refreshConnection(ib)
+        # Refresh ib connection 
+        if i%3 == 0:
+            ib = ibkr.refreshConnection(ib)
     pass
