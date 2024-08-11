@@ -131,15 +131,15 @@ Returns dataframe of historical data for futures
 """
 def getBars_futures(ibkr, symbol, lastTradeDate, exchange, lookback, interval, endDate='', currency='USD', whatToShow='TRADES'):
     bars = _getHistoricalBars_futures(ibkr, symbol, exchange, lastTradeDate, currency, endDate, lookback, interval, whatToShow)
-    
     return bars
 
 def _getHistoricalBars_futures(ibkrObj, symbol, exchange, lastTradeDate, currency, endDate, lookback, interval, whatToShow):
     """
         Returns [DataFrame] of historical data for futures from IBKR
     """
-    ## Future contract type definition: https://ib-insync.readthedocs.io/api.html#ib_insync.contract.Future
+    ## Future contract definition: https://ib-insync.readthedocs.io/api.html#ib_insync.contract.Future
     ## contract month, or day format: YYYYMM or YYYYMMDD
+    print('%s: [yellow]Requesting data for %s:%s-%s-%s, endDate: %s, lookback: %s[/yellow]'%(datetime.datetime.now().strftime('%H:%M:%S'), exchange, symbol, lastTradeDate, interval, endDate, lookback))
     contract = Future(symbol=symbol, lastTradeDateOrContractMonth=lastTradeDate, exchange=exchange, currency=currency, includeExpired=True)
     # make sure endDate is tzaware
     if endDate:
@@ -147,14 +147,13 @@ def _getHistoricalBars_futures(ibkrObj, symbol, exchange, lastTradeDate, currenc
         endDate = endDate.tz_localize('US/Eastern')
     
     # handle expired contracts 
-    if (lastTradeDate < datetime.datetime.now().strftime('%Y%m%d')) & (endDate > pd.to_datetime(lastTradeDate).tz_localize('US/Eastern')):
-        print(' %s: [yellow]Requesting invalid historical data for expired contract, resetting request end date...[/yellow]'%(datetime.datetime.now().strftime('%H:%M:%S')))
+    if (lastTradeDate < datetime.datetime.now().strftime('%Y%m%d')) & (pd.to_datetime(endDate) > pd.to_datetime(lastTradeDate).tz_localize('US/Eastern')):
+        print('%s: [yellow]Requesting invalid historical data for expired contract, resetting request end date...[/yellow]'%(datetime.datetime.now().strftime('%H:%M:%S')))
         lastTradeDate = pd.to_datetime(lastTradeDate)
         # lastTradeDate = lastTradeDate +  
         endDate = pd.to_datetime(lastTradeDate)
         endDate = endDate.tz_localize('US/Eastern')
 
-    print(' %s: [yellow]Calling ibkr for futures data[/yellow]'%(datetime.datetime.now().strftime('%H:%M:%S')))
     try:
         contractHistory = ibkrObj.reqHistoricalData(
             contract, 
