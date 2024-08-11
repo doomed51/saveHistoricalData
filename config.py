@@ -72,7 +72,7 @@ exchange_mapping = {
     'TY': 'ECBOT',
     'UB': 'ECBOT',
     'US': 'ECBOT',
-    'VIX': 'CFE',
+    'VIX': 'CBOE',
     'VIX1D': 'CBOE',
     'VIX3M': 'CBOE',
     'VVIX': 'CBOE',
