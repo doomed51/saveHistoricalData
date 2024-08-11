@@ -13,10 +13,13 @@ This module simplifies interacting with the local database of historical ohlc da
 import sqlite3
 import sys
 import config
+import datetime 
+import re
 
 import pandas as pd
 sys.path.append('..')
 from utils import utils as ut
+from rich import print 
 
 """ Global vars """
 dbname_index = config.dbname_stock
@@ -69,10 +72,12 @@ def _removeDuplicates(tablename, conn=None):
     ## construct SQL qeury that will group on 'date' column and
     ## select the min row ID of each group; then delete all the ROWIDs from 
     ## the table that not in this list
+    cursor = conn.cursor()
+    # sql_selectMinId = 'DELETE FROM ? WHERE ROWID NOT IN (SELECT MIN(ROWID) FROM ? GROUP BY date)'
+    # cursor.execute(sql_selectMinId, (tablename, tablename))
     sql_selectMinId = 'DELETE FROM %s WHERE ROWID NOT IN (SELECT MIN(ROWID) FROM %s GROUP BY date)'%(tablename, tablename)
 
     ## run the query 
-    cursor = conn.cursor()
     cursor.execute(sql_selectMinId)
 
 def remove_duplicates_from_pxhistory_gaps_metadata(conn, tablename):
@@ -83,8 +88,131 @@ def remove_duplicates_from_pxhistory_gaps_metadata(conn, tablename):
     cursor = conn.cursor()
     cursor.execute(sqlStatement)
     
+## adda space between num and alphabet
+def _addspace(myStr): 
+    return re.sub("[A-Za-z]+", lambda elm: " "+elm[0],myStr )
 
-def _updateLookup_symbolRecords(conn, tablename, earliestTimestamp, numMissingDays = 5):
+## removes spaces from the passed in string
+def _removeSpaces(myStr):
+    ## remove spaces from mystr
+    return myStr.replace(" ", "")
+
+######################################################
+######################################################
+###         ###         ###         ###         ###
+#                   Lambda Functions
+######################################################
+######################################################
+def _getDaysSinceLastUpdated(row, conn):
+    maxtime = pd.read_sql('SELECT MAX(date) FROM '+ row['name'], conn)
+    mytime = datetime.datetime.strptime(maxtime['MAX(date)'][0][:10], '%Y-%m-%d')
+    ## calculate business days since last update
+    numDays = len( pd.bdate_range(mytime, datetime.datetime.now() )) - 1
+
+    return numDays
+
+def _getLastUpdateDate(row, conn):
+    maxtime = pd.read_sql('SELECT MAX(date) FROM '+ row['name'], conn)
+    maxtime = maxtime['MAX(date)'][0]
+    
+    if 19 >= len(maxtime) > 10:
+        maxtime = datetime.datetime.strptime(maxtime, '%Y-%m-%d %H:%M:%S')
+    elif len(maxtime) > 19:
+        maxtime = datetime.datetime.strptime(maxtime[:19], '%Y-%m-%d %H:%M:%S')
+
+    return maxtime
+
+def _getFirstRecordDate(row, conn):
+    mintime = pd.read_sql('SELECT MIN(date) FROM '+ row['name'], conn)
+    mintime = mintime['MIN(date)'][0]
+
+    ## convert to datetime handling cases where datetime is formatted as:
+    #   1. yyyy-mm-dd
+    #   2. yyyy-mm-dd hh:mm:ss 
+    #   3. yyyy-mm-dd hh:mm:ss-##:##
+    if  19 >= len(mintime) > 10: 
+        mintime = datetime.datetime.strptime(mintime, '%Y-%m-%d %H:%M:%S')
+    elif len(mintime) > 19:
+        mintime = mintime[:19]
+        mintime = datetime.datetime.strptime(mintime, '%Y-%m-%d %H:%M:%S')
+    else:
+        mintime = datetime.datetime.strptime(mintime, '%Y-%m-%d')
+
+    return mintime
+
+######################################################
+#####################   END   ########################
+######################################################
+def _updateLookup_symbolRecords(conn, tablename, earliestTimestamp, numMissingDays = 5, type =''):
+    ## get the earliest record date as per the db 
+    if type == 'future':
+        sql_minDate_symbolHistory = 'SELECT MIN(date), symbol, interval, lastTradeDate FROM %s'%(tablename)
+    else:
+        sql_minDate_symbolHistory = 'SELECT MIN(date), symbol, interval FROM %s'%(tablename)
+    minDate_symbolHistory = pd.read_sql(sql_minDate_symbolHistory, conn)
+    
+    # column formatting
+    minDate_symbolHistory['MIN(date)'] = pd.to_datetime(minDate_symbolHistory['MIN(date)'], format='ISO8601')
+    # make sure date column is not tzaware
+    minDate_symbolHistory['MIN(date)'] = minDate_symbolHistory['MIN(date)'].dt.tz_localize(None)
+    minDate_symbolHistory['interval'] = minDate_symbolHistory['interval'].apply(lambda x: _removeSpaces(x))
+    
+    ## get the earliest record date as per the lookup table
+    if type == 'future': ## add lastTradeDate to selection query 
+        sql_minDate_recordsTable = 'SELECT firstRecordDate FROM \'%s\' WHERE symbol = \'%s\' and interval = \'%s\' and lastTradeDate = \'%s\''%(config.lookupTableName, minDate_symbolHistory['symbol'][0], minDate_symbolHistory['interval'][0], minDate_symbolHistory['lastTradeDate'][0])
+    else:
+        sql_minDate_recordsTable = 'SELECT firstRecordDate FROM \'%s\' WHERE symbol = \'%s\' and interval = \'%s\''%(config.lookupTableName, minDate_symbolHistory['symbol'][0], minDate_symbolHistory['interval'][0])
+    minDate_recordsTable = pd.read_sql(sql_minDate_recordsTable, conn)
+    
+    ## if no entry is found in the lookup table, add one  
+    if minDate_recordsTable.empty:
+        print(' Adding new record to lookup table...')
+        minDate_symbolHistory['name'] = tablename
+        ## rename columns to match db table columns 
+        minDate_symbolHistory.rename(columns={'MIN(date)':'firstRecordDate'}, inplace=True)
+        if earliestTimestamp:
+            ## set missing business days to the difference between the earliest available date in ibkr and the earliest date in the local db
+            minDate_symbolHistory['numMissingBusinessDays'] = numMissingDays
+            #minDate_symbolHistory = minDate_symbolHistory.iloc[:,[4,1,2,0,5,3]]
+
+        ## save record to db
+        minDate_symbolHistory.to_sql(f"{config.lookupTableName}", conn, index=False, if_exists='append')
+    
+    ## otherwise update the existing record in the lookup table 
+    else:
+        # if this is an empty string '', then we will use the min date from the record table instead of the lookup table 
+        if minDate_recordsTable['firstRecordDate'][0] == '':
+            minDate_recordsTable['firstRecordDate'][0] = minDate_symbolHistory['firstRecordDate'][0]
+
+        ## rename columns to match db table columns 
+        minDate_symbolHistory.rename(columns={'MIN(date)':'firstRecordDate'}, inplace=True)
+
+        # calculate the number of missing business days between the earliest record date in ibkr, and the earliest record date as per the db
+        if earliestTimestamp:
+            numMissingDays = len(pd.bdate_range(earliestTimestamp, minDate_symbolHistory.iloc[0]['firstRecordDate']))
+
+        ## update lookuptable with the symbolhistory min date
+        # if we are saving futures, we have to query on symbol, interval, AND lastTradeDate
+        print('%s: Updating lookup table...'%(datetime.datetime.now().strftime("%H:%M:%S")))
+        sql_updateNumMissingDays=''
+        if type == 'future':
+            sql_update = 'UPDATE \'%s\' SET firstRecordDate = \'%s\' WHERE symbol = \'%s\' and interval = \'%s\' and lastTradeDate = \'%s\''%(config.lookupTableName, minDate_symbolHistory['firstRecordDate'][0], minDate_symbolHistory['symbol'][0], minDate_symbolHistory['interval'][0], minDate_symbolHistory['lastTradeDate'][0])
+
+            ## sql statement to update the numMissinbgBusinessDays column
+            sql_updateNumMissingDays = 'UPDATE \'%s\' SET numMissingBusinessDays = \'%s\' WHERE symbol = \'%s\' and interval = \'%s\' and lastTradeDate = \'%s\''%(config.lookupTableName, numMissingDays, minDate_symbolHistory['symbol'][0], minDate_symbolHistory['interval'][0], minDate_symbolHistory['lastTradeDate'][0])
+        else:
+            sql_update = 'UPDATE \'%s\' SET firstRecordDate = \'%s\' WHERE symbol = \'%s\' and interval = \'%s\''%(config.lookupTableName, minDate_symbolHistory['firstRecordDate'][0], minDate_symbolHistory['symbol'][0], minDate_symbolHistory['interval'][0])
+
+            if earliestTimestamp: 
+                sql_updateNumMissingDays = 'UPDATE \'%s\' SET numMissingBusinessDays = \'%s\' WHERE symbol = \'%s\' and interval = \'%s\''%(config.lookupTableName, numMissingDays, minDate_symbolHistory['symbol'][0], minDate_symbolHistory['interval'][0])
+
+        cursor = conn.cursor()
+        cursor.execute(sql_update)
+        if sql_updateNumMissingDays:
+            cursor.execute(sql_updateNumMissingDays)
+        print('%s: [green]Done! [/green]'%(datetime.datetime.now().strftime("%H:%M:%S")))
+
+def _updateLookup_symbolRecords_ORIGINAL(conn, tablename, earliestTimestamp, numMissingDays = 5, type =''):
 
     """
     sub to update the symbol record lookup table
@@ -166,6 +294,32 @@ def _formatpxHistory(pxHistory, type=None):
     
     return pxHistory
 
+def getRecords(conn):
+    """
+        Returns a snapshot of records metadata from the local db
+    """
+    records = pd.DataFrame()
+    try:
+        tableNames = pd.read_sql('SELECT * FROM sqlite_master WHERE type=\'table\' AND NOT name LIKE \'00_%\'', conn)
+        # remove tablename like _corrupt
+        tableNames = tableNames[~tableNames['name'].str.contains('_corrupt')]            
+    except:
+        print('no tables!')
+        exit()
+    if not tableNames.empty:
+        records[['symbol', 'type/expiry', 'interval']] = tableNames['name'].str.split('_',expand=True)     
+        
+        ## add tablename column
+        records['name'] = tableNames['name']
+        
+        ## add record metadata
+        records['lastUpdateDate'] = tableNames.apply(_getLastUpdateDate, axis=1, conn=conn)
+        records['daysSinceLastUpdate'] = tableNames.apply(_getDaysSinceLastUpdated, axis=1, conn=conn)
+        records['interval'] = records.apply(lambda x: _addspace(x['interval']), axis=1)
+        records['firstRecordDate'] = tableNames.apply(_getFirstRecordDate, axis=1, conn=conn)
+    
+    return records
+
 def saveHistoryToDB(history, conn, earliestTimestamp='', type=''):
     """
     Save history to a sqlite3 database
@@ -178,7 +332,9 @@ def saveHistoryToDB(history, conn, earliestTimestamp='', type=''):
     conn: [Sqlite3 connection object]
         connection to the local db 
     """
-    
+    if 'interval' in history.columns:
+        history['interval'] = history['interval'].apply(lambda x: x.replace(' ', ''))
+
     ## set type to index if the symbol is in the index list 
     if 'lastTradeDate' in history.columns:
         type = 'future'
@@ -190,6 +346,7 @@ def saveHistoryToDB(history, conn, earliestTimestamp='', type=''):
             type='stock'
         tableName = history['symbol'][0]+'_'+type+'_'+history['interval'][0]
     
+    print('%s: Saving %s to db, Range: %s - %s...'%(datetime.datetime.now().strftime("%H:%M:%S"), tableName, history['date'].min(), history['date'].max()))
     history.to_sql(f"{tableName}", conn, index=False, if_exists='append')
     _removeDuplicates(tableName, conn)
     _updateLookup_symbolRecords(conn, tableName, earliestTimestamp=earliestTimestamp)
@@ -287,3 +444,10 @@ def futures_getCellValue(conn, symbol, interval='1day', lastTradeMonth='202308',
     value = pd.read_sql(sqlStatement, conn)
     # return val 
     return value[targetColumn][0]
+
+def getLookup_exchange(conn, symbol):
+    exchangeLookupTable = '00-lookup_exchangeMapping'
+    sql = 'SELECT exchange FROM \'%s\' WHERE symbol=\'%s\'' %(exchangeLookupTable, symbol)
+    exchange = pd.read_sql(sql, conn).values[0][0]
+
+    return exchange
