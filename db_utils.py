@@ -60,8 +60,10 @@ def changeColumnName(conn, fromName, toName):
     
     print('DONE!')
 
-def tablenames(conn):
-    
+def drop_tables_with_malformed_expiry(conn):
+    """
+        This function drops all tables in the db that have an expiry column with 6 characters (malformed)
+    """
     # read in all tables in db 
     sql_getTables = 'SELECT name FROM sqlite_master WHERE type=\'table\' AND NOT name LIKE \'00-lookup%\''
     tables = pd.read_sql(sql_getTables, conn)
@@ -79,7 +81,51 @@ def tablenames(conn):
         sql_dropTable = 'DROP TABLE \'%s\''%(table)
         conn.execute(sql_dropTable)
 
+def generate_subset_of_db(conn, subset_db_name:str, table_name_fragment:str):
+    subset_conn = sqlite3.connect(subset_db_name)
+
+    cursor = conn.cursor()
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE ?", (f'%{table_name_fragment.upper()}%',))
+    tables_to_copy = cursor.fetchall()
+
+    if not tables_to_copy:
+        print(f"No tables found containing '{table_name_fragment}'.")
+        return
+    
+    # Step 3: For each table, copy schema and data
+    for table_name_tuple in tables_to_copy:
+        table_name = table_name_tuple[0]
+        print(f"Copying table: {table_name}")
+
+        # Step 3a: Get the schema of the table
+        cursor.execute(f"SELECT sql FROM sqlite_master WHERE type='table' AND name='{table_name}'")
+        create_table_sql = cursor.fetchone()[0]
+
+        # Step 3b: Execute the create table statement in the subset database
+        subset_cursor = subset_conn.cursor()
+        subset_cursor.execute(create_table_sql)
+        print(f"Created table schema for: {table_name}")
+
+        # Step 3c: Copy all data from the original table to the new table
+        cursor.execute(f"SELECT * FROM {table_name}")
+        rows = cursor.fetchall()
+
+        if rows:
+            # Get the number of columns in the table to prepare an insert statement
+            num_columns = len(rows[0])
+            placeholders = ','.join(['?' for _ in range(num_columns)])
+            insert_sql = f"INSERT INTO {table_name} VALUES ({placeholders})"
+
+            # Insert data into the new table
+            subset_cursor.executemany(insert_sql, rows)
+            print(f"Copied {len(rows)} rows into {table_name}")
+
+    # Step 4: Commit and close the connection to the subset database
+    subset_conn.commit()
+    subset_conn.close()
+
 
 with sqlite3.connect(config.dbname_future) as conn:
     #changeColumnName(conn, 'lastTradeMonth', 'lastTradeDate')
-    tablenames(conn)
+    drop_tables_with_malformed_expiry(conn)
+
