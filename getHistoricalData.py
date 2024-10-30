@@ -39,7 +39,7 @@ import re
 import time
 
 import interface_ibkr as ib
-import interface_localDb_old as db
+import interface_localDB as db
 
 ######### SET GLOBAL VARS #########
 
@@ -172,6 +172,26 @@ def update_vix_futures_history_from_rwtools(filepath):
         #    print('Saved %s to db'%(tablename)) 
     pass
 
+def check_outdated_data(records: pd.DataFrame, symbol_list: pd.DataFrame, update_threshold_days: int,
+                       delisted_symbols: list) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Check for outdated and new symbols in a single operation
+    """
+    if records.empty:
+        return pd.DataFrame(), symbol_list
+    
+    print('%s: [yellow]Checking for outdated and new symbols...[/yellow]'%(datetime.datetime.now().strftime("%H:%M:%S")))
+    # Vectorized operations for finding outdated and new symbols
+    mask_outdated = (records['daysSinceLastUpdate'] >= update_threshold_days) & \
+                   (~records['symbol'].isin(delisted_symbols))
+    symbols_outdated = records[mask_outdated]
+    
+    mask_new = ~symbol_list['symbol'].isin(records['symbol']) & \
+               ~symbol_list['symbol'].isin(delisted_symbols)
+    symbols_new = symbol_list[mask_new]
+    print('%s: [green]Done![/green]'%(datetime.datetime.now().strftime("%H:%M:%S")))
+    return symbols_outdated, symbols_new
+
 """
 Root function that will check the the watchlist and make sure all records are up to date
 --
@@ -184,6 +204,8 @@ def updateRecords(updateThresholdDays = 1):
 
     #### check for new tickers 
     # read in tickerlist.txt
+    print('%s: [yellow]Making sure db has latest data.[/yellow]'%(datetime.datetime.now().strftime("%H:%M:%S")))
+    print('%s: [yellow]Loading watchlist..[/yellow]'%(datetime.datetime.now().strftime("%H:%M:%S")))
     symbolList = pd.read_csv(_tickerFilepath)
 
     ## convert to dataframe, and cleanup  
@@ -191,37 +213,47 @@ def updateRecords(updateThresholdDays = 1):
     symbolList.rename(columns={0:'symbol'}, inplace=True)
     symbolList['symbol'] = symbolList['symbol'].str.strip(' ').str.upper()
     symbolList.sort_values(by=['symbol'], inplace=True)
-
-    # get record metadata from db
+    print('%s: [green]Done![/green]'%(datetime.datetime.now().strftime("%H:%M:%S")))
+    
+    print('%s: [yellow]Checking for outdated data...[/yellow]'%(datetime.datetime.now().strftime("%H:%M:%S")))
     with db.sqlite_connection(_dbName_index) as conn:
         records = db.getRecords(conn)
-    if not records.empty: ## if database contains some records, check if any need to be updated
-        symbolsWithOutdatedData = records.loc[records['daysSinceLastUpdate'] >= updateThresholdDays]
-        newlyAddedSymbols = symbolList[~symbolList['symbol'].isin(records['symbol'])]
+    symbolsWithOutdatedData, newlyAddedSymbols = check_outdated_data(records, symbolList, updateThresholdDays, config.delisted_symbols)
 
-        newlyAddedSymbols = newlyAddedSymbols.loc[~newlyAddedSymbols['symbol'].isin(config.delisted_symbols)] # remove delisted symbols
-        symbolsWithOutdatedData = symbolsWithOutdatedData.loc[~symbolsWithOutdatedData['symbol'].isin(config.delisted_symbols)] # remove delisted symbols
+    # print('%s: [yellow]Loading records from db...[/yellow]'%(datetime.datetime.now().strftime("%H:%M:%S")))
+    # with db.sqlite_connection(_dbName_index) as conn:
+    #     records = db.getRecords(conn)
+    # print('%s: [green]Done![/green]'%(datetime.datetime.now().strftime("%H:%M:%S")))
+    # if not records.empty: ## if database contains some records, check if any need to be updated
+        # print('%s: [yellow]Locating outdated records...[/yellow]'%(datetime.datetime.now().strftime("%H:%M:%S")))
+        # symbolsWithOutdatedData = records.loc[records['daysSinceLastUpdate'] >= updateThresholdDays]
+        # newlyAddedSymbols = symbolList[~symbolList['symbol'].isin(records['symbol'])]
+
+        # newlyAddedSymbols = newlyAddedSymbols.loc[~newlyAddedSymbols['symbol'].isin(config.delisted_symbols)] # remove delisted symbols
+        # symbolsWithOutdatedData = symbolsWithOutdatedData.loc[~symbolsWithOutdatedData['symbol'].isin(config.delisted_symbols)] # remove delisted symbols
 
     
     if (not symbolsWithOutdatedData.empty or not newlyAddedSymbols.empty):
+        print('%s: [yellow]Outdated or missing records found..[/yellow]'%(datetime.datetime.now().strftime("%H:%M:%S")))
         try:
             ibkr = ib.setupConnection()
         except:
             print('[red] Could not connect to IBKR[/red]')
             return
 
+        print('%s: [yellow]Starting record updates..[/yellow]'%(datetime.datetime.now().strftime("%H:%M:%S")))
         # update history in local DB 
         updateRecordHistory(ibkr, records, symbolsWithOutdatedData, newlyAddedSymbols)
 
         # disconnect from ibkr
         if ibkr: ibkr.disconnect()
-        
-        # get updated records from db 
-        with db.sqlite_connection(_dbName_index) as conn:
-            updatedRecords = db.getRecords(conn)
 
-        updatedRecords['numYearsOfHistory'] = updatedRecords.apply(lambda x: _countWorkdays(pd.to_datetime(x['firstRecordDate']), pd.to_datetime(x['lastUpdateDate']))/260, axis=1)
-        updatedRecords.drop(columns=['firstRecordDate', 'name'], inplace=True)
+        print('%s: [green]Done![/green]'%(datetime.datetime.now().strftime("%H:%M:%S")))
+        # with db.sqlite_connection(_dbName_index) as conn:
+        #     updatedRecords = db.getRecords(conn)
+
+        # updatedRecords['numYearsOfHistory'] = updatedRecords.apply(lambda x: _countWorkdays(pd.to_datetime(x['firstRecordDate']), pd.to_datetime(x['lastUpdateDate']))/260, axis=1)
+        # updatedRecords.drop(columns=['firstRecordDate', 'name'], inplace=True)
 
 """
 Updates record history handling the following scenarios:
@@ -655,7 +687,7 @@ if len(argv) > 1:
     if argv[1] == 'csv':
         #update_vix_futures_history_from_rwtools(config.dbname_rwtools_futures_vix_csv)
         # if no arg 2 , print 
-        updateHistoryFromCSV('data/FXB.csv', 'FXB', '1day')
+        updateHistoryFromCSV('data/external/FXB.csv', 'FXB', '1day')
         #print('error 11 - no csv file specified')
 else:
     ## update existing records after EST market close or on weekends
