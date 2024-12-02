@@ -18,8 +18,8 @@ table_name_futures_pxhistory_metadata = '00-lookup_pxhistory_metadata'
 
 # Reference Lists
 intervals = ['1 min', '5 mins', '30 mins', '1 day']
-_indexList = ['VIX', 'VIX3M', 'VVIX', 'SPX', 'VIX1D', 'TSX']
-_index = ['VIX', 'VIX3M', 'VVIX', 'SPX', 'VIX1D', 'TSX']
+_indexList = ['GVZ', 'INDU', 'NDX', 'VIX', 'VIX3M', 'VVIX', 'SPX', 'VIX1D', 'TSX']
+_index = ['GVZ', 'INDU', 'NDX', 'VIX', 'VIX3M', 'VVIX', 'SPX', 'VIX1D', 'TSX']
 delisted_symbols = ['BURU']
 
 ## Lookup dicts 
@@ -33,7 +33,9 @@ currency_mapping = {
     'GC': 'USD',
     'GE': 'USD',
     'HG': 'USD',
+    'INDU': 'USD',
     'NQ': 'USD',
+    'NDX': 'USD',
     'SPX': 'USD',
     'SI': 'USD',
     'TN': 'USD',
@@ -55,6 +57,7 @@ currency_mapping = {
 
 exchange_mapping = {
     'CL': 'NYMEX',
+    'CLOI': 'SMART',
     'DXJ': 'ARCA',
     'ED': 'GLOBEX',
     'ES': 'GLOBEX',
@@ -62,8 +65,11 @@ exchange_mapping = {
     'FV': 'ECBOT',
     'GC': 'NYMEX',
     'GE': 'ECBOT',
+    'GVZ': 'CBOE',
     'HG': 'COMEX',
     'IBM': 'NYSE',
+    'INDU': 'CME',
+    'NDX': 'NASDAQ',
     'NG': 'NYMEX',
     'SPX': 'CBOE',
     'SI': 'NYMEX',
