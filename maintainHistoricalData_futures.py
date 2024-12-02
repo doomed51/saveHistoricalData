@@ -316,7 +316,7 @@ def updateRecords(ib_):
 
         # print recodrs where type/expiry is before current date
         i=1
-        for row in (latestRecords.loc[latestRecords['daysSinceLastUpdate'] >= 1]).iterrows():
+        for row in (latestRecords.loc[latestRecords['daysSinceLastUpdate'] >= 2]).iterrows():
             print('%s: (%s/%s) Updating contract %s %s %s'%(datetime.now().strftime('%H:%M:%S'), i,latestRecords.loc[latestRecords['daysSinceLastUpdate']>=1]['symbol'].count(), row[1]['symbol'], row[1]['type/expiry'], row[1]['interval'].replace(' ', '')) )
             _updateSingleRecord(ib_, row[1]['symbol'], row[1]['type/expiry'], row[1]['interval'], str(row[1]['daysSinceLastUpdate']+1)+' D')
             i+=1
@@ -433,6 +433,7 @@ def update_gaps_in_pxhistory(conn, ib, ibkr_lookback_period = '5 D'):
     """
         updates gaps in pxhistory, usees the pxhistory_metadata table to determine which tables need to be updated. 
     """
+    DEFAULT_DATE_IF_NO_GAPS = pd.to_datetime('1989-12-30')
     # get table metadata, and filter out tables that no longer have gaps 
     pxhistory_metadata = db.getTable(conn, config.table_name_futures_pxhistory_metadata)
     pxhistory_metadata = pxhistory_metadata.loc[pxhistory_metadata['date_of_last_gap_date_polled'] != 1989-12-30]
@@ -451,9 +452,11 @@ def update_gaps_in_pxhistory(conn, ib, ibkr_lookback_period = '5 D'):
             # if this returns empty, 
             # that means there are no more gaps left to update. Update metadata to reflect this 
             if number_of_datetime_in_each_date.empty:
-                pxhistory_metadata.loc[pxhistory_metadata['tablename'] == tablename, 'date_of_last_gap_date_polled'] = pd.to_datetime('1989-12-30').date()
-                pxhistory_metadata.loc[pxhistory_metadata['tablename'] == tablename, 'update_date'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                # pxhistory_metadata.loc[pxhistory_metadata['tablename'] == tablename, 'date_of_last_gap_date_polled'] = pd.to_datetime('1989-12-30').date()
+                # pxhistory_metadata.loc[pxhistory_metadata['tablename'] == tablename, 'update_date'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                update_metadata(pxhistory_metadata, tablename, DEFAULT_DATE_IF_NO_GAPS)
                 continue
+        
         date_to_update = pd.to_datetime(number_of_datetime_in_each_date['date_only'].max()) + pd.to_timedelta(1, unit='D')
 
         # get gap data from ibkr 
@@ -462,8 +465,9 @@ def update_gaps_in_pxhistory(conn, ib, ibkr_lookback_period = '5 D'):
         ibkr_pxhistory = ibkr.getBars_futures(ib, symbol=symbol, lastTradeDate=expiry, interval=_addspace(interval), endDate=date_to_update, lookback=ibkr_lookback_period, exchange=exchange)
         if ibkr_pxhistory is None:
             print('%s: [green]No records found for %s, with endDate: %s [/green]'%(datetime.now().strftime('%H:%M:%S'), tablename, date_to_update.strftime('%Y-%m-%d')))
-            pxhistory_metadata.loc[pxhistory_metadata['tablename'] == tablename, 'date_of_last_gap_date_polled'] = pd.to_datetime('1989-12-30').date()
-            pxhistory_metadata.loc[pxhistory_metadata['tablename'] == tablename, 'update_date'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            # pxhistory_metadata.loc[pxhistory_metadata['tablename'] == tablename, 'date_of_last_gap_date_polled'] = pd.to_datetime('1989-12-30').date()
+            # pxhistory_metadata.loc[pxhistory_metadata['tablename'] == tablename, 'update_date'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            update_metadata(pxhistory_metadata, tablename, DEFAULT_DATE_IF_NO_GAPS)
             continue        
         ibkr_pxhistory['symbol'] = symbol
         ibkr_pxhistory['interval'] = interval
@@ -475,12 +479,20 @@ def update_gaps_in_pxhistory(conn, ib, ibkr_lookback_period = '5 D'):
         time.sleep(_defaultSleepTime/30)
         
         # Update metadata 
-        pxhistory_metadata.loc[pxhistory_metadata['tablename'] == tablename, 'date_of_last_gap_date_polled'] = ibkr_pxhistory['date'].min().date()
-        pxhistory_metadata.loc[pxhistory_metadata['tablename'] == tablename, 'update_date'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        # pxhistory_metadata.loc[pxhistory_metadata['tablename'] == tablename, 'date_of_last_gap_date_polled'] = ibkr_pxhistory['date'].min().date()
+        # pxhistory_metadata.loc[pxhistory_metadata['tablename'] == tablename, 'update_date'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        update_metadata(pxhistory_metadata, tablename, ibkr_pxhistory['date'].min().date())
 
     print('%s: [green]DONE! Completed updating gaps in pxhistory_metadata, cleaning up metadata[/green]\n'%(datetime.now().strftime('%H:%M:%S')))
     db.save_table_to_db(conn = conn, tablename=config.table_name_futures_pxhistory_metadata, metadata_df = pxhistory_metadata)
     db.remove_duplicates_from_pxhistory_gaps_metadata(conn, config.table_name_futures_pxhistory_metadata)
+
+def update_metadata(pxhistory_metadata: pd.DataFrame, tablename: str, date: pd.Timestamp) -> None:
+    """
+        Updates metadata table with the date of the last gap polled
+    """
+    pxhistory_metadata.loc[pxhistory_metadata['tablename'] == tablename, 'date_of_last_gap_date_polled'] = date
+    pxhistory_metadata.loc[pxhistory_metadata['tablename'] == tablename, 'update_date'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
 def _dirtyRefreshLookupTable(ib, mode): 
     """
@@ -598,7 +610,8 @@ def _updatePreHistory(lookupTable, ib):
         uniqueSymbol = uniqueSymbol.assign(exchange=uniqueSymbol.apply(lambda row: db.getLookup_exchange(conn, row['symbol']), axis=1))
     
     uniqueSymbol['earliestTimeStamp'] = (datetime.today() - relativedelta(years=2)).strftime('%Y%m%d %H:%M:%S')
-    lookupTable.sort_values(by=['name'], inplace=True).reset_index(drop=True)
+    lookupTable.sort_values(by=['interval'], inplace=True)
+    lookupTable.reset_index(drop=True, inplace=True)
     i=0
     for index, record in lookupTable.iterrows():  
         lookback = 100
@@ -621,7 +634,7 @@ def _updatePreHistory(lookupTable, ib):
         elif record['interval'] in ['1 day', '1 month']:
             lookback = 100
         elif record['interval'] in ['1 min']:
-            lookback = 3
+            lookback = 5
         else:
             lookback = 30
 
@@ -635,7 +648,7 @@ def _updatePreHistory(lookupTable, ib):
             continue
         else: 
             if record['interval'] in ['1 min', '5 mins']: # Make multiple calls for ltf data
-                for i in range(5): 
+                for i in range(10): 
                     currentIterationBars = ibkr.getBars_futures(ib, symbol=record['symbol'], lastTradeDate=record['lastTradeDate'], interval=record['interval'], endDate=endDate, lookback=(str(lookback) + ' D'), exchange=exchange)
                     if (currentIterationBars is None): 
                         break
