@@ -144,3 +144,12 @@ access_token.yml
 
 #local test scripts
 scrap.py
+
+# data folder 
+data/
+
+# test modules 
+test_*.py
+tests/
+
+sandbox.ipynb
