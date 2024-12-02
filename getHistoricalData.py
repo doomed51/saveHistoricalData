@@ -51,6 +51,8 @@ _indexList = config._index
 
 ibkrThrottleTime = 10 # minimum seconds to wait between api requests to ibkr
 
+records = pd.DataFrame()
+
 """
 ######################################################
 
@@ -195,12 +197,14 @@ def updateRecords(updateThresholdDays = 1):
     # get record metadata from db
     with db.sqlite_connection(_dbName_index) as conn:
         records = db.getRecords(conn)
+    
     if not records.empty: ## if database contains some records, check if any need to be updated
         symbolsWithOutdatedData = records.loc[records['daysSinceLastUpdate'] >= updateThresholdDays]
         newlyAddedSymbols = symbolList[~symbolList['symbol'].isin(records['symbol'])]
-
-        newlyAddedSymbols = newlyAddedSymbols.loc[~newlyAddedSymbols['symbol'].isin(config.delisted_symbols)] # remove delisted symbols
-        symbolsWithOutdatedData = symbolsWithOutdatedData.loc[~symbolsWithOutdatedData['symbol'].isin(config.delisted_symbols)] # remove delisted symbols
+        
+        # remove delisted symbols
+        newlyAddedSymbols = newlyAddedSymbols.loc[~newlyAddedSymbols['symbol'].isin(config.delisted_symbols)] 
+        symbolsWithOutdatedData = symbolsWithOutdatedData.loc[~symbolsWithOutdatedData['symbol'].isin(config.delisted_symbols)] 
 
     
     if (not symbolsWithOutdatedData.empty or not newlyAddedSymbols.empty):
@@ -209,7 +213,7 @@ def updateRecords(updateThresholdDays = 1):
         except:
             print('[red] Could not connect to IBKR[/red]')
             return
-
+        
         # update history in local DB 
         updateRecordHistory(ibkr, records, symbolsWithOutdatedData, newlyAddedSymbols)
 
@@ -217,11 +221,11 @@ def updateRecords(updateThresholdDays = 1):
         if ibkr: ibkr.disconnect()
         
         # get updated records from db 
-        with db.sqlite_connection(_dbName_index) as conn:
-            updatedRecords = db.getRecords(conn)
+        # with db.sqlite_connection(_dbName_index) as conn:
+        #     updatedRecords = db.getRecords(conn)
 
-        updatedRecords['numYearsOfHistory'] = updatedRecords.apply(lambda x: _countWorkdays(pd.to_datetime(x['firstRecordDate']), pd.to_datetime(x['lastUpdateDate']))/260, axis=1)
-        updatedRecords.drop(columns=['firstRecordDate', 'name'], inplace=True)
+        # updatedRecords['numYearsOfHistory'] = updatedRecords.apply(lambda x: _countWorkdays(pd.to_datetime(x['firstRecordDate']), pd.to_datetime(x['lastUpdateDate']))/260, axis=1)
+        # updatedRecords.drop(columns=['firstRecordDate', 'name'], inplace=True)
 
 """
 Updates record history handling the following scenarios:
@@ -565,6 +569,7 @@ def refreshLookupTable(ibkr, dbname):
         lookupRecords_uniqueSymbols['earliestAvailableTimestamp'] = lookupRecords_uniqueSymbols['symbol'].apply(
             lambda x: ib.getEarliestTimeStamp(ibkr, 
                                               ib.getContractDetails(ibkr,x)[0].contract))
+
         ## merge the earliest availabe timestamp from ibkr with the records table
         records_withEarliestAvailableDate = pd.merge(lookupRecords, lookupRecords_uniqueSymbols, how='left', on='symbol')
         
@@ -615,6 +620,7 @@ def refreshLookupTable(ibkr, dbname):
             # save to db
             records_forInput.to_sql(f"{lookupTableName}", conn, index=False, if_exists='replace')
             print('%s: [green]  Done![/green]%(datetime.datetime.now().strftime("%H:%M:%S"))')
+
 """
 function that calls updatePreHistoricData over the course of a night, pausing for 5 minutes between each iteration 
 """
