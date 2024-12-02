@@ -1,5 +1,5 @@
 import pandas as pd 
-import interface_localDb as db 
+import interface_localDB as db 
 
 import config
 import sqlite3
@@ -81,11 +81,17 @@ def drop_tables_with_malformed_expiry(conn):
         sql_dropTable = 'DROP TABLE \'%s\''%(table)
         conn.execute(sql_dropTable)
 
-def generate_subset_of_db(conn, subset_db_name:str, table_name_fragment:str):
-    subset_conn = sqlite3.connect(subset_db_name)
+def generate_subset_of_db(conn, subset_db_path:str, table_name_fragment:str, table_name_fragment2:str):
+    subset_conn = sqlite3.connect(subset_db_path)
 
     cursor = conn.cursor()
-    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE ?", (f'%{table_name_fragment.upper()}%',))
+    # cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE ?", (f'%{table_name_fragment.upper()}%',))
+
+    # convert to pythonic rep for SELECT name FROM sqlite_master WHERE type='table' AND (name LIKE '%_30mins' OR name LIKE '%_1day');
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND (name LIKE ? OR name LIKE ?)", (f'%{table_name_fragment.upper()}%', f'%{table_name_fragment2.upper()}%'))
+
+
+    # cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE ?", (f'%{table_name_fragment.upper()}%',))
     tables_to_copy = cursor.fetchall()
 
     if not tables_to_copy:
@@ -102,9 +108,13 @@ def generate_subset_of_db(conn, subset_db_name:str, table_name_fragment:str):
         create_table_sql = cursor.fetchone()[0]
 
         # Step 3b: Execute the create table statement in the subset database
-        subset_cursor = subset_conn.cursor()
-        subset_cursor.execute(create_table_sql)
-        print(f"Created table schema for: {table_name}")
+        # if table already exists in the db ,skip 
+        try:
+            subset_cursor = subset_conn.cursor()
+            subset_cursor.execute(create_table_sql)
+            print(f"Created table schema for: {table_name}")
+        except sqlite3.OperationalError as e:
+            print(f"Table already exists in subset database: {table_name}")
 
         # Step 3c: Copy all data from the original table to the new table
         cursor.execute(f"SELECT * FROM {table_name}")
@@ -119,13 +129,28 @@ def generate_subset_of_db(conn, subset_db_name:str, table_name_fragment:str):
             # Insert data into the new table
             subset_cursor.executemany(insert_sql, rows)
             print(f"Copied {len(rows)} rows into {table_name}")
+         # debug
 
     # Step 4: Commit and close the connection to the subset database
     subset_conn.commit()
     subset_conn.close()
+    
+    # generate lookup table based on the tables copied (tables_to_copy)
+    lookup = pd.DataFrame(tables_to_copy, columns=['name'])
+    lookup['symbol'] = lookup['name'].str.split('_', expand=True)[0]
+    lookup['type'] = lookup['name'].str.split('_', expand=True)[1]
+    lookup['interval'] = lookup['name'].str.split('_', expand=True)[2]
+    lookup['numMissingBusinessDays'] = 0
+    lookup['firstRecordDate'] = None
+
+    # update lookup table
+    with sqlite3.connect(subset_db_path) as conn:
+        lookup.to_sql('00-lookup_symbolRecords', conn, if_exists='replace', index=False)
 
 
-with sqlite3.connect(config.dbname_future) as conn:
+
+with sqlite3.connect(config.dbname_stock) as conn:
     #changeColumnName(conn, 'lastTradeMonth', 'lastTradeDate')
-    drop_tables_with_malformed_expiry(conn)
+    # drop_tables_with_malformed_expiry(conn)
+    generate_subset_of_db(conn, '/workbench/historicalData/venv/saveHistoricalData/data/db_subset.db', '%_30mins', '%_1day')
 
