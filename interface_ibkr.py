@@ -156,8 +156,10 @@ def _getHistoricalBars_futures(ibkrObj, symbol, exchange, lastTradeDate, currenc
         # lastTradeDate = lastTradeDate +  
         endDate = pd.to_datetime(lastTradeDate)
         endDate = endDate.tz_localize('US/Eastern')
-
+    # subscribe to timeout event 
+    
     try:
+        ibkrObj.timeoutEvent += lambda x: print('%s: [red]Timeout event triggered![/red]'%(datetime.datetime.now().strftime('%H:%M:%S')))
         contractHistory = ibkrObj.reqHistoricalData(
             contract, 
             endDateTime = endDate,

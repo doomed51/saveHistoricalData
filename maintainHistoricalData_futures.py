@@ -122,7 +122,7 @@ def _updateSingleRecord(ib, symbol, expiry, interval, lookback, endDate=''):
     # Split into multiple calls for shorter intervals so we can get more data in 1 go   
     if (interval in ['1 min', '5 mins']) and int(lookback.strip(' D')) > 12:
         # calculate number of calls needed
-        numCalls = math.ceil(int(lookback.strip(' D'))/12)#int(int(int(lookback.strip(' D'))/12))
+        numCalls = math.ceil(int(lookback.strip(' D'))/12)
         record=pd.DataFrame()
         # loop for numCalls appending records and reducing endDate by lookback each time
         for i in range(0, numCalls):
@@ -182,13 +182,13 @@ def _getMissingContracts(ib, symbol, numMonths = numExpiryMonths):
         latestRecords = db.getRecords(conn)
         # select only records with symbol = symbol
         latestRecords = latestRecords.loc[latestRecords['symbol'] == symbol].reset_index(drop=True)
+    
     # get contracts from ibkr 
     contracts = ibkr.getContractDetails(ib, symbol, type='future')
     contracts = ibkr.util.df(contracts)
     
-    # if symbol = VIX, drop the weekly contracts 
     if symbol == 'VIX':
-        contracts = contracts.loc[contracts['marketName'] == 'VX'].reset_index(drop=True)
+        contracts = contracts.loc[contracts['marketName'] == 'VX'].reset_index(drop=True) # we only want the monthly cons 
     
     # if symbol = NG, limit contracts to nymex and 2 years out
     if symbol == 'NG': 
@@ -206,7 +206,7 @@ def _getMissingContracts(ib, symbol, numMonths = numExpiryMonths):
     # append missing contracts for each tracked interval 
     for interval in trackedIntervals:
         # select latestRecords for interval 
-        latestRecords_interval = latestRecords.loc[latestRecords['interval'] == interval]
+        latestRecords_interval = latestRecords.loc[latestRecords['interval'] == interval.replace(' ','')]
         
         # handle case where entire interval data is missing 
         if latestRecords_interval.empty:
@@ -222,6 +222,7 @@ def _getMissingContracts(ib, symbol, numMonths = numExpiryMonths):
         print('%s: [green]No missing contracts found![/green]'%(datetime.now().strftime('%H:%M:%S')))
     else:
         print('%s:[yellow] Found %s missing contracts[/yellow]\n'%(datetime.now().strftime('%H:%M:%S'), str(len(missingContracts))))
+        missingContracts['symbol'] = symbol
     return missingContracts.reset_index(drop=True)
 
 def uniqueIDMapper(ib, symbol, expiry): 
@@ -247,9 +248,6 @@ def uniqueIDMapper(ib, symbol, expiry):
     print(contractDetails[['localSymbol', 'realExpirationDate']])
     # select only contracts where contract.realExpirationDate = expiry
     contractDetails = contractDetails.loc[contractDetails['realExpirationDate'] == expiry].reset_index(drop=True)
-
-    print(contractDetails[['localSymbol', 'realExpirationDate']])
-    exit()
 
 def updateRecords(ib_):     
     """
@@ -279,19 +277,17 @@ def updateRecords(ib_):
     missingContracts = pd.DataFrame()
     for symbol in watchlist['symbol']:
         missingContracts = missingContracts._append(_getMissingContracts(ib_, symbol))
+    # missingContracts = missingContracts.loc[missingContracts['interval'] == '1 day']
 
-    print('%s: Total missing contracts: %s'%(datetime.now().strftime("HH:MM:SS"),str(len(missingContracts))))
-    missingContracts['symbol'] = missingContracts['contract'].apply(lambda x: x.symbol)
+    print('%s: Total missing contracts: %s'%(datetime.now().strftime('HH:MM:SS'),str(len(missingContracts))))
     missingContracts['realExpirationDate'] = missingContracts['contract'].apply(lambda x: x.lastTradeDateOrContractMonth)
-    print(missingContracts[['symbol', 'realExpirationDate', 'interval']])
-    print('\n')
     
     # add lookback columnbased on interval
     missingContracts['lookback'] = missingContracts.apply(
         lambda row: _setLookback(row['interval']), axis=1)
-    # remove spac efrom the interval column
-    # missingContracts['interval'] = missingContracts['interval'].apply(lambda x: db._removeSpaces(x))
-    
+
+    # select just where interval = 1 day
+
     # add missing contracts to our db
     if not missingContracts.empty:
         print('[green]----------------------------------------------[/green]')
@@ -307,7 +303,6 @@ def updateRecords(ib_):
     print('[green]----------------------------------------------[/green]')
     print('[green]----- Completed adding missing contracts -----[/green]')
     print('[green]----------------------------------------------[/green]\n')
-
     # update records in our db that have not been updated in the last 24 hours 
     if not latestRecords.loc[latestRecords['daysSinceLastUpdate'] > 1].empty:
         print('[green]----------------------------------------------[/green]')
@@ -316,8 +311,8 @@ def updateRecords(ib_):
 
         # print recodrs where type/expiry is before current date
         i=1
-        for row in (latestRecords.loc[latestRecords['daysSinceLastUpdate'] >= 2]).iterrows():
-            print('%s: (%s/%s) Updating contract %s %s %s'%(datetime.now().strftime('%H:%M:%S'), i,latestRecords.loc[latestRecords['daysSinceLastUpdate']>=1]['symbol'].count(), row[1]['symbol'], row[1]['type/expiry'], row[1]['interval'].replace(' ', '')) )
+        for row in (latestRecords.loc[latestRecords['daysSinceLastUpdate'] >= 1]).iterrows():
+            print('%s: (%s/%s) Updating contract %s %s %s'%(datetime.now().strftime('%H:%M:%S'), i,latestRecords.loc[latestRecords['daysSinceLastUpdate']>=1]['symbol'].count(), row[1]['symbol'], row[1]['type/expiry'], row[1]['interval']) )
             _updateSingleRecord(ib_, row[1]['symbol'], row[1]['type/expiry'], row[1]['interval'], str(row[1]['daysSinceLastUpdate']+1)+' D')
             i+=1
     
@@ -577,12 +572,12 @@ def _dirtyRefreshLookupTable(ib, mode):
 
     return
 
-def _updatePreHistory(lookupTable, ib):
+def _updatePreHistory(lookupTable: pd.DataFrame, ib: 'IBKRConnection'):
     """
         update pre-history for records in the db 
             inputs: 
-                pd.lookuptable of records that need to be updated
-                ibkr object 
+                lookupTable: pd.DataFrame - DataFrame of records that need to be updated. Expected columns: ['symbol', 'lastTradeDate', 'interval', 'firstRecordDate', 'numMissingBusinessDays', 'name']
+                ib: IBKRConnection - IBKR connection object 
             algo:
                 1. set interval
                 2. set lookback to 60
@@ -595,12 +590,11 @@ def _updatePreHistory(lookupTable, ib):
                     d. append history to the db
     """
     print('[green]----------------------------------------------[/green]')
-    print('[yellow]--------- Updating prehistorica data ---------[/yellow]')
+    print('[yellow]----- Updating missing historical data ------[/yellow]')
     print('[green]----------------------------------------------[/green]\n')    
     # make sure interval formatting matches ibkr rqmts e.g. 5 mins, 1 day 
     lookupTable['interval'] = lookupTable.apply(lambda row: _addspace(row['interval']), axis=1)
     
-    # drop records where lastTradeDate <= todays date in format YYYYMM
     # lookupTable = lookupTable.loc[lookupTable['lastTradeDate'] > datetime.today().strftime('%Y%m')].reset_index(drop=True)
 
     lookupTable = lookupTable.loc[lookupTable['numMissingBusinessDays'] > 0].reset_index(drop=True)
@@ -620,10 +614,7 @@ def _updatePreHistory(lookupTable, ib):
         
         # set end date 
         endDate = (record['firstRecordDate'] + relativedelta(days=1)).strftime('%Y%m%d %H:%M:%S')
-        # if record['interval'] == '1 day':
-        # else:
-            # endDate = record['firstRecordDate'] - relativedelta(minutes=1)
-
+        
         # set earliestTimeStamp
         earliestAvailableTimestamp = pd.to_datetime(uniqueSymbol.loc[uniqueSymbol['symbol'] == record['symbol']]['earliestTimeStamp'].iloc[0])
         exchange = uniqueSymbol.loc[uniqueSymbol['symbol'] == record['symbol']]['exchange'].iloc[0]
@@ -639,7 +630,7 @@ def _updatePreHistory(lookupTable, ib):
             lookback = 30
 
         history = pd.DataFrame()
-        if lookback < 0:
+        if lookback <= 0:
             print(' [green]No data left [/green]for %s %s %s!'%(record['symbol'], record['lastTradeDate'], record['interval']))
             with db.sqlite_connection(dbName_futures) as conn:
                 earliestAvailableTimestamp = db._getFirstRecordDate(record, conn)

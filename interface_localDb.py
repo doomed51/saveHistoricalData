@@ -20,6 +20,8 @@ import pandas as pd
 sys.path.append('..')
 from utils import utils as ut
 from rich import print 
+from functools import lru_cache
+from typing import Optional
 
 """ Global vars """
 dbname_index = config.dbname_stock
@@ -75,6 +77,7 @@ def _removeDuplicates(tablename, conn=None):
     cursor = conn.cursor()
     # sql_selectMinId = 'DELETE FROM ? WHERE ROWID NOT IN (SELECT MIN(ROWID) FROM ? GROUP BY date)'
     # cursor.execute(sql_selectMinId, (tablename, tablename))
+    # sql_selectMinId = 'SELECT FROM %s WHERE ROWID NOT IN (SELECT MIN(ROWID) FROM %s GROUP BY date)'%(tablename, tablename)
     sql_selectMinId = 'DELETE FROM %s WHERE ROWID NOT IN (SELECT MIN(ROWID) FROM %s GROUP BY date)'%(tablename, tablename)
 
     ## run the query 
@@ -97,17 +100,11 @@ def _removeSpaces(myStr):
     ## remove spaces from mystr
     return myStr.replace(" ", "")
 
-######################################################
-######################################################
-###         ###         ###         ###         ###
-#                   Lambda Functions
-######################################################
-######################################################
 def _getDaysSinceLastUpdated(row, conn):
     maxtime = pd.read_sql('SELECT MAX(date) FROM '+ row['name'], conn)
     mytime = datetime.datetime.strptime(maxtime['MAX(date)'][0][:10], '%Y-%m-%d')
     ## calculate business days since last update
-    numDays = len( pd.bdate_range(mytime, datetime.datetime.now() )) - 1
+    numDays = len( pd.bdate_range(mytime, datetime.datetime.now())) - 1
 
     return numDays
 
@@ -140,9 +137,6 @@ def _getFirstRecordDate(row, conn):
 
     return mintime
 
-######################################################
-#####################   END   ########################
-######################################################
 def _updateLookup_symbolRecords(conn, tablename, earliestTimestamp, numMissingDays = 5, type =''):
     ## get the earliest record date as per the db 
     if type == 'future':
@@ -205,7 +199,7 @@ def _updateLookup_symbolRecords(conn, tablename, earliestTimestamp, numMissingDa
 
             if earliestTimestamp: 
                 sql_updateNumMissingDays = 'UPDATE \'%s\' SET numMissingBusinessDays = \'%s\' WHERE symbol = \'%s\' and interval = \'%s\''%(config.lookupTableName, numMissingDays, minDate_symbolHistory['symbol'][0], minDate_symbolHistory['interval'][0])
-
+            
         cursor = conn.cursor()
         cursor.execute(sql_update)
         if sql_updateNumMissingDays:
@@ -296,30 +290,84 @@ def _formatpxHistory(pxHistory, type=None):
 
 def getRecords(conn):
     """
-        Returns a snapshot of records metadata from the local db
+    Optimized version of getRecords that reduces database calls and improves performance
     """
-    records = pd.DataFrame()
     try:
-        tableNames = pd.read_sql('SELECT * FROM sqlite_master WHERE type=\'table\' AND NOT name LIKE \'00_%\'', conn)
-        # remove tablename like _corrupt
-        tableNames = tableNames[~tableNames['name'].str.contains('_corrupt')]            
-    except:
-        print('no tables!')
-        exit()
-    if not tableNames.empty:
-        records[['symbol', 'type/expiry', 'interval']] = tableNames['name'].str.split('_',expand=True)     
+        # Get all table names in a single query, excluding specific patterns
+        query = '''
+            SELECT name 
+            FROM sqlite_master 
+            WHERE type='table' 
+                AND NOT name LIKE '00_%'
+                AND NOT name LIKE '%_corrupt%'
+        '''
+        table_names = pd.read_sql(query, conn)
         
-        ## add tablename column
-        records['name'] = tableNames['name']
-        
-        ## add record metadata
-        records['lastUpdateDate'] = tableNames.apply(_getLastUpdateDate, axis=1, conn=conn)
-        records['daysSinceLastUpdate'] = tableNames.apply(_getDaysSinceLastUpdated, axis=1, conn=conn)
-        records['interval'] = records.apply(lambda x: _addspace(x['interval']), axis=1)
-        records['firstRecordDate'] = tableNames.apply(_getFirstRecordDate, axis=1, conn=conn)
-    
-    return records
+        if table_names.empty:
+            return pd.DataFrame()
 
+        # Split table names more efficiently using vectorized operations
+        records = pd.DataFrame(
+            table_names['name'].str.split('_', expand=True).values,
+            columns=['symbol', 'type/expiry', 'interval']
+        )
+        records['name'] = table_names['name']
+
+        # Convert list to tuple for caching and fetch metadata
+        metadata = _batch_fetch_metadata(conn, tuple(table_names['name'].tolist()))
+        
+        # Update records with metadata
+        records = pd.concat([records, metadata], axis=1)
+        
+        # Apply interval formatting
+        records['interval'] = records['interval'].str.replace('(\\d+)([a-zA-Z])', r'\1 \2')
+        
+        return records
+        
+    except Exception as e:
+        print(f'Error fetching records: {e}')
+        return pd.DataFrame()
+
+@lru_cache(maxsize=128)
+def _batch_fetch_metadata(conn, table_names: list) -> pd.DataFrame:
+    """
+    Fetch metadata for all tables in a single operation
+    Uses LRU cache to avoid repeated queries for the same tables
+    """
+    metadata_df = pd.DataFrame(index=table_names)
+    
+    # Create a single query for all tables
+    union_queries = []
+    for table in table_names:
+        union_queries.append(f"""
+            SELECT 
+                '{table}' as table_name,
+                MAX(date) as last_update,
+                MIN(date) as first_record
+            FROM "{table}"
+        """)
+    
+    query = " UNION ALL ".join(union_queries)
+    
+    try:
+        results = pd.read_sql(query, conn)
+        
+        metadata_df = pd.DataFrame({
+            'table_name': results['table_name'],
+            'lastUpdateDate': pd.to_datetime(results['last_update']),
+            'firstRecordDate': pd.to_datetime(results['first_record'])
+            # 'daysSinceLastUpdate': (current_date - results['last_update'].datetime.date).dt.days
+        })
+        metadata_df['daysSinceLastUpdate'] = results['last_update'].apply(
+            lambda x: len(pd.bdate_range(x, datetime.datetime.now())) - 1
+        )
+
+        return metadata_df
+        
+    except Exception as e:
+        print(f'Error fetching metadata: {e}')
+        return pd.DataFrame()
+    
 def saveHistoryToDB(history, conn, earliestTimestamp='', type=''):
     """
     Save history to a sqlite3 database
@@ -345,7 +393,6 @@ def saveHistoryToDB(history, conn, earliestTimestamp='', type=''):
         else: 
             type='stock'
         tableName = history['symbol'][0]+'_'+type+'_'+history['interval'][0]
-    
     print('%s: Saving %s to db, Range: %s - %s...'%(datetime.datetime.now().strftime("%H:%M:%S"), tableName, history['date'].min(), history['date'].max()))
     history.to_sql(f"{tableName}", conn, index=False, if_exists='append')
     _removeDuplicates(tableName, conn)

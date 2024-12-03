@@ -66,7 +66,7 @@ def _getLastUpdateDate(row, conn):
 
     return maxtime
 
-def _get_last_update_dates(conn, table_names):
+def construct_record_metadata(conn, table_names):
     queries = [
         f"SELECT '{name}' as name, MAX(date) as last_update, MIN(date) as first_record_date FROM {name}"
         for name in table_names
@@ -95,7 +95,6 @@ def _get_last_update_dates(conn, table_names):
     )
     
     return dict(zip(last_and_first_updates['name'], last_and_first_updates['first_record_date'])), dict(zip(last_and_first_updates['name'], last_and_first_updates['last_update'])), dict(zip(last_and_first_updates['name'], last_and_first_updates['numDaysSinceLastUpdate']))
-
 
 def _getFirstRecordDate(row, conn):
     mintime = pd.read_sql('SELECT MIN(date) FROM '+ row['name'], conn)
@@ -344,7 +343,7 @@ def getRecords(conn):
         
         print(' %s: Fetching record metadata...'%(datetime.datetime.now().strftime("%H:%M:%S")))
         ## add record metadata
-        first_record_dates, last_update_dates,num_days_since_last_update = _get_last_update_dates(conn, tableNames['name'])
+        first_record_dates, last_update_dates,num_days_since_last_update = construct_record_metadata(conn, tableNames['name'])
         
         records['firstRecordDate'] = records['name'].map(first_record_dates)
         records['lastUpdateDate'] = records['name'].map(last_update_dates)
