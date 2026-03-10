@@ -48,8 +48,11 @@ def _get_expiry_date_for_month(symbol, date):
         expiry = third_friday_next_month - thirty_days
         if _check_if_date_is_holiday(expiry):
             expiry = expiry - one_day
+    else: 
+        print(f'ERROR: Expiry calendar not implemented for {symbol}', traceback.format_exc())
+        exit() 
 
-        return expiry
+    return expiry
 
 def _adjust_expiry_date_for_roll_days(expiry_table):
     """
@@ -71,7 +74,6 @@ def _adjust_expiry_date_for_roll_days(expiry_table):
         # first check where contract is expired vs. current date 
         expiry_table[month_columns[i]] = expiry_table.apply(lambda x: x[month_columns[i+1]] if x['date'] > x[month_columns[i]] else x[month_columns[i]], axis=1)
         # then roll the following months on the current date 
-        # for i in range(2, len(month_columns)-1):
         expiry_table[month_columns[i]] = expiry_table.apply(lambda x: x[month_columns[i+1]] if x[month_columns[i]] == x[month_columns[i-1]] else x[month_columns[i]], axis=1)
     
     return expiry_table
@@ -231,7 +233,6 @@ def get_term_structure_v2(symbol, interval, expiry_table):
     term_structure.plot.line()
     plt.show()
     exit()
-
 
 def saveTermStructure(termStructure):
     """

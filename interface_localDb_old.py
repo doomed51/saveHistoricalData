@@ -71,6 +71,8 @@ def construct_record_metadata(conn, table_names):
         f"SELECT '{name}' as name, MAX(date) as last_update, MIN(date) as first_record_date FROM {name}"
         for name in table_names
     ]
+    # just select the first half of queries 
+    # queries = queries[:1]
     query = " UNION ALL ".join(queries)
     
     last_and_first_updates = pd.read_sql(f"""
@@ -78,23 +80,30 @@ def construct_record_metadata(conn, table_names):
     FROM ({query}) 
     GROUP BY name
     """, conn)
+
+    # print(last_and_first_updates)
+    # exit() 
     
     # set format for first record date
     last_and_first_updates['first_record_date'] = last_and_first_updates['first_record_date'].apply(
         lambda x: datetime.datetime.strptime(x[:19], '%Y-%m-%d %H:%M:%S') if len(x) > 10 else datetime.datetime.strptime(x, '%Y-%m-%d')
     )
 
-    # set format for last update date 
+    # # set format for last update date 
     last_and_first_updates['last_update'] = last_and_first_updates['last_update'].apply(
         lambda x: datetime.datetime.strptime(x[:19], '%Y-%m-%d %H:%M:%S') if len(x) > 10 else datetime.datetime.strptime(x, '%Y-%m-%d')
     )
+    # last_and_first_updates['last_update'] = pd.to_datetime(
+    #     last_and_first_updates['last_update'], errors='coerce'
+    # )
 
     # number of business days since last update
     last_and_first_updates['numDaysSinceLastUpdate'] = last_and_first_updates['last_update'].apply(
         lambda x: len(pd.bdate_range(x, datetime.datetime.now())) - 1
     )
-    
+
     return dict(zip(last_and_first_updates['name'], last_and_first_updates['first_record_date'])), dict(zip(last_and_first_updates['name'], last_and_first_updates['last_update'])), dict(zip(last_and_first_updates['name'], last_and_first_updates['numDaysSinceLastUpdate']))
+    # return first_map, last_map, num_map
 
 def _getFirstRecordDate(row, conn):
     mintime = pd.read_sql('SELECT MIN(date) FROM '+ row['name'], conn)
@@ -131,10 +140,6 @@ def _constructTableName(symbol, interval, lastTradeDate=''):
         tableName = symbol+'_'+type_+'_'+interval
     elif lastTradeDate:
         tableName = symbol+'_'+str(lastTradeDate)+'_'+interval
-
-
-    
-
     return tableName
 
 """

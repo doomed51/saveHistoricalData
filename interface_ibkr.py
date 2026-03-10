@@ -10,6 +10,7 @@ import sqlite3
 import sys
 import time
 import config
+import re 
 
 #global list of index symbols
 _index = config._index
@@ -22,6 +23,9 @@ exchange_mapping = config.exchange_mapping
 
 ##
 # IBKR API reference: https://interactivebrokers.github.io/tws-api/historical_bars.html
+## add a space between num and alphabet
+def _addspace(myStr): 
+    return re.sub("[A-Za-z]+", lambda elm: " "+elm[0],myStr )
 
 """
 Setup connection to ibkr
@@ -105,6 +109,9 @@ def _getHistoricalBars(ibkrObj, symbol, currency, endDate, lookback, interval, w
     # make sure endDate is tzaware
     if endDate:
         endDate = endDate.tz_localize('US/Eastern')
+
+    print('%s: Looking up history for %s, start: %s, end: %s, lookback: %s, interval: %s' % (
+        datetime.datetime.now().strftime('%H:%M:%S'), symbol, endDate - pd.to_timedelta(lookback), endDate, lookback, interval))
     
     # request history from ibkr 
     contractHistory = ibkrObj.reqHistoricalData(
@@ -148,7 +155,9 @@ def _getHistoricalBars_futures(ibkrObj, symbol, exchange, lastTradeDate, currenc
     if endDate:
         endDate = pd.to_datetime(endDate)
         endDate = endDate.tz_localize('US/Eastern')
-    
+    # check if interval has a space in it 
+    if ' ' not in interval:
+        interval = _addspace(interval)
     # handle expired contracts 
     if (lastTradeDate < datetime.datetime.now().strftime('%Y%m%d')) & (pd.to_datetime(endDate) > pd.to_datetime(lastTradeDate).tz_localize('US/Eastern')):
         print('%s: [yellow]Requesting invalid historical data for expired contract, resetting request end date...[/yellow]'%(datetime.datetime.now().strftime('%H:%M:%S')))

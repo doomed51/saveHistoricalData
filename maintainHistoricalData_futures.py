@@ -120,13 +120,13 @@ def _updateSingleRecord(ib, symbol, expiry, interval, lookback, endDate=''):
     
     # Get futures history from ibkr
     # Split into multiple calls for shorter intervals so we can get more data in 1 go   
-    if (interval in ['1 min', '5 mins']) and int(lookback.strip(' D')) > 12:
+    if (interval in ['1 min', '5 mins', '1min', '5mins']) and int(lookback.strip(' D')) > 3:
         # calculate number of calls needed
-        numCalls = math.ceil(int(lookback.strip(' D'))/12)
+        numCalls = math.ceil(int(lookback.strip(' D'))/3)
         record=pd.DataFrame()
         # loop for numCalls appending records and reducing endDate by lookback each time
         for i in range(0, numCalls):
-            bars = ibkr.getBars_futures(ib, symbol=symbol, lastTradeDate=expiry, interval=interval, endDate=endDate, lookback='12 D', exchange=exchange)
+            bars = ibkr.getBars_futures(ib, symbol=symbol, lastTradeDate=expiry, interval=interval, endDate=endDate, lookback='3 D', exchange=exchange)
             if (bars is None) or (bars.empty):
                 break
             else:
@@ -277,7 +277,6 @@ def updateRecords(ib_):
     missingContracts = pd.DataFrame()
     for symbol in watchlist['symbol']:
         missingContracts = missingContracts._append(_getMissingContracts(ib_, symbol))
-    # missingContracts = missingContracts.loc[missingContracts['interval'] == '1 day']
 
     print('%s: Total missing contracts: %s'%(datetime.now().strftime('HH:MM:SS'),str(len(missingContracts))))
     missingContracts['realExpirationDate'] = missingContracts['contract'].apply(lambda x: x.lastTradeDateOrContractMonth)
@@ -286,36 +285,31 @@ def updateRecords(ib_):
     missingContracts['lookback'] = missingContracts.apply(
         lambda row: _setLookback(row['interval']), axis=1)
 
-    # select just where interval = 1 day
-
     # add missing contracts to our db
     if not missingContracts.empty:
         print('[green]----------------------------------------------[/green]')
         print('[yellow]---------- Adding missing contracts ---------[/yellow]')
-        print('[green]----------------------------------------------[/green]\n')
+        print('[green]----------------------------------------------[/green]')
     for missingContract in missingContracts.iterrows():
         print('Adding contract %s %s %s'%(missingContract[1]['contract'].symbol, missingContract[1]['realExpirationDate'], missingContract[1]['interval']))
         _updateSingleRecord(ib_, missingContract[1]['contract'].symbol, missingContract[1]['realExpirationDate'], missingContract[1]['interval'], missingContract[1]['lookback'])
         # sleep for defaulttime
         print('%s: sleeping for %ss...\n'%(datetime.now().strftime('%H:%M:%S'), _defaultSleepTime/30))
         time.sleep(_defaultSleepTime/30)
-
     print('[green]----------------------------------------------[/green]')
     print('[green]----- Completed adding missing contracts -----[/green]')
     print('[green]----------------------------------------------[/green]\n')
-    # update records in our db that have not been updated in the last 24 hours 
+
+    # update records in our db that have not been updated in in over 24 hours 
     if not latestRecords.loc[latestRecords['daysSinceLastUpdate'] > 1].empty:
         print('[green]----------------------------------------------[/green]')
         print('[yellow]--------- Updating outdated records ----------[/yellow]')
-        print('[green]----------------------------------------------[/green]\n')
-
-        # print recodrs where type/expiry is before current date
+        print('[green]----------------------------------------------[/green]')
         i=1
         for row in (latestRecords.loc[latestRecords['daysSinceLastUpdate'] >= 1]).iterrows():
             print('%s: (%s/%s) Updating contract %s %s %s'%(datetime.now().strftime('%H:%M:%S'), i,latestRecords.loc[latestRecords['daysSinceLastUpdate']>=1]['symbol'].count(), row[1]['symbol'], row[1]['type/expiry'], row[1]['interval']) )
             _updateSingleRecord(ib_, row[1]['symbol'], row[1]['type/expiry'], row[1]['interval'], str(row[1]['daysSinceLastUpdate']+1)+' D')
             i+=1
-    
     print('[green]----------------------------------------------[/green]')
     print('[green]---- Completed updating outdated records ----[/green]')
     print('[green]----------------------------------------------[/green]\n')
@@ -479,6 +473,12 @@ def update_gaps_in_pxhistory(conn, ib, ibkr_lookback_period = '5 D'):
         update_metadata(pxhistory_metadata, tablename, ibkr_pxhistory['date'].min().date())
 
     print('%s: [green]DONE! Completed updating gaps in pxhistory_metadata, cleaning up metadata[/green]\n'%(datetime.now().strftime('%H:%M:%S')))
+    # make sure updatde_date and date_og_last_gap_date_polled are datetime 
+    pxhistory_metadata['update_date'] = pd.to_datetime(pxhistory_metadata['update_date'])
+    pxhistory_metadata['date_of_last_gap_date_polled'] = pd.to_datetime(pxhistory_metadata['date_of_last_gap_date_polled'])
+
+    print(pxhistory_metadata)
+    print(pxhistory_metadata.dtypes)
     db.save_table_to_db(conn = conn, tablename=config.table_name_futures_pxhistory_metadata, metadata_df = pxhistory_metadata)
     db.remove_duplicates_from_pxhistory_gaps_metadata(conn, config.table_name_futures_pxhistory_metadata)
 
@@ -578,7 +578,7 @@ def _updatePreHistory(lookupTable: pd.DataFrame, ib: 'IBKRConnection'):
             inputs: 
                 lookupTable: pd.DataFrame - DataFrame of records that need to be updated. Expected columns: ['symbol', 'lastTradeDate', 'interval', 'firstRecordDate', 'numMissingBusinessDays', 'name']
                 ib: IBKRConnection - IBKR connection object 
-            algo:
+            pseudo:
                 1. set interval
                 2. set lookback to 60
                 3. set end date
@@ -607,6 +607,7 @@ def _updatePreHistory(lookupTable: pd.DataFrame, ib: 'IBKRConnection'):
     lookupTable.sort_values(by=['interval'], inplace=True)
     lookupTable.reset_index(drop=True, inplace=True)
     i=0
+
     for index, record in lookupTable.iterrows():  
         lookback = 100
         i+=1
@@ -635,7 +636,6 @@ def _updatePreHistory(lookupTable: pd.DataFrame, ib: 'IBKRConnection'):
             with db.sqlite_connection(dbName_futures) as conn:
                 earliestAvailableTimestamp = db._getFirstRecordDate(record, conn)
                 db._updateLookup_symbolRecords(conn, record['name'], earliestTimestamp=earliestAvailableTimestamp, numMissingDays=0, type='future')
-            print('\n')
             continue
         else: 
             if record['interval'] in ['1 min', '5 mins']: # Make multiple calls for ltf data
@@ -656,7 +656,6 @@ def _updatePreHistory(lookupTable: pd.DataFrame, ib: 'IBKRConnection'):
             with db.sqlite_connection(dbName_futures) as conn:
                 earliestAvailableTimestamp = db._getFirstRecordDate(record, conn)
                 db._updateLookup_symbolRecords(conn, record['name'], earliestTimestamp=earliestAvailableTimestamp, numMissingDays=0, type='future')
-            print('\n')
             continue
         
         # update history to the db
@@ -665,13 +664,12 @@ def _updatePreHistory(lookupTable: pd.DataFrame, ib: 'IBKRConnection'):
         history['lastTradeDate'] = record['lastTradeDate']        
         with db.sqlite_connection(dbName_futures) as conn:
             db.saveHistoryToDB(history, conn, earliestAvailableTimestamp)
-        print('\n')
         
-        if index != len(lookupTable)-1:
+        if i != len(lookupTable)-1:
             print('%s: [yellow]Sleeping for %ss...[/yellow]\n'%(datetime.now().strftime('%H:%M:%S'), str(_defaultSleepTime/30)))
             time.sleep(_defaultSleepTime/30)
 
-        # update metadata 
+    # update metadata 
     with db.sqlite_connection(dbName_futures) as conn:
         update_gaps_in_pxhistory_metadata(conn)
     
@@ -795,4 +793,4 @@ if __name__ == '__main__':
         # Refresh ib connection 
         if i%3 == 0:
             ib = ibkr.refreshConnection(ib)
-    pass
+    
