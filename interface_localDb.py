@@ -15,6 +15,8 @@ import sys
 import config
 import datetime 
 import re
+import pandas as pd
+import numpy as np
 
 import pandas as pd
 sys.path.append('..')
@@ -137,13 +139,20 @@ def _getFirstRecordDate(row, conn):
 
     return mintime
 
-def _updateLookup_symbolRecords(conn, tablename, earliestTimestamp, numMissingDays = 5, type =''):
-    ## get the earliest record date as per the db 
+def _update_symbol_metadata(conn, tableName, type='future', earliestTimestamp=None, numMissingDays=None):
+    # get the earliest record date as per the db 
     if type == 'future':
-        sql_minDate_symbolHistory = 'SELECT MIN(date), symbol, interval, lastTradeDate FROM %s'%(tablename)
+        sql_minDate_symbolHistory = 'SELECT MIN(date), symbol, interval, lastTradeDate FROM %s'%(tableName)
     else:
-        sql_minDate_symbolHistory = 'SELECT MIN(date), symbol, interval FROM %s'%(tablename)
-    minDate_symbolHistory = pd.read_sql(sql_minDate_symbolHistory, conn)
+        sql_minDate_symbolHistory = 'SELECT MIN(date), symbol, interval FROM %s'%(tableName)
+    try:
+        minDate_symbolHistory = pd.read_sql(sql_minDate_symbolHistory, conn)
+    # except if no such table exists
+    except Exception as e:
+        # table doesn't exist which means there is no history and we can set the earliest record date to the current date
+        print(f"{datetime.datetime.now().strftime('%H:%M:%S')}: No existing records found for {tableName}. Setting earliest record date to current date.")
+        minDate_symbolHistory = pd.DataFrame(columns=['MIN(date)', 'symbol', 'interval', 'lastTradeDate'])
+        minDate_symbolHistory.loc[0] = [datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'), tableName.split('_')[0], tableName.split('_')[2], tableName.split('_')[1] if type == 'future' else '']
     
     # column formatting
     minDate_symbolHistory['MIN(date)'] = pd.to_datetime(minDate_symbolHistory['MIN(date)'], format='ISO8601')
@@ -151,20 +160,20 @@ def _updateLookup_symbolRecords(conn, tablename, earliestTimestamp, numMissingDa
     minDate_symbolHistory['MIN(date)'] = minDate_symbolHistory['MIN(date)'].dt.tz_localize(None)
     minDate_symbolHistory['interval'] = minDate_symbolHistory['interval'].apply(lambda x: _removeSpaces(x))
     
-    ## get the earliest record date as per the lookup table
+    # get the earliest record date as per the lookup table
     if type == 'future': ## add lastTradeDate to selection query 
         sql_minDate_recordsTable = 'SELECT firstRecordDate FROM \'%s\' WHERE symbol = \'%s\' and interval = \'%s\' and lastTradeDate = \'%s\''%(config.lookupTableName, minDate_symbolHistory['symbol'][0], minDate_symbolHistory['interval'][0], minDate_symbolHistory['lastTradeDate'][0])
     else:
         sql_minDate_recordsTable = 'SELECT firstRecordDate FROM \'%s\' WHERE symbol = \'%s\' and interval = \'%s\''%(config.lookupTableName, minDate_symbolHistory['symbol'][0], minDate_symbolHistory['interval'][0])
     minDate_recordsTable = pd.read_sql(sql_minDate_recordsTable, conn)
     
-    ## if no entry is found in the lookup table, add one  
+    # if no entry is found in the lookup table, add one  
     if minDate_recordsTable.empty:
         print(' Adding new record to lookup table...')
-        minDate_symbolHistory['name'] = tablename
+        minDate_symbolHistory['name'] = tableName
         ## rename columns to match db table columns 
         minDate_symbolHistory.rename(columns={'MIN(date)':'firstRecordDate'}, inplace=True)
-        if earliestTimestamp:
+        if earliestTimestamp is not None and not pd.isna(earliestTimestamp):
             ## set missing business days to the difference between the earliest available date in ibkr and the earliest date in the local db
             minDate_symbolHistory['numMissingBusinessDays'] = numMissingDays
             #minDate_symbolHistory = minDate_symbolHistory.iloc[:,[4,1,2,0,5,3]]
@@ -172,7 +181,7 @@ def _updateLookup_symbolRecords(conn, tablename, earliestTimestamp, numMissingDa
         ## save record to db
         minDate_symbolHistory.to_sql(f"{config.lookupTableName}", conn, index=False, if_exists='append')
     
-    ## otherwise update the existing record in the lookup table 
+    # otherwise update the existing record in the lookup table 
     else:
         # if this is an empty string '', then we will use the min date from the record table instead of the lookup table 
         if minDate_recordsTable['firstRecordDate'][0] == '':
@@ -182,7 +191,7 @@ def _updateLookup_symbolRecords(conn, tablename, earliestTimestamp, numMissingDa
         minDate_symbolHistory.rename(columns={'MIN(date)':'firstRecordDate'}, inplace=True)
 
         # calculate the number of missing business days between the earliest record date in ibkr, and the earliest record date as per the db
-        if earliestTimestamp:
+        if earliestTimestamp is not None and not pd.isna(earliestTimestamp):
             numMissingDays = len(pd.bdate_range(earliestTimestamp, minDate_symbolHistory.iloc[0]['firstRecordDate']))
 
         ## update lookuptable with the symbolhistory min date
@@ -197,7 +206,7 @@ def _updateLookup_symbolRecords(conn, tablename, earliestTimestamp, numMissingDa
         else:
             sql_update = 'UPDATE \'%s\' SET firstRecordDate = \'%s\' WHERE symbol = \'%s\' and interval = \'%s\''%(config.lookupTableName, minDate_symbolHistory['firstRecordDate'][0], minDate_symbolHistory['symbol'][0], minDate_symbolHistory['interval'][0])
 
-            if earliestTimestamp: 
+            if earliestTimestamp is not None and not pd.isna(earliestTimestamp):
                 sql_updateNumMissingDays = 'UPDATE \'%s\' SET numMissingBusinessDays = \'%s\' WHERE symbol = \'%s\' and interval = \'%s\''%(config.lookupTableName, numMissingDays, minDate_symbolHistory['symbol'][0], minDate_symbolHistory['interval'][0])
             
         cursor = conn.cursor()
@@ -205,6 +214,30 @@ def _updateLookup_symbolRecords(conn, tablename, earliestTimestamp, numMissingDa
         if sql_updateNumMissingDays:
             cursor.execute(sql_updateNumMissingDays)
         print('%s: [green]Done! [/green]'%(datetime.datetime.now().strftime("%H:%M:%S")))
+
+def insert_new_record_metadata(conn, tableName, type='future', earliestTimestamp=None, numMissingDays=None):
+    # since it is a new record we will simply insert the provided metadata into the lookup table without doing any comparisons
+    print('%s: Adding new record to lookup table...' % datetime.datetime.now().strftime("%H:%M:%S"))
+
+    # make sure earliestTimestamp is in ISO8601 format 
+    if earliestTimestamp is not None and not pd.isna(earliestTimestamp):
+        if isinstance(earliestTimestamp, str):
+            try:
+                earliestTimestamp = datetime.datetime.strptime(earliestTimestamp, '%Y-%m-%d %H:%M:%S')
+            except ValueError:
+                try:
+                    earliestTimestamp = datetime.datetime.strptime(earliestTimestamp, '%Y-%m-%d')
+                except ValueError:
+                    print(f"Error: earliestTimestamp '{earliestTimestamp}' is not in a recognized format. Please provide a datetime object or a string in ISO8601 format.")
+                    return
+        elif not isinstance(earliestTimestamp, datetime.datetime):
+            print(f"Error: earliestTimestamp must be a datetime object or a string in ISO8601 format. Provided type: {type(earliestTimestamp)}")
+            return
+    sql = 'INSERT INTO \'%s\' (name, symbol, interval, firstRecordDate, numMissingBusinessDays) VALUES (\'%s\', \'%s\', \'%s\', \'%s\', %s)' % (config.lookupTableName, tableName, tableName.split('_')[0], tableName.split('_')[2], earliestTimestamp, numMissingDays)
+    cursor = conn.cursor()
+    cursor.execute(sql)
+    print('%s: [green]Done! [/green]' % datetime.datetime.now().strftime("%H:%M:%S"))
+
 
 def _updateLookup_symbolRecords_ORIGINAL(conn, tablename, earliestTimestamp, numMissingDays = 5, type =''):
 
@@ -334,23 +367,33 @@ def _batch_fetch_metadata(conn, table_names: list) -> pd.DataFrame:
     Fetch metadata for all tables in a single operation
     Uses LRU cache to avoid repeated queries for the same tables
     """
-    metadata_df = pd.DataFrame(index=table_names)
-    
-    # Create a single query for all tables
-    union_queries = []
-    for table in table_names:
-        union_queries.append(f"""
-            SELECT 
-                '{table}' as table_name,
-                MAX(date) as last_update,
-                MIN(date) as first_record
-            FROM "{table}"
-        """)
-    
-    query = " UNION ALL ".join(union_queries)
-    
+    # SQLite limits the number of terms in a compound SELECT statement.
+    # Build UNION ALL queries in chunks so this keeps working as table count grows.
+    max_union_terms = 200
+
     try:
-        results = pd.read_sql(query, conn)
+        results_batches = []
+        for i in range(0, len(table_names), max_union_terms):
+            chunk = table_names[i:i + max_union_terms]
+            union_queries = []
+            for table in chunk:
+                table_label = table.replace("'", "''")
+                escaped_table = table.replace('"', '""')
+                union_queries.append(f"""
+                    SELECT 
+                        '{table_label}' as table_name,
+                        MAX(date) as last_update,
+                        MIN(date) as first_record
+                    FROM "{escaped_table}"
+                """)
+
+            chunk_query = " UNION ALL ".join(union_queries)
+            results_batches.append(pd.read_sql(chunk_query, conn))
+
+        if not results_batches:
+            return pd.DataFrame()
+
+        results = pd.concat(results_batches, ignore_index=True)
         
         metadata_df = pd.DataFrame({
             'table_name': results['table_name'],
@@ -396,7 +439,7 @@ def saveHistoryToDB(history, conn, earliestTimestamp='', type=''):
     print('%s: Saving %s to db, Range: %s - %s...'%(datetime.datetime.now().strftime("%H:%M:%S"), tableName, history['date'].min(), history['date'].max()))
     history.to_sql(f"{tableName}", conn, index=False, if_exists='append')
     _removeDuplicates(tableName, conn)
-    _updateLookup_symbolRecords(conn, tableName, earliestTimestamp=earliestTimestamp)
+    _update_symbol_metadata(conn, tableName, earliestTimestamp=earliestTimestamp)
 
 def save_table_to_db(conn, tablename, metadata_df, if_exists='append'):
     """
@@ -498,3 +541,17 @@ def getLookup_exchange(conn, symbol):
     exchange = pd.read_sql(sql, conn).values[0][0]
 
     return exchange
+
+def _normalize_timestamp_scalar(ts):
+    if ts is None:
+        return None
+    if isinstance(ts, pd.DatetimeIndex):
+        return None if ts.empty else ts.min().to_pydatetime()
+    if isinstance(ts, pd.Series):
+        ts = ts.dropna()
+        return None if ts.empty else pd.to_datetime(ts.iloc[0]).to_pydatetime()
+    if isinstance(ts, (list, tuple, np.ndarray)):
+        if len(ts) == 0:
+            return None
+        return pd.to_datetime(ts[0]).to_pydatetime()
+    return pd.to_datetime(ts).to_pydatetime()

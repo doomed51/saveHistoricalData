@@ -290,7 +290,7 @@ def getContract(ibkr, symbol, type='stock', currency='USD'):
         type = 'stock' | 'future' | 'index'
         currency = 'USD' | 'CAD'
 """
-def getContractDetails(ibkr, symbol, type = 'stock', currency='USD'):
+def getContractDetails(ibkr, symbol, type = 'stock', currency='USD', exchange=''):
     # set currency 
     if symbol in currency_mapping:
         currency = currency_mapping[symbol]
@@ -301,7 +301,9 @@ def getContractDetails(ibkr, symbol, type = 'stock', currency='USD'):
     # grab contract details from IBKR 
     try:
         if type == 'future':
-            contracts = ibkr.reqContractDetails(Future(symbol))
+            if not exchange:
+                exchange = exchange_mapping.get(symbol, '')
+            contracts = ibkr.reqContractDetails(Future(symbol=symbol, exchange=exchange, currency=currency, includeExpired=True))
         elif type == 'index':
             contracts = ibkr.reqContractDetails(Index(symbol, currency=currency))
         else: 

@@ -7,28 +7,28 @@ import calendar
 import traceback 
 
 import datetime as dt
-import holidays as hols 
-import matplotlib.pyplot as plt ######################## *** TEST CODE *** 
 import pandas as pd
 import interface_localDB as db 
 import checkDataIntegrity as cdi
 from rich import print
 from sys import argv
 from dateutil.relativedelta import relativedelta
+from pandas.tseries.offsets import BDay
 
 dbpath_termstructure = config.dbname_termstructure
 dbpath_futures = config.dbname_futures
 trackedIntervals = config.intervals
 
-def _check_if_date_is_holiday(date):
+def _check_if_date_is_holiday(date, exchange='NYSE'):
     """
         Check if a given date is a holiday for a given country and exchange
     """
-    holidays = hols.NYSE(years=date.year).keys()
+    holidays = cdi._get_holidays_for_exchange(exchange=exchange, years=date.year)
     return date in holidays
 
 def _get_expiry_date_for_month(symbol, date): 
     date = date.date()
+    symbol = symbol.upper()
     if symbol.upper() == 'VIX':
         ### https://www.cboe.com/tradable_products/vix/vix_futures/specifications/
         
@@ -48,13 +48,18 @@ def _get_expiry_date_for_month(symbol, date):
         expiry = third_friday_next_month - thirty_days
         if _check_if_date_is_holiday(expiry):
             expiry = expiry - one_day
-    else: 
-        print(f'ERROR: Expiry calendar not implemented for {symbol}', traceback.format_exc())
-        exit() 
+    else:
+        third_friday = dt.date(date.year, date.month, 15)
+        one_day = dt.timedelta(days=1)
+        while third_friday.weekday() != 4:
+            third_friday = third_friday + one_day
+        expiry = third_friday
+        while _check_if_date_is_holiday(expiry, exchange=config.exchange_mapping.get(symbol, 'NYSE')):
+            expiry = expiry - one_day
 
     return expiry
 
-def _adjust_expiry_date_for_roll_days(expiry_table):
+def _adjust_expiry_date_for_roll_days(expiry_table, roll_bdays=0):
     """
         Adjusts the expiry date for each contract in the expiry_table for roll days. 
         - If the current date is greater than the expiry date, the contract is rolled to the next month
@@ -70,11 +75,21 @@ def _adjust_expiry_date_for_roll_days(expiry_table):
         print('ERROR: No month columns found in expiry table.', traceback.format_exc())
         exit() 
     
+    roll_bdays = max(int(roll_bdays), 0)
     for i in range(len(month_columns)-1):
-        # first check where contract is expired vs. current date 
-        expiry_table[month_columns[i]] = expiry_table.apply(lambda x: x[month_columns[i+1]] if x['date'] > x[month_columns[i]] else x[month_columns[i]], axis=1)
-        # then roll the following months on the current date 
-        expiry_table[month_columns[i]] = expiry_table.apply(lambda x: x[month_columns[i+1]] if x[month_columns[i]] == x[month_columns[i-1]] else x[month_columns[i]], axis=1)
+        current_col = month_columns[i]
+        next_col = month_columns[i+1]
+        if roll_bdays > 0:
+            roll_dates = expiry_table[current_col] - BDay(roll_bdays)
+            expiry_table[current_col] = expiry_table.apply(
+                lambda x: x[next_col] if x['date'] >= roll_dates.loc[x.name] else x[current_col],
+                axis=1
+            )
+        else:
+            expiry_table[current_col] = expiry_table.apply(
+                lambda x: x[next_col] if x['date'] > x[current_col] else x[current_col],
+                axis=1
+            )
     
     return expiry_table
 
@@ -90,7 +105,8 @@ def _generate_futures_contract_expiry_table(symbol, start_date, end_date, num_mo
         expiry_table['month%s'%(i+1)] = expiry_table['date'].apply(lambda x: x + relativedelta(months=i))
         expiry_table['month%s'%(i+1)] = expiry_table['month%s'%(i+1)].apply(lambda x: _get_expiry_date_for_month(symbol, x))
 
-    return _adjust_expiry_date_for_roll_days(expiry_table)
+    roll_bdays = config.futures_symbol_metadata.get(symbol.upper(), {}).get('roll_bdays', 0)
+    return _adjust_expiry_date_for_roll_days(expiry_table, roll_bdays=roll_bdays)
 
 def _get_available_term_structure_data(symbol, interval, expiry_table):
     """
@@ -225,14 +241,7 @@ def get_term_structure_v2(symbol, interval, expiry_table):
         term_structure = term_structure._append(_term_structure)
         _term_structure = pd.DataFrame(columns=columns)
 
-    print(term_structure)
-    print(expiry_table)
-    
-    ####### Test plots to see how much missing data there is 
-    # plot each month as seperate lineplot on the same graph, replacing NaN values with 0
-    term_structure.plot.line()
-    plt.show()
-    exit()
+    return term_structure
 
 def saveTermStructure(termStructure):
     """
@@ -267,25 +276,28 @@ def saveTermStructure(termStructure):
          db._removeDuplicates(conn, tablename)
     print('%s: [green]Updated term structure data for %s[/green]'%(pd.Timestamp.today(), tablename))
 
-def update_term_structure_data(symbol):
+def update_term_structure_data(symbol=None):
     """ 
         Updates term structure data for all symbols being tracked in the db 
     """
-    # get list of all symbols being tracked 
-    # with db.sqlite_connection(dbpath_futures) as conn_futures:
-    #     lookupTable = db.getLookup_symbolRecords(conn_futures)
-    #     symbols = lookupTable['symbol'].unique()
-    symbols = ['VIX']
+    if symbol:
+        symbols = [symbol.upper()]
+    else:
+        symbols = list(config.futures_symbol_metadata.keys())
 
-    expiry_table = _generate_futures_contract_expiry_table(symbol, pd.Timestamp.today() - pd.DateOffset(months=24), pd.Timestamp.today(), 9)
-
-    # Update term structure data for each symbol and tracked interval
-    for symbol in symbols:
+    for symbol_i in symbols:
+        lookahead_months = config.futures_symbol_metadata.get(symbol_i, {}).get('lookahead_months', 8)
         for interval in trackedIntervals:
-            x = get_term_structure_v2(symbol, interval=interval.replace(' ', ''), expiry_table=expiry_table)
-            exit()
-            missing = cdi._check_for_missing_dates_in_timeseries(x)
-            saveTermStructure(x)
+            interval_clean = interval.replace(' ', '')
+            try:
+                x = getTermStructure(symbol_i, interval=interval_clean, lookahead_months=lookahead_months)
+                if x.empty:
+                    continue
+                exchange = config.exchange_mapping.get(symbol_i, 'NYSE')
+                cdi._check_for_missing_dates_in_timeseries(x, exchange=exchange)
+                saveTermStructure(x)
+            except Exception as e:
+                print(f'[yellow]Skipping {symbol_i}-{interval_clean}: {e}[/yellow]')
 
 def getVixTermstructureFromCSV(path='vix.csv'): 
     """ 
@@ -315,5 +327,5 @@ if __name__ == '__main__':
             _generate_futures_contract_expiry_table('VIX', pd.Timestamp.today() - pd.DateOffset(months=24), pd.Timestamp.today(), 9)
     
     else:
-        update_term_structure_data('VIX')
+        update_term_structure_data()
 

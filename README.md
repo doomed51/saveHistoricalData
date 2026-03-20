@@ -14,6 +14,12 @@ Basic structure:
  - ibkr interface: manages operations on the ibkr api 
  - getHistoricalData: manages equities data
  - maintainHistoricalData_futures: manages futures data
+ - maintainTermStructure: builds term structure tables from locally stored futures contracts
+
+Futures configuration notes:
+- `config.exchange_mapping` is the source of truth for futures exchange resolution.
+- `config.futures_symbol_metadata` stores per-symbol futures settings used by downstream jobs.
+- Supported futures symbols include: `CL`, `ES`, `ZB`, `ZN`, `GC`, `SI`, `NG`, `VIX`.
 
 Usage: 
 - populate tickerlist.csv with the symbols you want to track
