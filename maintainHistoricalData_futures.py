@@ -369,6 +369,45 @@ def check_gaps_in_pxhistory_metadata_up_to_date(conn, threshold_days=10):
             print('%s: [yellow]pxhistory_metadata is outdated![/yellow]'%(datetime.now().strftime('%H:%M:%S')))
             return False
 
+def _quote_sqlite_identifier(identifier: str) -> str:
+    """
+        Safely quote SQLite identifiers such as table names.
+    """
+    return '"%s"' % str(identifier).replace('"', '""')
+
+def _build_expected_trading_days(start_date, end_date, last_trade_date, exchange, country='US'):
+    """
+        Builds expected trading days list between two dates excluding weekends and holidays.
+    """
+    if (start_date is None) or (end_date is None):
+        return []
+    start_date = pd.to_datetime(start_date).date()
+    end_date = pd.to_datetime(end_date).date()
+
+    # if end_date is in the future, set it to today to avoid generating expected dates in the future
+    if end_date > datetime.today().date():
+        end_date = datetime.today().date()
+
+    if end_date < start_date:
+        return []
+
+    all_dates = pd.date_range(start=start_date, end=end_date)
+    years = list(range(start_date.year, end_date.year + 1))
+    holidays = cdi._get_holidays_for_exchange(exchange=exchange, years=years, country=country)
+    holidays = set(holidays)
+
+    return [
+        d.strftime('%Y-%m-%d') for d in all_dates
+        if d.weekday() < 5 and d.date() not in holidays and d.date() < last_trade_date
+    ]
+
+def _is_intraday_interval(interval_value):
+    """
+        Returns True when interval is intraday (minute/hour granularity).
+    """
+    interval_str = str(interval_value).lower().replace(' ', '')
+    return ('min' in interval_str) or ('hour' in interval_str)
+
 def generate_pxhistory_metadata_master_table(conn):
     """
         Generates a master table of tablename, # of unique gap counts, and datetime recorded
@@ -379,47 +418,120 @@ def generate_pxhistory_metadata_master_table(conn):
     print('%s: [yellow]Generating pxhistory_metadata master table...[/yellow]'%(datetime.now().strftime('%H:%M:%S')))
 
     futures_pxhistory_metadata_table = db.getTable(conn, config.table_name_futures_pxhistory_metadata)
-    futures_pxhistory_metadata_current_db_snapshot = pd.DataFrame(columns=['tablename', 'num_unique_gaps', 'update_date','date_of_last_gap_date_polled'])
-    for idx, row in lookupTable.iterrows():
-        print('%s: [yellow]Scanning gaps for %s...[/yellow]'%(datetime.now().strftime('%H:%M:%S'), row['name']))
-        tablename = row['name']
+    metadata_rows = []
+    now_ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+    conn.execute('DROP TABLE IF EXISTS temp_expected_trading_days')
+    conn.execute('CREATE TEMP TABLE temp_expected_trading_days (trade_date TEXT PRIMARY KEY)')
+
+    for row in lookupTable.itertuples(index=False):
+        print('%s: [yellow]Scanning gaps for %s...[/yellow]'%(datetime.now().strftime('%H:%M:%S'), row.name))
+        tablename = row.name
 
         # if lastTradeDate is empty, infer it from the name given we follow convention of symbol_expiry_interval
-        if pd.isna(row['lastTradeDate']):
-            try: 
-                lastTradeDate = row['name'].split('_')[1]
-                lastTradeDate = datetime.strptime(lastTradeDate, '%Y%m%d').strftime('%Y-%m-%d')
-                row['lastTradeDate'] = lastTradeDate
-            except Exception as e:
+        inferred_last_trade_date = row.lastTradeDate
+        if pd.isna(inferred_last_trade_date):
+            try:
+                inferred_last_trade_date = datetime.strptime(row.name.split('_')[1], '%Y%m%d').strftime('%Y-%m-%d')
+            except Exception:
                 print('%s: [red]Error inferring lastTradeDate for %s, skipping...[/red]'%(datetime.now().strftime('%H:%M:%S'), tablename))
                 continue
-        # else:
-        #     lastTradeDate = row['lastTradeDate']
 
+        quoted_tablename = _quote_sqlite_identifier(tablename)
         try:
-            pxHistory = db.getTable(conn, tablename)
-        except Exception as e:
+            bounds = conn.execute(
+                'SELECT MIN(DATE(date)) AS min_date, MAX(DATE(date)) AS max_date FROM %s' % quoted_tablename
+            ).fetchone()
+        except Exception:
             print('%s: [red]Error fetching data for %s, skipping...[/red]'%(datetime.now().strftime('%H:%M:%S'), tablename))
             continue
-        number_of_datetime_in_each_date = calculate_datetime_counts(pxHistory)
-        # if contract is expired, make sure the expiry date is in pxhistory, if not add a dummy row with the expiry date
-        pxHistory.reset_index(inplace=True)
-        if pd.to_datetime(row['lastTradeDate']) not in pxHistory.index.to_list():
-            pxHistory = pd.concat([pxHistory, pd.DataFrame([{'date': (pd.to_datetime(row['lastTradeDate'])), 'date_only': (pd.to_datetime(row['lastTradeDate']).date()), 'open': 0, 'high': 0, 'low': 0, 'close': 0, 'volume': 0, 'symbol':row['symbol'], 'interval':row['interval'], 'lastTradeDate':row['lastTradeDate']}])], ignore_index=True)
-        missing_dates = cdi._check_for_missing_dates_in_timeseries(pxHistory, date_col_name='index')
-        
-        # drop the dummy row if it exists
-        if pd.to_datetime(row['lastTradeDate']) not in pxHistory.index.to_list():
-            pxHistory.drop(pxHistory.index[-1], inplace=True)
 
-        date_of_last_gap = max(pd.to_datetime(missing_dates.max()), pd.to_datetime(number_of_datetime_in_each_date['date_only'].max()))
-       
-        number_of_datetime_in_each_date = number_of_datetime_in_each_date.groupby('count').count().reset_index().rename(columns={'date_only':'frequency'})
-        futures_pxhistory_metadata_current_db_snapshot = pd.concat([futures_pxhistory_metadata_current_db_snapshot, pd.DataFrame({'tablename':tablename, 'num_unique_gaps':number_of_datetime_in_each_date['frequency'].count(), 'update_date':datetime.now(), 'date_of_last_gap_date_polled':date_of_last_gap}, index=[0])], ignore_index=True)
+        if (bounds is None) or (bounds[0] is None):
+            continue
+
+        min_date = pd.to_datetime(bounds[0]).date()
+        max_date = pd.to_datetime(bounds[1]).date() if bounds[1] is not None else min_date
+        last_trade_date = pd.to_datetime(inferred_last_trade_date).date()
+        end_date = max(max_date, last_trade_date)
+
+        try:
+            exchange = _get_exchange_for_symbol(row.symbol)
+        except Exception:
+            print('%s: [red]Error resolving exchange for %s, skipping...[/red]'%(datetime.now().strftime('%H:%M:%S'), tablename))
+            continue
+
+        expected_days = _build_expected_trading_days(min_date, end_date, last_trade_date, exchange=exchange)
+        conn.execute('DELETE FROM temp_expected_trading_days')
+        if expected_days:
+            conn.executemany(
+                'INSERT INTO temp_expected_trading_days(trade_date) VALUES (?)',
+                [(d,) for d in expected_days]
+            )
+
+        num_unique_gaps_row = conn.execute(
+            'SELECT COUNT(DISTINCT daily_count) FROM '
+            '(SELECT COUNT(*) AS daily_count FROM %s GROUP BY DATE(date))' % quoted_tablename
+        ).fetchone()
+        num_unique_gaps = int(num_unique_gaps_row[0]) if num_unique_gaps_row and num_unique_gaps_row[0] is not None else 0
+
+        last_missing_row = conn.execute(
+            'SELECT MAX(e.trade_date) '
+            'FROM temp_expected_trading_days e '
+            'LEFT JOIN (SELECT DISTINCT DATE(date) AS trade_date FROM %s) a '
+            'ON a.trade_date = e.trade_date '
+            'WHERE a.trade_date IS NULL' % quoted_tablename
+        ).fetchone()
+        last_missing_date = pd.to_datetime(last_missing_row[0]) if last_missing_row and last_missing_row[0] else pd.NaT
+
+        # For intraday tables, treat partial sessions as gaps by flagging days below the observed full-session count.
+        last_incomplete_intraday_date = pd.NaT
+        if _is_intraday_interval(row.interval):
+            expected_intraday_count_row = conn.execute(
+                'SELECT MAX(daily_count) FROM '
+                '(SELECT COUNT(*) AS daily_count FROM %s GROUP BY DATE(date))' % quoted_tablename
+            ).fetchone()
+            expected_intraday_count = int(expected_intraday_count_row[0]) if expected_intraday_count_row and expected_intraday_count_row[0] is not None else 0
+            if expected_intraday_count > 0:
+                last_incomplete_intraday_row = conn.execute(
+                    'SELECT MAX(trade_date) FROM '
+                    '(SELECT DATE(date) AS trade_date, COUNT(*) AS daily_count FROM %s GROUP BY DATE(date)) '
+                    'WHERE daily_count < ? '
+                    'AND CAST(STRFTIME("%%w", trade_date) AS INTEGER) NOT IN (0, 6)' % quoted_tablename,
+                    (expected_intraday_count,)
+                ).fetchone()
+                last_incomplete_intraday_date = pd.to_datetime(last_incomplete_intraday_row[0]) if last_incomplete_intraday_row and last_incomplete_intraday_row[0] else pd.NaT
+
+        if pd.isna(last_missing_date):
+            last_gap_date = last_incomplete_intraday_date
+        elif pd.isna(last_incomplete_intraday_date):
+            last_gap_date = last_missing_date
+        else:
+            last_gap_date = max(last_missing_date, last_incomplete_intraday_date)
+
+        latest_observed_date = pd.to_datetime(max_date)
+
+        if pd.isna(last_gap_date):
+            date_of_last_gap = latest_observed_date
+        else:
+            date_of_last_gap = max(last_gap_date, latest_observed_date)
+
+        metadata_rows.append({
+            'tablename': tablename,
+            'num_unique_gaps': num_unique_gaps,
+            'update_date': now_ts,
+            'date_of_last_gap_date_polled': date_of_last_gap,
+        })
+
+    futures_pxhistory_metadata_current_db_snapshot = pd.DataFrame(
+        metadata_rows,
+        columns=['tablename', 'num_unique_gaps', 'update_date', 'date_of_last_gap_date_polled']
+    )
+    conn.execute('DROP TABLE IF EXISTS temp_expected_trading_days')
     
     # create master dataframe of tablename, gap, datetime recorded 
-    futures_pxhistory_metadata_current_db_snapshot['update_date'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    futures_pxhistory_metadata_current_db_snapshot['date_of_last_gap_date_polled'] = pd.to_datetime(futures_pxhistory_metadata_current_db_snapshot['date_of_last_gap_date_polled']).dt.date
+    futures_pxhistory_metadata_current_db_snapshot['update_date'] = now_ts
+    if not futures_pxhistory_metadata_current_db_snapshot.empty:
+        futures_pxhistory_metadata_current_db_snapshot['date_of_last_gap_date_polled'] = pd.to_datetime(futures_pxhistory_metadata_current_db_snapshot['date_of_last_gap_date_polled']).dt.date
 
     # merge db snapshot with metadata table    
     if futures_pxhistory_metadata_table.empty: # init metadata table with db snapshot 
@@ -443,6 +555,80 @@ def update_gaps_in_pxhistory_metadata(conn):
         record_unique_datetime_count = generate_pxhistory_metadata_master_table(conn)
         db.save_table_to_db(conn = conn, tablename=config.table_name_futures_pxhistory_metadata, metadata_df = record_unique_datetime_count, if_exists='replace')
 
+def find_next_gap_date_in_table(conn, tablename, interval, exchange, start_after_date=None, country='US'):
+    """
+        Returns the next gap date (pd.Timestamp) in a table after start_after_date.
+        Gap definitions:
+        1) Missing expected trading day (weekdays minus exchange holidays)
+        2) Incomplete intraday weekday session (daily bar count below expected full-session count)
+           - weekend sessions (including Sunday open) are excluded from incomplete-session checks
+
+        Returns pd.NaT when no gap is found.
+    """
+    quoted_tablename = _quote_sqlite_identifier(tablename)
+
+    try:
+        bounds = conn.execute(
+            'SELECT MIN(DATE(date)) AS min_date, MAX(DATE(date)) AS max_date FROM %s' % quoted_tablename
+        ).fetchone()
+    except Exception:
+        return pd.NaT
+
+    if (bounds is None) or (bounds[0] is None):
+        return pd.NaT
+
+    min_date = pd.to_datetime(bounds[0]).date()
+    max_date = pd.to_datetime(bounds[1]).date()
+
+    if start_after_date is None:
+        start_after_date = min_date - pd.to_timedelta(1, unit='D')
+    else:
+        start_after_date = pd.to_datetime(start_after_date).date()
+
+    last_trade_date = tablename.split('_')[1] if len(tablename.split('_')) > 2 else max_date.strftime('%Y-%m-%d')
+    last_trade_date = pd.to_datetime(last_trade_date).date()
+
+    expected_days = _build_expected_trading_days(min_date, max_date, last_trade_date, exchange=exchange, country=country)
+    if not expected_days:
+        return pd.NaT
+
+    daily_counts = pd.read_sql(
+        'SELECT DATE(date) AS trade_date, COUNT(*) AS daily_count FROM %s GROUP BY DATE(date)' % quoted_tablename,
+        conn
+    )
+    if daily_counts.empty:
+        return pd.NaT
+
+    daily_counts['trade_date'] = pd.to_datetime(daily_counts['trade_date']).dt.date
+    actual_dates = set(daily_counts['trade_date'].astype(str).tolist())
+
+    # Missing expected trading days
+    missing_dates = [
+        pd.to_datetime(d).date()
+        for d in expected_days
+        if d not in actual_dates
+    ]
+
+    # Incomplete intraday weekdays (exclude weekend sessions like Sunday open)
+    incomplete_intraday_dates = []
+    if _is_intraday_interval(interval):
+        weekday_rows = daily_counts[
+            pd.to_datetime(daily_counts['trade_date']).dt.weekday < 5
+        ]
+        if not weekday_rows.empty:
+            expected_intraday_count = int(weekday_rows['daily_count'].max())
+            if expected_intraday_count > 0:
+                incomplete_intraday_dates = weekday_rows.loc[
+                    weekday_rows['daily_count'] < expected_intraday_count, 'trade_date'
+                ].tolist()
+
+    gap_dates = sorted(set(missing_dates + incomplete_intraday_dates))
+    next_gaps = [d for d in gap_dates if d > start_after_date]
+
+    if not next_gaps:
+        return pd.NaT
+    return pd.to_datetime(next_gaps[-1])
+
 def update_gaps_in_pxhistory(conn, ib, ibkr_lookback_period = '5 D'): 
     """
         updates gaps in pxhistory, usees the pxhistory_metadata table to determine which tables need to be updated. 
@@ -458,17 +644,26 @@ def update_gaps_in_pxhistory(conn, ib, ibkr_lookback_period = '5 D'):
         pxHistory = db.getTable(conn, tablename)
         symbol, expiry, interval = tablename.split('_')
         
+        # if expiry is more than 2 years ago, update metadata to reflect no gaps and continue
+        if pd.to_datetime(expiry) < datetime.today() - relativedelta(years=2):
+            print('%s: [yellow]Expiry for %s is more than 2 years ago, marking as no gaps and skipping...[/yellow]'%(datetime.now().strftime('%H:%M:%S'), tablename))
+            update_metadata(pxhistory_metadata, tablename, DEFAULT_DATE_IF_NO_GAPS, num_unique_gaps=0)
+            continue
+
         # Determine the gap date that should be updated 
         last_gap_polled = pd.to_datetime(row['date_of_last_gap_date_polled'])
+
+        # if last_gap_polled is same as expiry, get the next gap date 
+        if last_gap_polled.date() == pd.to_datetime(expiry).date():
+            last_gap_polled = find_next_gap_date_in_table(conn, tablename, interval, _get_exchange_for_symbol(symbol))
+
         number_of_datetime_in_each_date = calculate_datetime_counts(pxHistory)
         if not pd.isna(last_gap_polled):
             number_of_datetime_in_each_date = number_of_datetime_in_each_date.loc[pd.to_datetime(number_of_datetime_in_each_date['date_only']) < last_gap_polled]
             # if this returns empty, 
             # that means there are no more gaps left to update. Update metadata to reflect this 
             if number_of_datetime_in_each_date.empty:
-                # pxhistory_metadata.loc[pxhistory_metadata['tablename'] == tablename, 'date_of_last_gap_date_polled'] = pd.to_datetime('1989-12-30').date()
-                # pxhistory_metadata.loc[pxhistory_metadata['tablename'] == tablename, 'update_date'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                update_metadata(pxhistory_metadata, tablename, DEFAULT_DATE_IF_NO_GAPS)
+                update_metadata(pxhistory_metadata, tablename, DEFAULT_DATE_IF_NO_GAPS, num_unique_gaps=0)
                 continue
         
         date_to_update = pd.to_datetime(number_of_datetime_in_each_date['date_only'].max()) + pd.to_timedelta(1, unit='D')
@@ -479,17 +674,27 @@ def update_gaps_in_pxhistory(conn, ib, ibkr_lookback_period = '5 D'):
         ibkr_pxhistory = ibkr.getBars_futures(ib, symbol=symbol, lastTradeDate=expiry, interval=_addspace(interval), endDate=date_to_update, lookback=ibkr_lookback_period, exchange=exchange)
         if ibkr_pxhistory is None:
             print('%s: [green]No records found for %s, with endDate: %s [/green]'%(datetime.now().strftime('%H:%M:%S'), tablename, date_to_update.strftime('%Y-%m-%d')))
-            # pxhistory_metadata.loc[pxhistory_metadata['tablename'] == tablename, 'date_of_last_gap_date_polled'] = pd.to_datetime('1989-12-30').date()
-            # pxhistory_metadata.loc[pxhistory_metadata['tablename'] == tablename, 'update_date'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             update_metadata(pxhistory_metadata, tablename, DEFAULT_DATE_IF_NO_GAPS)
             continue        
         ibkr_pxhistory['symbol'] = symbol
         ibkr_pxhistory['interval'] = interval
         ibkr_pxhistory['lastTradeDate'] = expiry                 
 
+        # print(ibkr_pxhistory)
+
+        # get earliest timestamp from ibkr if contract is not expired 
+        if expiry > datetime.today().strftime('%Y%m%d'):
+            earliestTimestamp = ibkr.getEarliestTimeStamp_m(ib, symbol=symbol, lastTradeDate=expiry, exchange=exchange)
+        else:
+            # set to 2 years ago 
+            earliestTimestamp = pd.to_datetime((datetime.today() - relativedelta(years=2)).strftime('%Y-%m-%d'))
+        # print(earliestTimestamp)
+        # exit() 
+
         # save it to db 
-        db.saveHistoryToDB(ibkr_pxhistory, conn, type='future')
-        print('%s: [green]Record %s of %s updated for %s, sleeping for %ss...[/green]\n'%(datetime.now().strftime('%H:%M:%S'),idx,len(pxhistory_metadata), tablename, _defaultSleepTime/30))
+        db.saveHistoryToDB(ibkr_pxhistory, conn, earliestTimestamp=earliestTimestamp, type='future')
+        # exit() 
+        print('%s: [green]Record %s of %s updated for %s, sleeping for %ss...[/green]'%(datetime.now().strftime('%H:%M:%S'),idx,len(pxhistory_metadata), tablename, _defaultSleepTime/30))
         time.sleep(_defaultSleepTime/30)
         
         # Update metadata 
@@ -507,12 +712,15 @@ def update_gaps_in_pxhistory(conn, ib, ibkr_lookback_period = '5 D'):
     db.save_table_to_db(conn = conn, tablename=config.table_name_futures_pxhistory_metadata, metadata_df = pxhistory_metadata)
     db.remove_duplicates_from_pxhistory_gaps_metadata(conn, config.table_name_futures_pxhistory_metadata)
 
-def update_metadata(pxhistory_metadata: pd.DataFrame, tablename: str, date: pd.Timestamp) -> None:
+def update_metadata(pxhistory_metadata: pd.DataFrame, tablename: str, date: pd.Timestamp, num_unique_gaps=None) -> None:
     """
         Updates metadata table with the date of the last gap polled
     """
     pxhistory_metadata.loc[pxhistory_metadata['tablename'] == tablename, 'date_of_last_gap_date_polled'] = date
     pxhistory_metadata.loc[pxhistory_metadata['tablename'] == tablename, 'update_date'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+    if num_unique_gaps is not None:
+        pxhistory_metadata.loc[pxhistory_metadata['tablename'] == tablename, 'num_unique_gaps'] = num_unique_gaps
 
 def _dirtyRefreshLookupTable(ib, mode): 
     """

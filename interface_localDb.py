@@ -192,6 +192,9 @@ def _update_symbol_metadata(conn, tableName, type='future', earliestTimestamp=No
 
         # calculate the number of missing business days between the earliest record date in ibkr, and the earliest record date as per the db
         if earliestTimestamp is not None and not pd.isna(earliestTimestamp):
+            # print(earliestTimestamp)
+            # print(minDate_symbolHistory.iloc[0]['firstRecordDate'])
+            # exit() 
             numMissingDays = len(pd.bdate_range(earliestTimestamp, minDate_symbolHistory.iloc[0]['firstRecordDate']))
 
         ## update lookuptable with the symbolhistory min date
@@ -411,7 +414,7 @@ def _batch_fetch_metadata(conn, table_names: list) -> pd.DataFrame:
         print(f'Error fetching metadata: {e}')
         return pd.DataFrame()
     
-def saveHistoryToDB(history, conn, earliestTimestamp='', type=''):
+def saveHistoryToDB(history, conn, earliestTimestamp=None, type=''):
     """
     Save history to a sqlite3 database
     ###

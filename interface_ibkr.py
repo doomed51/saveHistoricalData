@@ -237,7 +237,7 @@ def _getHistoricalBars_futures_withContract(ibkrObj, contract, endDate, lookback
 """
 Returns [datetime] of earliest datapoint available for index and stock 
 """
-def getEarliestTimeStamp_m(ibkr, symbol='SPY', currency='USD', lastTradeDate='', exchange='SMART'):
+def getEarliestTimeStamp_m(ibkr, symbol='SPY', currency='USD', lastTradeDate=None, exchange='SMART'):
     # set currency 
     if symbol in currency_mapping:
         currency = currency_mapping[symbol]
@@ -247,7 +247,7 @@ def getEarliestTimeStamp_m(ibkr, symbol='SPY', currency='USD', lastTradeDate='',
         exchange = exchange_mapping[symbol]
     
     # set the contract to look for
-    if symbol in _index:
+    if symbol in _index and not lastTradeDate:
         contract = Index(symbol, exchange, currency)
     elif lastTradeDate:
         contract = Future(symbol=symbol, lastTradeDateOrContractMonth=lastTradeDate, exchange=exchange, currency=currency)
