@@ -64,7 +64,7 @@ exchange_mapping = {
     'ENB': 'SMART',
     'FV': 'ECBOT',
     'GC': 'COMEX',
-    'GE': 'ECBOT',
+    'GE': 'SMART',
     'GVZ': 'CBOE',
     'HG': 'COMEX',
     'IBM': 'NYSE',
@@ -79,9 +79,9 @@ exchange_mapping = {
     'UB': 'CBOT',
     'US': 'CBOT',
     'VIX': 'CFE',
-    'VIX1D': 'CFE',
-    'VIX3M': 'CFE',
-    'VVIX': 'CFE',
+    'VIX1D': 'CBOE',
+    'VIX3M': 'CBOE',
+    'VVIX': 'CBOE',
     'XIU': 'SMART',
     'Z': 'CBOT',
     'ZB': 'CBOT',
@@ -89,6 +89,68 @@ exchange_mapping = {
     'ZN': 'CBOT',
     'ZT': 'CBOT'
 }
+
+exchange_mapping_stocks = {
+    'CL': 'SMART',
+    'CLOI': 'SMART',
+    'DXJ': 'ARCA',
+    'ED': 'GLOBEX',
+    'ES': 'CME',
+    'ENB': 'SMART',
+    'FV': 'ECBOT',
+    'GC': 'COMEX',
+    'GE': 'SMART',
+    'GVZ': 'CBOE',
+    'HG': 'COMEX',
+    'IBM': 'NYSE',
+    'INDU': 'CME',
+    'NDX': 'NASDAQ',
+    'NG': 'NYMEX',
+    'SPX': 'CBOE',
+    'SI': 'COMEX',
+    'TN': 'ECBOT',
+    'TSX': 'TSE',
+    'TY': 'CBOT',
+    'UB': 'CBOT',
+    'US': 'CBOT',
+    'UUUU': 'AMEX',
+    'VERU': 'NASDAQ',
+    'VIX': 'CFE',
+    'VIX1D': 'CBOE',
+    'VIX3M': 'CBOE',
+    'VVIX': 'CBOE',
+    'XIU': 'SMART',
+    'WWW': 'AMEX',
+    'Z': 'CBOT',
+    'ZB': 'CBOT',
+    'ZF': 'CBOT',
+    'ZN': 'CBOT',
+    'ZT': 'CBOT'
+}
+
+# Maps existing IBKR-style exchange identifiers to exchange_calendars codes.
+exchange_calendar_mapping = {
+    'ARCA': 'XNYS',
+    'CBOT': 'CMES',
+    'CBOE': 'XCBF',
+    # 'CFE': 'XCBF',
+    'CFE': 'CME_Equity',
+    # 'CFE': 'XNYS',
+    'CME': 'CMES',
+    'COMEX': 'CMES',
+    'ECBOT': 'CMES',
+    'GLOBEX': 'CMES',
+    'NASDAQ': 'XNYS',
+    'NYMEX': 'CMES',
+    'NYSE': 'XNYS',
+    'SMART': 'XNYS',
+    'TSE': 'XTSE',
+    'TSX': 'XTSE'
+}
+
+# Session-shape heuristics used to classify shortened sessions.
+exchange_calendar_short_session_ratio = 0.85
+exchange_calendar_evening_open_minute_utc = 15 * 60
 
 futures_symbol_metadata = {
     'CL': {
