@@ -71,8 +71,6 @@ def construct_record_metadata(conn, table_names):
         f"SELECT '{name}' as name, MAX(date) as last_update, MIN(date) as first_record_date FROM {name}"
         for name in table_names
     ]
-    # just select the first half of queries 
-    # queries = queries[:1]
     query = " UNION ALL ".join(queries)
     
     last_and_first_updates = pd.read_sql(f"""
@@ -80,9 +78,6 @@ def construct_record_metadata(conn, table_names):
     FROM ({query}) 
     GROUP BY name
     """, conn)
-
-    # print(last_and_first_updates)
-    # exit() 
     
     # set format for first record date
     last_and_first_updates['first_record_date'] = last_and_first_updates['first_record_date'].apply(

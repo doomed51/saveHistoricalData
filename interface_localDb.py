@@ -139,15 +139,146 @@ def _getFirstRecordDate(row, conn):
 
     return mintime
 
+
 def _update_symbol_metadata(conn, tableName, type='future', earliestTimestamp=None, numMissingDays=None):
-    # get the earliest record date as per the db 
-    if type == 'future':
-        sql_minDate_symbolHistory = 'SELECT MIN(date), symbol, interval, lastTradeDate FROM %s'%(tableName)
-    else:
-        sql_minDate_symbolHistory = 'SELECT MIN(date), symbol, interval FROM %s'%(tableName)
+    is_future = (type == 'future')
+
+    # 1) Read earliest record metadata from the symbol history table.
     try:
+        if is_future:
+            sql_minDate_symbolHistory = "SELECT MIN(date), symbol, interval, lastTradeDate FROM %s" % tableName
+        else:
+            sql_minDate_symbolHistory = "SELECT MIN(date), symbol, interval FROM %s" % tableName
         minDate_symbolHistory = pd.read_sql(sql_minDate_symbolHistory, conn)
-    # except if no such table exists
+    except Exception:
+        # Table does not exist: synthesize a placeholder row so downstream logic still works.
+        print(
+            f"{datetime.datetime.now().strftime('%H:%M:%S')}: "
+            f"No existing records found for {tableName}. Setting earliest record date to current date."
+        )
+        minDate_symbolHistory = pd.DataFrame(columns=['MIN(date)', 'symbol', 'interval', 'lastTradeDate'])
+        minDate_symbolHistory.loc[0] = [
+            datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            tableName.split('_')[0],
+            tableName.split('_')[2],
+            tableName.split('_')[1] if is_future else ''
+        ]
+
+    # 2) Normalize datatypes/formatting once.
+    minDate_symbolHistory['MIN(date)'] = pd.to_datetime(minDate_symbolHistory['MIN(date)'], format='ISO8601')
+    minDate_symbolHistory['MIN(date)'] = minDate_symbolHistory['MIN(date)'].dt.tz_localize(None)
+    minDate_symbolHistory['interval'] = minDate_symbolHistory['interval'].apply(lambda x: _removeSpaces(x))
+
+    # 3) Read existing lookup record (if any).
+    if is_future:
+        sql_minDate_recordsTable = (
+            "SELECT firstRecordDate FROM '%s' "
+            "WHERE symbol = '%s' and interval = '%s' and lastTradeDate = '%s'"
+        ) % (
+            config.lookupTableName,
+            minDate_symbolHistory['symbol'][0],
+            minDate_symbolHistory['interval'][0],
+            minDate_symbolHistory['lastTradeDate'][0]
+        )
+    else:
+        sql_minDate_recordsTable = (
+            "SELECT firstRecordDate FROM '%s' "
+            "WHERE symbol = '%s' and interval = '%s'"
+        ) % (
+            config.lookupTableName,
+            minDate_symbolHistory['symbol'][0],
+            minDate_symbolHistory['interval'][0]
+        )
+    minDate_recordsTable = pd.read_sql(sql_minDate_recordsTable, conn)
+
+    # Align naming to lookup-table schema for insert/update logic.
+    minDate_symbolHistory = minDate_symbolHistory.rename(columns={'MIN(date)': 'firstRecordDate'})
+
+    # 4) Insert path: no existing record.
+    if minDate_recordsTable.empty:
+        print(" Adding new record to lookup table...")
+        minDate_symbolHistory['name'] = tableName
+
+        if earliestTimestamp is not None and not pd.isna(earliestTimestamp):
+            minDate_symbolHistory['numMissingBusinessDays'] = numMissingDays
+
+        minDate_symbolHistory.to_sql(f"{config.lookupTableName}", conn, index=False, if_exists='append')
+        return
+
+    # 5) Update path: existing record found.
+    if minDate_recordsTable['firstRecordDate'][0] == '':
+        # Preserve prior intent: use current min date when lookup has blank firstRecordDate.
+        minDate_recordsTable.loc[0, 'firstRecordDate'] = minDate_symbolHistory['firstRecordDate'][0]
+
+    if earliestTimestamp is not None and not pd.isna(earliestTimestamp) and numMissingDays is None:
+        numMissingDays = len(
+            pd.bdate_range(earliestTimestamp, minDate_symbolHistory.iloc[0]['firstRecordDate'])
+        )
+    elif earliestTimestamp is None and numMissingDays is None: 
+        numMissingDays = 0
+
+    print("%s: Updating lookup table..." % datetime.datetime.now().strftime("%H:%M:%S"))
+    sql_updateNumMissingDays = ''
+
+    if is_future:
+        sql_update = (
+            "UPDATE '%s' SET firstRecordDate = '%s' "
+            "WHERE symbol = '%s' and interval = '%s' and lastTradeDate = '%s'"
+        ) % (
+            config.lookupTableName,
+            minDate_symbolHistory['firstRecordDate'][0],
+            minDate_symbolHistory['symbol'][0],
+            minDate_symbolHistory['interval'][0],
+            minDate_symbolHistory['lastTradeDate'][0]
+        )
+
+        sql_updateNumMissingDays = (
+            "UPDATE '%s' SET numMissingBusinessDays = '%s' "
+            "WHERE symbol = '%s' and interval = '%s' and lastTradeDate = '%s'"
+        ) % (
+            config.lookupTableName,
+            numMissingDays,
+            minDate_symbolHistory['symbol'][0],
+            minDate_symbolHistory['interval'][0],
+            minDate_symbolHistory['lastTradeDate'][0]
+        )
+    else:
+        sql_update = (
+            "UPDATE '%s' SET firstRecordDate = '%s' "
+            "WHERE symbol = '%s' and interval = '%s'"
+        ) % (
+            config.lookupTableName,
+            minDate_symbolHistory['firstRecordDate'][0],
+            minDate_symbolHistory['symbol'][0],
+            minDate_symbolHistory['interval'][0]
+        )
+
+        if earliestTimestamp is not None and not pd.isna(earliestTimestamp):
+            sql_updateNumMissingDays = (
+                "UPDATE '%s' SET numMissingBusinessDays = '%s' "
+                "WHERE symbol = '%s' and interval = '%s'"
+            ) % (
+                config.lookupTableName,
+                numMissingDays,
+                minDate_symbolHistory['symbol'][0],
+                minDate_symbolHistory['interval'][0]
+            )
+
+    cursor = conn.cursor()
+    cursor.execute(sql_update)
+    if sql_updateNumMissingDays:
+        cursor.execute(sql_updateNumMissingDays)
+    print("%s: [green]Done! [/green]" % datetime.datetime.now().strftime("%H:%M:%S"))
+
+
+def _update_symbol_metadata_old(conn, tableName, type='future', earliestTimestamp=None, numMissingDays=None):
+    # get the earliest record date as per the db 
+    try:
+        if type == 'future':
+            sql_minDate_symbolHistory = 'SELECT MIN(date), symbol, interval, lastTradeDate FROM %s'%(tableName)
+        else:
+            sql_minDate_symbolHistory = 'SELECT MIN(date), symbol, interval FROM %s'%(tableName)
+        minDate_symbolHistory = pd.read_sql(sql_minDate_symbolHistory, conn)
     except Exception as e:
         # table doesn't exist which means there is no history and we can set the earliest record date to the current date
         print(f"{datetime.datetime.now().strftime('%H:%M:%S')}: No existing records found for {tableName}. Setting earliest record date to current date.")
@@ -240,7 +371,6 @@ def insert_new_record_metadata(conn, tableName, type='future', earliestTimestamp
     cursor = conn.cursor()
     cursor.execute(sql)
     print('%s: [green]Done! [/green]' % datetime.datetime.now().strftime("%H:%M:%S"))
-
 
 def _updateLookup_symbolRecords_ORIGINAL(conn, tablename, earliestTimestamp, numMissingDays = 5, type =''):
 
@@ -372,11 +502,12 @@ def _batch_fetch_metadata(conn, table_names: list) -> pd.DataFrame:
     """
     # SQLite limits the number of terms in a compound SELECT statement.
     # Build UNION ALL queries in chunks so this keeps working as table count grows.
-    max_union_terms = 200
+    max_union_terms = 100
 
     try:
         results_batches = []
         for i in range(0, len(table_names), max_union_terms):
+            print(f'{datetime.datetime.now().strftime("%H:%M:%S")}: Fetching metadata for tables {i} to {min(i + max_union_terms, len(table_names))}...')
             chunk = table_names[i:i + max_union_terms]
             union_queries = []
             for table in chunk:
@@ -397,6 +528,14 @@ def _batch_fetch_metadata(conn, table_names: list) -> pd.DataFrame:
             return pd.DataFrame()
 
         results = pd.concat(results_batches, ignore_index=True)
+
+        # Rows where last_update or first_record do not have timestamp, set to retain the date, and set time to 00:00:00 
+        results['last_update'] = results['last_update'].apply(lambda x: x if len(str(x)) > 10 else str(x) + ' 00:00:00')
+        results['first_record'] = results['first_record'].apply(lambda x: x if len(str(x)) > 10 else str(x) + ' 00:00:00')
+
+        # rows with timezone info in the timestamp, remove the timezone info
+        results['last_update'] = results['last_update'].apply(lambda x: x[:19] if len(str(x)) > 19 else x)
+        results['first_record'] = results['first_record'].apply(lambda x: x[:19] if len(str(x)) > 19 else x)
         
         metadata_df = pd.DataFrame({
             'table_name': results['table_name'],
@@ -423,7 +562,7 @@ def saveHistoryToDB(history, conn, earliestTimestamp=None, type=''):
     ------------
     history: [DataFrame]
         pandas dataframe with security timeseries data
-    conn: [Sqlite3 connection object]
+    conn: [Sqlite connection object]
         connection to the local db 
     """
     if 'interval' in history.columns:
@@ -485,6 +624,7 @@ def getPriceHistoryWithTablename(conn, tablename):
     pxHistory = ut.calcLogReturns(pxHistory, 'close')
     return pxHistory
 
+
 def getTable(conn, tablename, is_pxhistory=False):
     sqlStatement = 'SELECT * FROM \'%s\''%(tablename)
     table_data = pd.read_sql(sqlStatement, conn)
@@ -498,6 +638,16 @@ def getTable(conn, tablename, is_pxhistory=False):
 
     return table_data
 
+def update_gap_metadata(conn, tablename, last_polled_date):
+    """
+    Update the pxhistory gaps metadata table with the latest update date for a given table
+    """
+    sqlStatement = 'INSERT INTO \'%s\' (tablename, date_of_last_gap_date_polled, update_date) VALUES (\'%s\', \'%s\', \'%s\') ON CONFLICT(tablename) DO UPDATE SET date_of_last_gap_date_polled=excluded.date_of_last_gap_date_polled, update_date=excluded.update_date'%(config.table_name_futures_pxhistory_metadata, tablename, last_polled_date, datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+    cursor = conn.cursor()
+    cursor.execute(sqlStatement)
+    conn.commit()
+
+
 def getLookup_symbolRecords(conn):
     """ 
     Returns the lookup table fo records history as df 
@@ -508,6 +658,7 @@ def getLookup_symbolRecords(conn):
     symbolRecords['firstRecordDate'] = pd.to_datetime(symbolRecords['firstRecordDate'])
     return symbolRecords
 
+
 def listSymbols(conn):
     """
     lists the unique symbols in the lookup table
@@ -515,6 +666,7 @@ def listSymbols(conn):
     sqlStatement_selectRecordsTable = 'SELECT DISTINCT symbol FROM \'00-lookup_symbolRecords\' ORDER BY symbol ASC'
     symbols = pd.read_sql(sqlStatement_selectRecordsTable, conn)
     return symbols
+
 
 def futures_getCellValue(conn, symbol, interval='1day', lastTradeMonth='202308', targetColumn='close', targetDate='2023-07-21'):
     """
@@ -538,6 +690,7 @@ def futures_getCellValue(conn, symbol, interval='1day', lastTradeMonth='202308',
     # return val 
     return value[targetColumn][0]
 
+
 def getLookup_exchange(conn, symbol):
     exchangeLookupTable = '00-lookup_exchangeMapping'
     sql = 'SELECT exchange FROM \'%s\' WHERE symbol=\'%s\'' %(exchangeLookupTable, symbol)
@@ -545,16 +698,141 @@ def getLookup_exchange(conn, symbol):
 
     return exchange
 
+
 def _normalize_timestamp_scalar(ts):
     if ts is None:
         return None
+    if pd.isna(ts):
+        return None
     if isinstance(ts, pd.DatetimeIndex):
-        return None if ts.empty else ts.min().to_pydatetime()
+        if ts.empty:
+            return None
+        ts = ts.min()
     if isinstance(ts, pd.Series):
         ts = ts.dropna()
-        return None if ts.empty else pd.to_datetime(ts.iloc[0]).to_pydatetime()
+        if ts.empty:
+            return None
+        ts = ts.iloc[0]
     if isinstance(ts, (list, tuple, np.ndarray)):
         if len(ts) == 0:
             return None
-        return pd.to_datetime(ts[0]).to_pydatetime()
-    return pd.to_datetime(ts).to_pydatetime()
+        ts = ts[0]
+
+    normalized = pd.to_datetime(ts, errors='coerce')
+    if pd.isna(normalized):
+        return None
+
+    if getattr(normalized, 'tzinfo', None) is not None:
+        normalized = normalized.tz_localize(None)
+
+    return normalized.strftime('%Y-%m-%d %H:%M:%S')
+
+
+def create_progress_tracker_table(conn, tablename='00-progress_tracker'):
+    """
+    Ensure the futures progress tracker table exists.
+    """
+    sql = (
+        "CREATE TABLE IF NOT EXISTS '%s' ("
+        "tablename TEXT PRIMARY KEY, "
+        "symbol TEXT NOT NULL, "
+        "interval TEXT NOT NULL, "
+        "expiry TEXT NOT NULL, "
+        "status TEXT NOT NULL, "
+        "earliest_timestamp TEXT, "
+        "last_fetched_end_date TEXT, "
+        "target_end_date TEXT NOT NULL, "
+        "created_at TEXT NOT NULL, "
+        "updated_at TEXT NOT NULL"
+        ")"
+    ) % tablename
+    cursor = conn.cursor()
+    cursor.execute(sql)
+
+
+def get_progress_tracker(conn, tablename='00-progress_tracker'):
+    """
+    Return progress tracker rows as a dataframe.
+    """
+    try:
+        data = pd.read_sql("SELECT * FROM '%s'" % tablename, conn)
+    except Exception:
+        return pd.DataFrame()
+
+    for col in ['earliest_timestamp', 'last_fetched_end_date', 'target_end_date', 'created_at', 'updated_at']:
+        if col in data.columns:
+            data[col] = pd.to_datetime(data[col], errors='coerce')
+    return data
+
+
+def upsert_progress_tracker_row(conn, row, tablename='00-progress_tracker'):
+    """
+    Insert or update a single progress tracker row.
+    """
+    required = [
+        'tablename', 'symbol', 'interval', 'expiry', 'status',
+        'earliest_timestamp', 'last_fetched_end_date', 'target_end_date',
+        'created_at', 'updated_at'
+    ]
+    payload = {key: row.get(key) for key in required}
+    for key in ['earliest_timestamp', 'last_fetched_end_date', 'target_end_date', 'created_at', 'updated_at']:
+        payload[key] = _normalize_timestamp_scalar(payload[key])
+
+    sql = (
+        "INSERT INTO '%s' ("
+        "tablename, symbol, interval, expiry, status, "
+        "earliest_timestamp, last_fetched_end_date, target_end_date, "
+        "created_at, updated_at"
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(tablename) DO UPDATE SET "
+        "symbol=excluded.symbol, "
+        "interval=excluded.interval, "
+        "expiry=excluded.expiry, "
+        "status=excluded.status, "
+        "earliest_timestamp=excluded.earliest_timestamp, "
+        "last_fetched_end_date=excluded.last_fetched_end_date, "
+        "target_end_date=excluded.target_end_date, "
+        "updated_at=excluded.updated_at"
+    ) % tablename
+
+
+    cursor = conn.cursor()
+    cursor.execute(
+        sql,
+        (
+            payload['tablename'],
+            payload['symbol'],
+            payload['interval'],
+            payload['expiry'],
+            payload['status'],
+            payload['earliest_timestamp'],
+            payload['last_fetched_end_date'],
+            payload['target_end_date'],
+            payload['created_at'],
+            payload['updated_at'],
+        ),
+    )
+    conn.commit()
+
+
+def update_progress_tracker_fields(conn, tablename_key, updates, tablename='00-progress_tracker'):
+    """
+    Update selected fields for a progress tracker row.
+    """
+    if not updates:
+        return
+
+    sanitized = {k: v for k, v in updates.items() if k not in ['tablename', 'created_at']}
+    if not sanitized:
+        return
+
+    for key in ['earliest_timestamp', 'last_fetched_end_date', 'target_end_date', 'updated_at']:
+        if key in sanitized:
+            sanitized[key] = _normalize_timestamp_scalar(sanitized[key])
+
+    assignments = ', '.join([f"{col} = ?" for col in sanitized.keys()])
+    sql = "UPDATE '%s' SET %s WHERE tablename = ?" % (tablename, assignments)
+    values = list(sanitized.values()) + [tablename_key]
+    cursor = conn.cursor()
+    cursor.execute(sql, values)
+    conn.commit()
