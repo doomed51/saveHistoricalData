@@ -9,12 +9,10 @@ import holidays as hols
 def _get_holidays_for_exchange(exchange, years, country='US'):
     exchange = (exchange or '').upper()
 
-    if exchange in ['NYSE', 'NASDAQ', 'ARCA', 'SMART', 'CBOE']:
+    if exchange in ['NYSE', 'NASDAQ', 'ARCA', 'SMART', 'CBOE', 'CME', 'CFE', 'GLOBEX', 'ECBOT', 'NYMEX', 'COMEX']:
         return hols.NYSE(years=years).keys()
     if exchange in ['TSE', 'TSX']:
         return hols.country_holidays('CA', years=years).keys()
-    if exchange in ['CME', 'GLOBEX', 'ECBOT', 'NYMEX', 'COMEX']:
-        return hols.country_holidays('US', years=years).keys()
 
     return hols.country_holidays(country, years=years).keys()
 
