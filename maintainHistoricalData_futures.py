@@ -8,6 +8,7 @@ General logic:
     4. if there are any new contracts in the watchlist, grab new data from IBKR, and update the db
     
 """
+from locale import currency
 import time
 import re 
 import config
@@ -16,6 +17,8 @@ import math
 from ib_insync import Future
 import pandas as pd
 import numpy as np
+# import exchange_calendars as xcals
+import pandas_market_calendars as xcals
 # import interface_localDb_old as db
 import interface_localDB as db
 import interface_ibkr as ibkr
@@ -42,6 +45,7 @@ filename_futuresWatchlist = 'futuresWatchlist.csv'
 dbName_futures = config.dbname_futures
 trackedIntervals = config.intervals
 numExpiryMonths = 14 # number of future expiries we want to track at any given time 
+_calendar_cache = {}
 
 def _addspace(myStr): 
     """
@@ -123,7 +127,11 @@ def _get_exchange_for_symbol(symbol):
 
 def _updateSingleRecord(ib, symbol, expiry, interval, lookback, endDate='', currency='USD'):
     exchange = _get_exchange_for_symbol(symbol)
-    contract = Future(symbol=symbol, lastTradeDateOrContractMonth=expiry, exchange=exchange, currency=currency, includeExpired=True)
+    # contract = Future(symbol=symbol, lastTradeDateOrContractMonth=expiry, exchange=exchange, currency=currency, includeExpired=True)
+    if symbol == 'SI':
+        contract = Future(symbol=symbol, lastTradeDateOrContractMonth=expiry, exchange=exchange, currency=currency, includeExpired=True, multiplier="5000")
+    else:
+        contract = Future(symbol=symbol, lastTradeDateOrContractMonth=expiry, exchange=exchange, currency=currency, includeExpired=True)
     
     # Get futures history from ibkr
     # Split into multiple calls for shorter intervals so we can get more data in 1 go   
@@ -133,10 +141,13 @@ def _updateSingleRecord(ib, symbol, expiry, interval, lookback, endDate='', curr
         record=pd.DataFrame()
         # loop for numCalls appending records and reducing endDate by lookback each time
         for i in range(0, numCalls):
-            bars = ibkr.getBars_futures(ib, symbol=symbol, lastTradeDate=expiry, interval=interval, endDate=endDate, lookback='3 D', exchange=exchange)
+            # bars = ibkr.getBars_futures(ib, symbol=symbol, lastTradeDate=expiry, interval=interval, endDate=endDate, lookback='3 D', exchange=exchange)
+            bars = ibkr.getBars_futures(ib, contract, interval=interval, endDate=endDate, lookback='3 D')
+            # drop the last bar as its likely incomplete 
             if (bars is None) or (bars.empty):
                 break
             else:
+                # bars = bars.iloc[:-1,:]
                 record = record._append(bars)   
                 endDate = record['date'].min() # update endDate for next loop 
                 if i < numCalls-1:
@@ -145,10 +156,13 @@ def _updateSingleRecord(ib, symbol, expiry, interval, lookback, endDate='', curr
         record.reset_index(drop=True, inplace=True)
     else:
         # query ibkr for futures history 
-        record = ibkr.getBars_futures(ib, symbol=symbol, lastTradeDate=expiry, interval=interval, endDate=endDate, lookback=lookback, exchange=exchange)
+        record = ibkr.getBars_futures(ib, contract, interval=interval, endDate=endDate, lookback=lookback)
     
+    # print(record)
+    # exit() 
+
     # handle case where no records are returned
-    if (record is None) or (record.empty):
+    if (record is None) or (record.empty) or len(record) == 1:
         print('%s: [green]No more history![/green]'%(datetime.now().strftime('%H:%M:%S')))
         # update the lookup table to reflect no records left 
         with db.sqlite_connection(dbName_futures) as conn:
@@ -164,8 +178,9 @@ def _updateSingleRecord(ib, symbol, expiry, interval, lookback, endDate='', curr
             if tablename in lookupTable['name'].values:
                 db._update_symbol_metadata(conn, tablename, type = 'future', earliestTimestamp = _earliestTimeStamp, numMissingDays = 0)
             else:
-                db.insert_new_record_metadata(conn, tablename, type='future', earliestTimestamp= _earliestTimeStamp, numMissingDays=0)
+                db.insert_new_record_metadata(conn, tablename, type='future', earliestTimestamp= _earliestTimeStamp, numMissingDays = 0)
     else:
+        record = record.iloc[:-1, :] # drop last bar as its likely incomplete
         record['symbol'] = symbol
         record['interval'] = interval.replace(' ', '')
         record['lastTradeDate'] = expiry
@@ -187,12 +202,16 @@ def _getMissingContracts(ib, symbol, numMonths = numExpiryMonths):
             [DataFrame] of missing contracts informat symbol_expiry_interval 
     """
     print('%s:[yellow] Checking missing contracts for %s...[/yellow]'%(datetime.now().strftime('%H:%M:%S'), symbol))
+    
     # get latest records from db 
     with db.sqlite_connection(dbName_futures) as conn:
         # latestRecords = db.getRecords(conn)
         latestRecords = db.getLookup_symbolRecords(conn)
-        # select only records with symbol = symbol
-        latestRecords = latestRecords.loc[latestRecords['symbol'] == symbol].reset_index(drop=True)
+    # filter for relevant symbol
+    latestRecords = latestRecords.loc[latestRecords['symbol'] == symbol].reset_index(drop=True)
+
+    # add lookup column 
+    latestRecords['type/expiry'] = latestRecords['name'].apply(lambda x: '_'.join(x.split('_')[1:2]))
     
     # get contracts from ibkr 
     exchange = _get_exchange_for_symbol(symbol)
@@ -209,12 +228,11 @@ def _getMissingContracts(ib, symbol, numMonths = numExpiryMonths):
     contracts = contracts.loc[contracts['realExpirationDate'] <= maxDate.strftime('%Y%m%d')].reset_index(drop=True)
 
     missingContracts = pd.DataFrame(columns=['interval', 'realExpirationDate', 'contract'])
-    
+
     # append missing contracts for each tracked interval 
     for interval in trackedIntervals:
         # select latestRecords for interval 
         latestRecords_interval = latestRecords.loc[latestRecords['interval'] == interval.replace(' ','')]
-        latestRecords_interval['type/expiry'] = latestRecords_interval['name'].apply(lambda x: '_'.join(x.split('_')[1:2]))
         
         # handle case where entire interval data is missing 
         if latestRecords_interval.empty:
@@ -293,7 +311,9 @@ def updateRecords(ib_):
     missingContracts['lookback'] = missingContracts.apply(
         lambda row: _setLookback(row['interval']), axis=1)
 
-    # add missing contracts to our db
+
+
+    ######################################## add missing contracts to our db
     if not missingContracts.empty:
         print('[green]----------------------------------------------[/green]')
         print('[yellow]---------- Adding missing contracts ---------[/yellow]')
@@ -308,12 +328,18 @@ def updateRecords(ib_):
     print('[green]----- Completed adding missing contracts -----[/green]')
     print('[green]----------------------------------------------[/green]\n')
 
-    # update records in our db that have not been updated in in over 24 hours 
+    
+    
+    
+    ######################################### update records in our db that have not been updated in in over 24 hours 
     if not latestRecords.loc[latestRecords['daysSinceLastUpdate'] > 1].empty:
         print('[green]----------------------------------------------[/green]')
         print('[yellow]--------- Updating outdated records ----------[/yellow]')
         print('[green]----------------------------------------------[/green]')
         i=1
+        latestRecords = latestRecords.loc[(latestRecords['symbol'] == 'SI') & (latestRecords['interval'] == '1min')].reset_index(drop=True) # for testing only, filter for specific symbol and interval
+        # print(latestRecords)
+        # exit() 
         for row in (latestRecords.loc[latestRecords['daysSinceLastUpdate'] >= 1]).iterrows():
             print('%s: (%s/%s) Updating contract %s %s %s'%(datetime.now().strftime('%H:%M:%S'), i,latestRecords.loc[latestRecords['daysSinceLastUpdate']>=1]['symbol'].count(), row[1]['symbol'], row[1]['type/expiry'], row[1]['interval']) )
             _updateSingleRecord(ib_, row[1]['symbol'], row[1]['type/expiry'], row[1]['interval'], str(row[1]['daysSinceLastUpdate']+1)+' D')
@@ -322,21 +348,6 @@ def updateRecords(ib_):
     print('[green]---- Completed updating outdated records ----[/green]')
     print('[green]----------------------------------------------[/green]\n')
         
-def DELETE_loadExpiredContracts(ib, symbol, lastTradeDate, interval):
-    """
-        This function updates the past two years of futures data.
-        use this when a symbol is first added from the watchlist  
-    """
-    ###############
-    ## placeholder!!! needs to be implemented
-    ###############
-    
-    ## manually setting contract expiry example
-    conDetails = ibkr.getContractDetails(ib, symbol=symbol, type='future')
-    
-    conDetails[2].contract.lastTradeDateOrContractMonth = '20230820'
-    record2 = ibkr._getHistoricalBars_futures(ib, conDetails[2].contract, interval=interval, endDate=datetime.today(), lookback='300 D', whatToShow='BID')
-
 def calculate_datetime_counts(pxhistory):
     """
         Calculates the number of unique datetime counts per date in pxHistory
@@ -375,9 +386,127 @@ def _quote_sqlite_identifier(identifier: str) -> str:
     """
     return '"%s"' % str(identifier).replace('"', '""')
 
+def _get_exchange_calendar(exchange):
+    """
+        Returns (calendar_code, exchange_calendars calendar) for an IBKR-style exchange code.
+        Returns (None, None) and logs a warning when mapping is unavailable.
+    """
+    exchange = str(exchange or '').upper()
+    calendar_code = config.exchange_calendar_mapping.get(exchange)
+    if not calendar_code:
+        print('%s: [red]No exchange_calendars mapping found for exchange %s[/red]' % (datetime.now().strftime('%H:%M:%S'), exchange))
+        return None, None
+
+    if calendar_code in _calendar_cache:
+        return calendar_code, _calendar_cache[calendar_code]
+
+    try:
+        calendar = xcals.get_calendar(calendar_code)
+    except Exception as ex:
+        print('%s: [red]Unable to load exchange calendar %s for %s: %s[/red]' % (datetime.now().strftime('%H:%M:%S'), calendar_code, exchange, str(ex)))
+        return calendar_code, None
+
+    _calendar_cache[calendar_code] = calendar
+    return calendar_code, calendar
+
+def _get_calendar_schedule(exchange, start_date, end_date):
+    """
+        Returns schedule dataframe for [start_date, end_date] and calendar code.
+    """
+    calendar_code, calendar = _get_exchange_calendar(exchange)
+    
+    if calendar is None:
+        return pd.DataFrame(), calendar_code
+
+    try:
+        # schedule = calendar.schedule.loc[pd.Timestamp(start_date):pd.Timestamp(end_date)].copy()
+        schedule = calendar.schedule(pd.Timestamp(start_date), pd.Timestamp(end_date))
+    except Exception as ex:
+        print('%s: [red]Unable to fetch schedule for %s (%s): %s[/red]' % (datetime.now().strftime('%H:%M:%S'), exchange, calendar_code, str(ex)))
+        return pd.DataFrame(), calendar_code
+
+    return schedule, calendar_code
+
+def _get_schedule_open_close_columns(schedule):
+    """
+        Resolves open/close column names across exchange_calendars versions.
+    """
+    open_candidates = ['open', 'market_open']
+    close_candidates = ['close', 'market_close']
+
+    open_col = next((col for col in open_candidates if col in schedule.columns), None)
+    close_col = next((col for col in close_candidates if col in schedule.columns), None)
+    return open_col, close_col
+
+def _build_schedule_day_type_map(schedule):
+    """
+        Classifies schedule sessions with shortened regular trading hours.
+        Note: exchange_calendars captures regular trading sessions, so this only
+        identifies shortened RTH days. Evening-only behavior is inferred from
+        observed bars in _build_intraday_day_type_counts.
+    """
+    if schedule.empty:
+        return {}
+
+    open_col, close_col = _get_schedule_open_close_columns(schedule)
+    if (open_col is None) or (close_col is None):
+        return {}
+
+    session_df = schedule[[open_col, close_col]].copy()
+
+    # convert open and close columns to est 
+    session_df[open_col] = pd.to_datetime(session_df[open_col], utc=True).dt.tz_convert('US/Eastern')
+    session_df[close_col] = pd.to_datetime(session_df[close_col], utc=True).dt.tz_convert('US/Eastern')
+
+    # adjust close to be 1h before current close 
+    # session_df[close_col] = session_df[close_col] - pd.Timedelta(minutes=60)
+
+    session_df['trade_date'] = pd.to_datetime(session_df.index).date
+    session_df['session_minutes'] = (session_df[close_col] - session_df[open_col]).dt.total_seconds() / 60.0
+
+    session_df['weekday'] = pd.to_datetime(session_df['trade_date']).dt.weekday
+
+
+    weekday_minutes = session_df.loc[session_df['weekday'] < 5, 'session_minutes']
+    if weekday_minutes.empty:
+        return {}
+
+    regular_baseline_minutes = float(np.nanmedian(weekday_minutes.to_numpy()))
+    short_ratio = float(getattr(config, 'exchange_calendar_short_session_ratio', 0.85))
+    day_type_map = {}
+
+    for row in session_df.itertuples(index=False):
+        if pd.isna(row.session_minutes):
+            continue
+
+        is_short = float(row.session_minutes) < (regular_baseline_minutes * short_ratio)
+        if not is_short:
+            continue
+
+        day_type_map[row.trade_date] = 'holiday_reduced_hours'
+    
+    return day_type_map
+
+def _time_to_minutes(value):
+    """
+        Converts HH:MM[:SS] or datetime-like value to minutes from midnight.
+    """
+    if pd.isna(value):
+        return None
+    value = str(value)
+    if ' ' in value:
+        value = value.split(' ')[-1]
+    parts = value.split(':')
+    if len(parts) < 2:
+        return None
+    try:
+        return (int(parts[0]) * 60) + int(parts[1])
+    except Exception:
+        return None
+
 def _build_expected_trading_days(start_date, end_date, last_trade_date, exchange, country='US'):
     """
-        Builds expected trading days list between two dates excluding weekends and holidays.
+        Builds expected trading sessions list between two dates using exchange calendar schedule.
     """
     if (start_date is None) or (end_date is None):
         return []
@@ -391,14 +520,15 @@ def _build_expected_trading_days(start_date, end_date, last_trade_date, exchange
     if end_date < start_date:
         return []
 
-    all_dates = pd.date_range(start=start_date, end=end_date)
-    years = list(range(start_date.year, end_date.year + 1))
-    holidays = cdi._get_holidays_for_exchange(exchange=exchange, years=years, country=country)
-    holidays = set(holidays)
+    schedule, calendar_code = _get_calendar_schedule(exchange, start_date, end_date)
+    if schedule.empty:
+        print('%s: [red]No schedule rows returned for exchange %s (%s). Failing closed.[/red]' % (datetime.now().strftime('%H:%M:%S'), exchange, calendar_code))
+        return []
 
+    schedule_dates = pd.to_datetime(schedule.index).date
     return [
-        d.strftime('%Y-%m-%d') for d in all_dates
-        if d.weekday() < 5 and d.date() not in holidays and d.date() < last_trade_date
+        pd.to_datetime(d).strftime('%Y-%m-%d') for d in schedule_dates
+        if d < last_trade_date
     ]
 
 def _is_intraday_interval(interval_value):
@@ -407,6 +537,187 @@ def _is_intraday_interval(interval_value):
     """
     interval_str = str(interval_value).lower().replace(' ', '')
     return ('min' in interval_str) or ('hour' in interval_str)
+
+def _extract_last_trade_date_from_tablename(tablename, fallback_date=None):
+    """
+        Extracts YYYYMMDD token from table name and returns date.
+        Uses fallback_date when parsing fails.
+    """
+    tokens = str(tablename).split('_')
+    for token in tokens:
+        if re.fullmatch(r'\d{8}', token):
+            try:
+                return pd.to_datetime(token, format='%Y%m%d').date()
+            except Exception:
+                continue
+
+    if fallback_date is None:
+        return None
+    return pd.to_datetime(fallback_date).date()
+
+def _get_intraday_daily_session_stats(conn, quoted_tablename):
+    """
+        Returns daily intraday session stats needed for day-type classification.
+    """
+    return pd.read_sql(
+        'SELECT '
+        'DATE(date) AS trade_date, '
+        'COUNT(*) AS daily_count, '
+        'MIN(TIME(date)) AS first_bar_time, '
+        'MAX(TIME(date)) AS last_bar_time, '
+        'CAST((JULIANDAY(MAX(date)) - JULIANDAY(MIN(date))) * 24 * 60 AS INTEGER) AS session_span_minutes '
+        'FROM %s '
+        'GROUP BY DATE(date)' % quoted_tablename,
+        conn
+    )
+
+def _build_intraday_day_type_counts(daily_counts: pd.DataFrame, schedule_day_type_map, last_trade_date):
+    """
+        Classifies weekday daily bar counts into day types, combining:
+        1) schedule-derived shortened RTH days, and
+        2) observed all-hours bar shape for evening-dominant sessions.
+    """
+    if daily_counts.empty:
+        return pd.DataFrame(columns=['trade_date', 'daily_count', 'first_bar_time', 'last_bar_time', 'session_span_minutes', 'day_type'])
+
+    typed = daily_counts.copy()
+    typed['trade_date'] = pd.to_datetime(typed['trade_date']).dt.date
+    typed = typed.loc[pd.to_datetime(typed['trade_date']).dt.weekday < 5].copy()
+    if typed.empty:
+        return typed.assign(day_type=pd.Series(dtype='object'))
+
+    if 'first_bar_time' not in typed.columns:
+        typed['first_bar_time'] = None
+    if 'last_bar_time' not in typed.columns:
+        typed['last_bar_time'] = None
+    if 'session_span_minutes' not in typed.columns:
+        typed['session_span_minutes'] = np.nan
+
+    typed['day_type'] = 'regular_weekday'
+    typed.loc[pd.to_datetime(typed['trade_date']).dt.weekday == 4, 'day_type'] = 'friday'
+
+    typed['day_type'] = typed.apply(
+        lambda row: schedule_day_type_map.get(row['trade_date'], row['day_type']),
+        axis=1
+    )
+
+    # exchange_calendars defines regular-hours sessions only; infer evening-only
+    # from observed all-hours bars when a shortened RTH day starts in evening.
+    evening_open_minute = int(getattr(config, 'exchange_calendar_evening_open_minute_utc', 15 * 60))
+    first_minutes = typed['first_bar_time'].apply(_time_to_minutes)
+    evening_only_mask = (
+        (typed['day_type'] == 'holiday_reduced_hours')
+        & first_minutes.notnull()
+        & (first_minutes >= evening_open_minute)
+    )
+    typed.loc[evening_only_mask, 'day_type'] = 'holiday_evening_only'
+
+    if last_trade_date is not None:
+        typed.loc[typed['trade_date'] == last_trade_date, 'day_type'] = 'last_trade_date'
+    return typed
+
+def _compute_intraday_expected_counts_by_day_type(typed_counts: pd.DataFrame, min_samples=3):
+    """
+        Builds robust expected bar-count baselines per day type.
+    """
+    if typed_counts.empty:
+        return {}, 0
+
+    def _p80(series):
+        if series.empty:
+            return 0
+        return int(round(float(np.percentile(series.to_numpy(), 80))))
+
+    weekday_counts = typed_counts['daily_count']
+    weekday_baseline = _p80(weekday_counts)
+
+    holiday_counts_reduced = typed_counts.loc[
+        typed_counts['day_type'].isin(['holiday_reduced_hours']),
+        'daily_count'
+    ]
+
+    holiday_counts_evenings = typed_counts.loc[
+        typed_counts['day_type'].isin(['holiday_evening_only']),
+        'daily_count'
+    ]
+
+    holiday_baseline_reduced = _p80(holiday_counts_reduced) if not holiday_counts_reduced.empty else 0
+    holiday_baseline_evening = _p80(holiday_counts_evenings) if not holiday_counts_evenings.empty else 0
+
+    expected_by_type = {}
+    for day_type in ['regular_weekday', 'friday', 'holiday_reduced_hours', 'holiday_evening_only', 'last_trade_date']:
+        series = typed_counts.loc[typed_counts['day_type'] == day_type, 'daily_count']
+        if day_type == 'holiday_evening_only':
+            sparse_fallback = holiday_baseline_evening if holiday_baseline_evening > 0 else int(round(weekday_baseline * 0.25))
+        elif day_type == 'holiday_reduced_hours':
+            sparse_fallback = holiday_baseline_reduced if holiday_baseline_reduced > 0 else int(round(weekday_baseline * 0.75))
+        else:
+            sparse_fallback = weekday_baseline
+        
+        if len(series) >= min_samples:
+            baseline = _p80(series)
+        elif len(series) > 0:
+            median_count = int(round(float(series.median())))
+            if sparse_fallback > 0:
+                baseline = max(median_count, int(round(sparse_fallback * 0.9)))
+            else:
+                baseline = median_count
+        else:
+            baseline = sparse_fallback
+
+        if baseline < 0:
+            baseline = 0
+        expected_by_type[day_type] = baseline
+
+    return expected_by_type, weekday_baseline
+
+def _intraday_min_acceptable_count(expected_count, day_type):
+    """
+        Returns minimum acceptable bar count before a day is treated as incomplete.
+    """
+    tolerance_by_type = {
+        'regular_weekday': (0.10, 2),
+        'friday': (0.15, 2),
+        'holiday_reduced_hours': (0.20, 2),
+        'holiday_evening_only': (0.25, 2),
+        'last_trade_date': (0.25, 2),
+    }
+
+    expected_count = int(expected_count)
+    if expected_count <= 0:
+        return 0
+
+    tolerance_ratio, min_abs_tolerance = tolerance_by_type.get(day_type, (0.10, 2))
+    allowed_shortfall = max(int(np.ceil(expected_count * tolerance_ratio)), min_abs_tolerance)
+    return max(0, expected_count - allowed_shortfall)
+
+def _get_incomplete_intraday_dates(daily_counts: pd.DataFrame, schedule_day_type_map, last_trade_date):
+    """
+        Returns dates with materially low intraday bar counts by day type.
+    """
+    typed_counts = _build_intraday_day_type_counts(daily_counts, schedule_day_type_map, last_trade_date)
+    if typed_counts.empty:
+        return []
+    
+
+    expected_by_type, weekday_baseline = _compute_intraday_expected_counts_by_day_type(typed_counts)
+
+    if weekday_baseline <= 0:
+        return []
+
+    incomplete_dates = []
+    for row in typed_counts.itertuples(index=False):
+        expected = int(expected_by_type.get(row.day_type, weekday_baseline) or weekday_baseline)
+        if expected <= 0:
+            continue
+        min_acceptable = _intraday_min_acceptable_count(expected, row.day_type)
+        observed_count = pd.to_numeric(row.daily_count, errors='coerce')
+        if pd.isna(observed_count):
+            continue
+        if int(observed_count) < min_acceptable:
+            incomplete_dates.append(row.trade_date)
+
+    return sorted(set(incomplete_dates))
 
 def generate_pxhistory_metadata_master_table(conn):
     """
@@ -428,14 +739,14 @@ def generate_pxhistory_metadata_master_table(conn):
         print('%s: [yellow]Scanning gaps for %s...[/yellow]'%(datetime.now().strftime('%H:%M:%S'), row.name))
         tablename = row.name
 
-        # if lastTradeDate is empty, infer it from the name given we follow convention of symbol_expiry_interval
+        # if lastTradeDate is empty, infer it from table name by scanning for YYYYMMDD token
         inferred_last_trade_date = row.lastTradeDate
         if pd.isna(inferred_last_trade_date):
-            try:
-                inferred_last_trade_date = datetime.strptime(row.name.split('_')[1], '%Y%m%d').strftime('%Y-%m-%d')
-            except Exception:
+            inferred_date = _extract_last_trade_date_from_tablename(row.name)
+            if inferred_date is None:
                 print('%s: [red]Error inferring lastTradeDate for %s, skipping...[/red]'%(datetime.now().strftime('%H:%M:%S'), tablename))
                 continue
+            inferred_last_trade_date = inferred_date.strftime('%Y-%m-%d')
 
         quoted_tablename = _quote_sqlite_identifier(tablename)
         try:
@@ -458,6 +769,11 @@ def generate_pxhistory_metadata_master_table(conn):
             exchange = _get_exchange_for_symbol(row.symbol)
         except Exception:
             print('%s: [red]Error resolving exchange for %s, skipping...[/red]'%(datetime.now().strftime('%H:%M:%S'), tablename))
+            continue
+
+        schedule, calendar_code = _get_calendar_schedule(exchange, min_date, end_date)
+        if schedule.empty:
+            print('%s: [red]No calendar schedule for %s (%s), skipping table %s[/red]' % (datetime.now().strftime('%H:%M:%S'), exchange, calendar_code, tablename))
             continue
 
         expected_days = _build_expected_trading_days(min_date, end_date, last_trade_date, exchange=exchange)
@@ -483,23 +799,18 @@ def generate_pxhistory_metadata_master_table(conn):
         ).fetchone()
         last_missing_date = pd.to_datetime(last_missing_row[0]) if last_missing_row and last_missing_row[0] else pd.NaT
 
-        # For intraday tables, treat partial sessions as gaps by flagging days below the observed full-session count.
+        # For intraday tables, treat materially undersized sessions as gaps using day-type-aware thresholds.
         last_incomplete_intraday_date = pd.NaT
         if _is_intraday_interval(row.interval):
-            expected_intraday_count_row = conn.execute(
-                'SELECT MAX(daily_count) FROM '
-                '(SELECT COUNT(*) AS daily_count FROM %s GROUP BY DATE(date))' % quoted_tablename
-            ).fetchone()
-            expected_intraday_count = int(expected_intraday_count_row[0]) if expected_intraday_count_row and expected_intraday_count_row[0] is not None else 0
-            if expected_intraday_count > 0:
-                last_incomplete_intraday_row = conn.execute(
-                    'SELECT MAX(trade_date) FROM '
-                    '(SELECT DATE(date) AS trade_date, COUNT(*) AS daily_count FROM %s GROUP BY DATE(date)) '
-                    'WHERE daily_count < ? '
-                    'AND CAST(STRFTIME("%%w", trade_date) AS INTEGER) NOT IN (0, 6)' % quoted_tablename,
-                    (expected_intraday_count,)
-                ).fetchone()
-                last_incomplete_intraday_date = pd.to_datetime(last_incomplete_intraday_row[0]) if last_incomplete_intraday_row and last_incomplete_intraday_row[0] else pd.NaT
+            daily_counts = _get_intraday_daily_session_stats(conn, quoted_tablename)
+            schedule_day_type_map = _build_schedule_day_type_map(schedule)
+            incomplete_intraday_dates = _get_incomplete_intraday_dates(
+                daily_counts=daily_counts,
+                schedule_day_type_map=schedule_day_type_map,
+                last_trade_date=last_trade_date
+            )
+            if incomplete_intraday_dates:
+                last_incomplete_intraday_date = pd.to_datetime(max(incomplete_intraday_dates))
 
         if pd.isna(last_missing_date):
             last_gap_date = last_incomplete_intraday_date
@@ -557,11 +868,15 @@ def update_gaps_in_pxhistory_metadata(conn):
 
 def find_next_gap_date_in_table(conn, tablename, interval, exchange, start_after_date=None, country='US'):
     """
-        Returns the next gap date (pd.Timestamp) in a table after start_after_date.
+        Returns the newest candidate gap date (pd.Timestamp) in a table that is
+        strictly earlier than start_after_date (resume cursor).
+
+        If start_after_date is None, search starts from the newest candidate.
         Gap definitions:
-        1) Missing expected trading day (weekdays minus exchange holidays)
-        2) Incomplete intraday weekday session (daily bar count below expected full-session count)
-           - weekend sessions (including Sunday open) are excluded from incomplete-session checks
+        1) Missing expected trading session from exchange_calendars schedule
+        2) Incomplete intraday session based on schedule-aware day-type baseline and tolerance
+           - day types include regular weekdays, Fridays, holiday_reduced_hours,
+             holiday_evening_only, and last_trade_date
 
         Returns pd.NaT when no gap is found.
     """
@@ -580,22 +895,29 @@ def find_next_gap_date_in_table(conn, tablename, interval, exchange, start_after
     min_date = pd.to_datetime(bounds[0]).date()
     max_date = pd.to_datetime(bounds[1]).date()
 
-    if start_after_date is None:
-        start_after_date = min_date - pd.to_timedelta(1, unit='D')
+    if (start_after_date is None) or pd.isna(start_after_date):
+        cursor_date = max_date + pd.to_timedelta(1, unit='D')
     else:
-        start_after_date = pd.to_datetime(start_after_date).date()
+        cursor_date = pd.to_datetime(start_after_date).date()
 
-    last_trade_date = tablename.split('_')[1] if len(tablename.split('_')) > 2 else max_date.strftime('%Y-%m-%d')
-    last_trade_date = pd.to_datetime(last_trade_date).date()
+    last_trade_date = _extract_last_trade_date_from_tablename(tablename, fallback_date=max_date)
+    if last_trade_date is None:
+        return pd.NaT
 
+    # get exchange calendar schedule for the date range in the table
+    schedule, calendar_code = _get_calendar_schedule(exchange=exchange, start_date=min_date, end_date=max_date)
+    if schedule.empty:
+        print('%s: [red]No calendar schedule for %s (%s), failing closed for %s[/red]' % (datetime.now().strftime('%H:%M:%S'), exchange, calendar_code, tablename))
+        return pd.NaT
+
+    # build schedule day type map for classifying intraday sessions later when checking for incomplete sessions
+    schedule_day_type_map = _build_schedule_day_type_map(schedule)
+    
     expected_days = _build_expected_trading_days(min_date, max_date, last_trade_date, exchange=exchange, country=country)
     if not expected_days:
         return pd.NaT
 
-    daily_counts = pd.read_sql(
-        'SELECT DATE(date) AS trade_date, COUNT(*) AS daily_count FROM %s GROUP BY DATE(date)' % quoted_tablename,
-        conn
-    )
+    daily_counts = _get_intraday_daily_session_stats(conn, quoted_tablename)
     if daily_counts.empty:
         return pd.NaT
 
@@ -609,22 +931,21 @@ def find_next_gap_date_in_table(conn, tablename, interval, exchange, start_after
         if d not in actual_dates
     ]
 
-    # Incomplete intraday weekdays (exclude weekend sessions like Sunday open)
+    # Incomplete intraday weekdays by day type with tolerance.
     incomplete_intraday_dates = []
     if _is_intraday_interval(interval):
-        weekday_rows = daily_counts[
-            pd.to_datetime(daily_counts['trade_date']).dt.weekday < 5
-        ]
-        if not weekday_rows.empty:
-            expected_intraday_count = int(weekday_rows['daily_count'].max())
-            if expected_intraday_count > 0:
-                incomplete_intraday_dates = weekday_rows.loc[
-                    weekday_rows['daily_count'] < expected_intraday_count, 'trade_date'
-                ].tolist()
+        incomplete_intraday_dates = _get_incomplete_intraday_dates(
+            daily_counts=daily_counts,
+            schedule_day_type_map=schedule_day_type_map,
+            last_trade_date=last_trade_date
+        )
+    # print(incomplete_intraday_dates)
+    # exit() 
 
+    # print(missing_dates)
+    # print('\n')
     gap_dates = sorted(set(missing_dates + incomplete_intraday_dates))
-    next_gaps = [d for d in gap_dates if d > start_after_date]
-
+    next_gaps = [d for d in gap_dates if d < cursor_date]
     if not next_gaps:
         return pd.NaT
     return pd.to_datetime(next_gaps[-1])
@@ -636,13 +957,25 @@ def update_gaps_in_pxhistory(conn, ib, ibkr_lookback_period = '5 D'):
     DEFAULT_DATE_IF_NO_GAPS = pd.to_datetime('1989-12-30')
     # get table metadata, and filter out tables that no longer have gaps 
     pxhistory_metadata = db.getTable(conn, config.table_name_futures_pxhistory_metadata)
-    pxhistory_metadata = pxhistory_metadata.loc[pxhistory_metadata['date_of_last_gap_date_polled'] != 1989-12-30]
+    pxhistory_metadata = pxhistory_metadata.loc[pxhistory_metadata['date_of_last_gap_date_polled'] != "1989-12-30 00:00:00"].reset_index(drop=True)
 
+    # select where tablename contains VIX
+    # pxhistory_metadata = pxhistory_metadata.loc[pxhistory_metadata['tablename'].str.contains('VIX')].reset_index(drop=True)
+
+    # print(pxhistory_metadata)
+    # exit() 
     # update gaps for each table in the db 
     for idx, row in pxhistory_metadata.iterrows():
         tablename = row['tablename']
-        pxHistory = db.getTable(conn, tablename)
+        exchange = _get_exchange_for_symbol(tablename.split('_')[0])
+        print('%s: [yellow]Checking gaps for %s:%s...[/yellow]'%(datetime.now().strftime('%H:%M:%S'), exchange, tablename))
+        # pxHistory = db.getTable(conn, tablename)
         symbol, expiry, interval = tablename.split('_')
+
+        if symbol == 'SI':
+            contract = Future(symbol=symbol, lastTradeDateOrContractMonth=expiry, exchange=exchange, currency='USD', includeExpired=True, multiplier="5000")
+        else:
+            contract = Future(symbol=symbol, lastTradeDateOrContractMonth=expiry, exchange=exchange, currency='USD', includeExpired=True)
         
         # if expiry is more than 2 years ago, update metadata to reflect no gaps and continue
         if pd.to_datetime(expiry) < datetime.today() - relativedelta(years=2):
@@ -650,65 +983,58 @@ def update_gaps_in_pxhistory(conn, ib, ibkr_lookback_period = '5 D'):
             update_metadata(pxhistory_metadata, tablename, DEFAULT_DATE_IF_NO_GAPS, num_unique_gaps=0)
             continue
 
-        # Determine the gap date that should be updated 
-        last_gap_polled = pd.to_datetime(row['date_of_last_gap_date_polled'])
-
-        # if last_gap_polled is same as expiry, get the next gap date 
-        if last_gap_polled.date() == pd.to_datetime(expiry).date():
-            last_gap_polled = find_next_gap_date_in_table(conn, tablename, interval, _get_exchange_for_symbol(symbol))
-
-        number_of_datetime_in_each_date = calculate_datetime_counts(pxHistory)
-        if not pd.isna(last_gap_polled):
-            number_of_datetime_in_each_date = number_of_datetime_in_each_date.loc[pd.to_datetime(number_of_datetime_in_each_date['date_only']) < last_gap_polled]
-            # if this returns empty, 
-            # that means there are no more gaps left to update. Update metadata to reflect this 
-            if number_of_datetime_in_each_date.empty:
-                update_metadata(pxhistory_metadata, tablename, DEFAULT_DATE_IF_NO_GAPS, num_unique_gaps=0)
-                continue
+        # Determine next candidate gap date strictly before the saved cursor.
+        date_with_missing_data = find_next_gap_date_in_table(
+            conn,
+            tablename,
+            interval,
+            exchange,
+            start_after_date=row['date_of_last_gap_date_polled']
+        )
         
-        date_to_update = pd.to_datetime(number_of_datetime_in_each_date['date_only'].max()) + pd.to_timedelta(1, unit='D')
+        # if return is pd.NatT, that means there are no more gaps to update. Update metadata to reflect this and continue
+        if pd.isna(date_with_missing_data):
+            update_metadata(pxhistory_metadata, tablename, DEFAULT_DATE_IF_NO_GAPS, num_unique_gaps=0)
+            continue
 
         # get gap data from ibkr 
-        print('%s: [yellow]Updating gap history for %s, gap date: %s...[/yellow]'%(datetime.now().strftime('%H:%M:%S'), tablename, date_to_update.strftime('%Y-%m-%d')))     
-        exchange = _get_exchange_for_symbol(tablename.split('_')[0])
-        ibkr_pxhistory = ibkr.getBars_futures(ib, symbol=symbol, lastTradeDate=expiry, interval=_addspace(interval), endDate=date_to_update, lookback=ibkr_lookback_period, exchange=exchange)
+        print('%s: [yellow]Updating gap history for %s, gap date: %s...[/yellow]'%(datetime.now().strftime('%H:%M:%S'), tablename, date_with_missing_data.strftime('%Y-%m-%d')))     
+        
+
+        # ibkr_pxhistory = ibkr.getBars_futures(ib, symbol=symbol, lastTradeDate=expiry, interval=_addspace(interval), endDate=date_with_missing_data + pd.to_timedelta(1, unit='D'), lookback=ibkr_lookback_period, exchange=exchange)
+        ibkr_pxhistory = ibkr.getBars_futures(ib, contract, interval=_addspace(interval), endDate=date_with_missing_data + pd.to_timedelta(1, unit='D'), lookback=ibkr_lookback_period)
+        # print(ibkr_pxhistory)
+        # exit() 
         if ibkr_pxhistory is None:
-            print('%s: [green]No records found for %s, with endDate: %s [/green]'%(datetime.now().strftime('%H:%M:%S'), tablename, date_to_update.strftime('%Y-%m-%d')))
-            update_metadata(pxhistory_metadata, tablename, DEFAULT_DATE_IF_NO_GAPS)
+            print('%s: [green]No records found for %s, with endDate: %s [/green]'%(datetime.now().strftime('%H:%M:%S'), tablename, date_with_missing_data.strftime('%Y-%m-%d')))
+            # advance cursor even when no records are returned so resume continues backwards
+            update_metadata(pxhistory_metadata, tablename, date_with_missing_data)
             continue        
         ibkr_pxhistory['symbol'] = symbol
         ibkr_pxhistory['interval'] = interval
         ibkr_pxhistory['lastTradeDate'] = expiry                 
 
-        # print(ibkr_pxhistory)
-
-        # get earliest timestamp from ibkr if contract is not expired 
+        # save history to db 
         if expiry > datetime.today().strftime('%Y%m%d'):
             earliestTimestamp = ibkr.getEarliestTimeStamp_m(ib, symbol=symbol, lastTradeDate=expiry, exchange=exchange)
         else:
-            # set to 2 years ago 
             earliestTimestamp = pd.to_datetime((datetime.today() - relativedelta(years=2)).strftime('%Y-%m-%d'))
-        # print(earliestTimestamp)
-        # exit() 
-
-        # save it to db 
         db.saveHistoryToDB(ibkr_pxhistory, conn, earliestTimestamp=earliestTimestamp, type='future')
-        # exit() 
-        print('%s: [green]Record %s of %s updated for %s, sleeping for %ss...[/green]'%(datetime.now().strftime('%H:%M:%S'),idx,len(pxhistory_metadata), tablename, _defaultSleepTime/30))
+        print('%s: [green]Record %s of %s updated for %s, sleeping for %ss...[/green]'%(datetime.now().strftime('%H:%M:%S'),idx+1,len(pxhistory_metadata), tablename, _defaultSleepTime/30))
+
+        # Update metadata cursor to the candidate date that was just scanned.
+        update_metadata(pxhistory_metadata, tablename, date_with_missing_data)
+
+        # sleep before next record 
         time.sleep(_defaultSleepTime/30)
+        print('%s: [yellow]Sleeping for %ss[/yellow]\n'%(datetime.now().strftime('%H:%M:%S'), _defaultSleepTime/30))
         
-        # Update metadata 
-        # pxhistory_metadata.loc[pxhistory_metadata['tablename'] == tablename, 'date_of_last_gap_date_polled'] = ibkr_pxhistory['date'].min().date()
-        # pxhistory_metadata.loc[pxhistory_metadata['tablename'] == tablename, 'update_date'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        update_metadata(pxhistory_metadata, tablename, ibkr_pxhistory['date'].min().date())
 
     print('%s: [green]DONE! Completed updating gaps in pxhistory_metadata, cleaning up metadata[/green]\n'%(datetime.now().strftime('%H:%M:%S')))
     # make sure updatde_date and date_og_last_gap_date_polled are datetime 
     pxhistory_metadata['update_date'] = pd.to_datetime(pxhistory_metadata['update_date'])
     pxhistory_metadata['date_of_last_gap_date_polled'] = pd.to_datetime(pxhistory_metadata['date_of_last_gap_date_polled'])
 
-    print(pxhistory_metadata)
-    print(pxhistory_metadata.dtypes)
     db.save_table_to_db(conn = conn, tablename=config.table_name_futures_pxhistory_metadata, metadata_df = pxhistory_metadata)
     db.remove_duplicates_from_pxhistory_gaps_metadata(conn, config.table_name_futures_pxhistory_metadata)
 
@@ -828,29 +1154,40 @@ def _updatePreHistory(lookupTable: pd.DataFrame, ib: 'IBKRConnection'):
     # make sure interval formatting matches ibkr rqmts e.g. 5 mins, 1 day 
     lookupTable['interval'] = lookupTable.apply(lambda row: _addspace(row['interval']), axis=1)
     
-    # lookupTable = lookupTable.loc[lookupTable['lastTradeDate'] > datetime.today().strftime('%Y%m')].reset_index(drop=True)
-
-    lookupTable = lookupTable.loc[lookupTable['numMissingBusinessDays'] > 0].reset_index(drop=True)
-    # set Exchange lookup 
-    uniqueSymbol = lookupTable.drop_duplicates(subset=['symbol'])
-    uniqueSymbol = uniqueSymbol.assign(exchange=uniqueSymbol.apply(lambda row: _get_exchange_for_symbol(row['symbol']), axis=1))
-    
-    uniqueSymbol['earliestTimeStamp'] = (datetime.today() - relativedelta(years=2)).strftime('%Y%m%d %H:%M:%S')
+    # filter out records that dont need updating 
+    lookupTable = lookupTable.loc[lookupTable['numMissingBusinessDays'] > 1].reset_index(drop=True)
+    lookupTable = lookupTable.loc[lookupTable['lastTradeDate'] > (datetime.today() - relativedelta(years=2)).strftime('%Y%m')].reset_index(drop=True)
     lookupTable.sort_values(by=['interval'], inplace=True)
     lookupTable.reset_index(drop=True, inplace=True)
-    i=0
+    print(lookupTable)
+    
+    
+    # set Exchange lookup 
+    uniqueSymbol = lookupTable.drop_duplicates(subset=['symbol'])
+    # uniqueSymbol = uniqueSymbol.assign(exchange=uniqueSymbol.apply(lambda row: _get_exchange_for_symbol(row['symbol']), axis=1))   
+    # uniqueSymbol['earliestTimeStamp'] = (datetime.today() - relativedelta(years=2)).strftime('%Y%m%d %H:%M:%S')
 
+    i=0
     for index, record in lookupTable.iterrows():  
         lookback = 100
         i+=1
-        print('%s: [yellow]Record [/yellow]%s of %s: %s-%s-%s'%(datetime.now().strftime("%H:%M:%S"),i, len(lookupTable), record.symbol, record['lastTradeDate'], record['interval']))
+
+        # set exchange 
+        exchange = _get_exchange_for_symbol(record['symbol'])#uniqueSymbol.loc[uniqueSymbol['symbol'] == record['symbol']]['exchange'].iloc[0]
+
+        # define contract 
+        if record['symbol'] == 'SI':
+            contract = Future(symbol=record['symbol'], lastTradeDateOrContractMonth=record['lastTradeDate'], exchange=exchange, currency='USD', includeExpired=True, multiplier="5000")
+        else:
+            contract = Future(symbol=record['symbol'], lastTradeDateOrContractMonth=record['lastTradeDate'], exchange=exchange, currency='USD', includeExpired=True)
+
+        print('%s: [yellow]Record [/yellow]%s of %s: %s-%s-%s'%(datetime.now().strftime("%H:%M:%S"),index, len(lookupTable), record.symbol, record['lastTradeDate'], record['interval']))
         
         # set end date 
         endDate = (record['firstRecordDate'] + relativedelta(days=1)).strftime('%Y%m%d %H:%M:%S')
         
-        # set earliestTimeStamp
-        earliestAvailableTimestamp = pd.to_datetime(uniqueSymbol.loc[uniqueSymbol['symbol'] == record['symbol']]['earliestTimeStamp'].iloc[0])
-        exchange = uniqueSymbol.loc[uniqueSymbol['symbol'] == record['symbol']]['exchange'].iloc[0]
+        # earleist possible timestamp is limited by api at 2 years 
+        earliestAvailableTimestamp = (datetime.today() - relativedelta(years=2))#.strftime('%Y%m%d %H:%M:%S')
     
         # set lookback
         if lookback >= (record['firstRecordDate'] - earliestAvailableTimestamp).days:
@@ -871,8 +1208,8 @@ def _updatePreHistory(lookupTable: pd.DataFrame, ib: 'IBKRConnection'):
             continue
         else: 
             if record['interval'] in ['1 min', '5 mins']: # Make multiple calls for ltf data
-                for i in range(10): 
-                    currentIterationBars = ibkr.getBars_futures(ib, symbol=record['symbol'], lastTradeDate=record['lastTradeDate'], interval=record['interval'], endDate=endDate, lookback=(str(lookback) + ' D'), exchange=exchange)
+                for i in range(5): 
+                    currentIterationBars = ibkr.getBars_futures(ib, contract, interval=record['interval'], endDate=endDate, lookback=(str(lookback) + ' D'))
                     if (currentIterationBars is None): 
                         break
                     else: 
@@ -880,13 +1217,13 @@ def _updatePreHistory(lookupTable: pd.DataFrame, ib: 'IBKRConnection'):
                         endDate = history['date'].min()
                         
             else:
-                history = ibkr.getBars_futures(ib, symbol=record['symbol'], lastTradeDate=record['lastTradeDate'], interval=record['interval'], endDate=endDate, lookback=(str(lookback) + ' D'), exchange=exchange)
+                history = ibkr.getBars_futures(ib, contract, interval=record['interval'], endDate=endDate, lookback=(str(lookback) + ' D'))
         
         # skip to next if no data is returned
         if history is None or history.empty:
             print(' [green]No data left [/green]for %s %s %s!'%(record['symbol'], record['lastTradeDate'], record['interval']))
             with db.sqlite_connection(dbName_futures) as conn:
-                earliestAvailableTimestamp = db._getFirstRecordDate(record, conn)
+                earliestAvailableTimestamp = ibkr.getEarliestTimeStamp(ib, contract) #db._getFirstRecordDate(record, conn)
                 db._update_symbol_metadata(conn, record['name'], earliestTimestamp=earliestAvailableTimestamp, numMissingDays=0, type='future')
             continue
         
@@ -1012,11 +1349,11 @@ def check_futures_data_integrity():
 
 if __name__ == '__main__':
     ib = ibkr.setupConnection()
-    # updateRecords(ib)       
+    updateRecords(ib)       
     for i in range(15):
         with db.sqlite_connection(dbName_futures) as conn:
             lookupTable = db.getLookup_symbolRecords(conn)
-        # _updatePreHistory(lookupTable, ib)
+        _updatePreHistory(lookupTable, ib)
 
         with db.sqlite_connection(dbName_futures) as conn:
             # generate_pxhistory_metadata_master_table(conn)
