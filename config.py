@@ -18,8 +18,8 @@ table_name_futures_pxhistory_metadata = '00-lookup_pxhistory_metadata'
 
 # Reference Lists
 intervals = ['1 min', '5 mins', '30 mins', '1 day']
-_indexList = ['GVZ', 'INDU', 'NDX', 'VIX', 'VIX3M', 'VVIX', 'SPX', 'VIX1D', 'TSX']
-_index = ['GVZ', 'INDU', 'NDX', 'VIX', 'VIX3M', 'VVIX', 'SPX', 'VIX1D', 'TSX']
+_indexList = ['GVZ', 'INDU', 'NDX', 'VIX', 'VIX3M', 'VVIX', 'SPX', 'VIX1D', 'TSX', 'NDX']
+_index = ['GVZ', 'INDU', 'NDX', 'VIX', 'VIX3M', 'VVIX', 'SPX', 'VIX1D', 'TSX', 'NDX']
 delisted_symbols = ['BURU']
 
 ## Lookup dicts 
