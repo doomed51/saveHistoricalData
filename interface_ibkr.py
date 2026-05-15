@@ -182,8 +182,8 @@ def _getHistoricalBars(ibkrObj, symbol, currency, endDate, lookback, interval, w
     if ' ' not in interval:
         interval = _addspace(interval)
 
-    print('%s: Looking up history for %s, start: %s, end: %s, lookback: %s, interval: %s' % (
-        datetime.datetime.now().strftime('%H:%M:%S'), symbol, endDate - pd.to_timedelta(lookback), endDate, lookback, interval))
+    print('%s: Looking up history for %s, end: %s, lookback: %s, interval: %s' % (
+        datetime.datetime.now().strftime('%H:%M:%S'), symbol, endDate, lookback, interval))
     
     # request history from ibkr 
     _paceIbkrRequest(ibkrObj, 'reqHistoricalData')
