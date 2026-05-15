@@ -176,10 +176,12 @@ def _initialize_progress_tracker(conn, ib):
     db.create_progress_tracker_table(conn, PROGRESS_TABLE)
 
     contracts = _list_all_target_contracts(ib)
+
     if contracts.empty:
         return
     
     existing_tracker = db.get_progress_tracker(conn, PROGRESS_TABLE)
+
 
     for interval in TRACKED_INTERVALS:
         for row in contracts.itertuples(index=False):
@@ -225,7 +227,34 @@ def _initialize_progress_tracker(conn, ib):
                     earliest_timestamp=None,
                     last_fetched_end_date=max_date,
                 )
-            
+
+
+def _set_active_contracts_in_progress_tracker(conn, ib): 
+    """
+        ensures status field is accurate for currently active contracts. 
+        
+        Sets status to 'active' where expiry is > today and updated_at < target_end_date 
+    """
+    tracker = db.get_progress_tracker(conn, PROGRESS_TABLE)
+    if tracker.empty:
+        return 
+
+    now = pd.Timestamp.now().floor('s')
+    for row in tracker.itertuples(index=False):
+        expiry_dt = _parse_expiry_to_datetime(row.expiry)
+        target_end_date = _get_target_end_date(row.expiry)
+
+        if expiry_dt > now and row.updated_at < target_end_date and row.status in ['complete']:
+            db.update_progress_tracker_fields(
+                conn,
+                row.tablename,
+                {
+                    'status': 'active',
+                    'target_end_date': target_end_date,
+                    # 'updated_at': now,
+                },
+                PROGRESS_TABLE,
+            )
 
 
 def _get_work_queue(conn, interval):
@@ -233,9 +262,7 @@ def _get_work_queue(conn, interval):
     if tracker.empty:
         return tracker
 
-    tracker = tracker.loc[tracker['interval'] == interval].copy()
-    tracker = tracker.loc[tracker['status'] != 'complete'].copy()
-
+    tracker = tracker.loc[(tracker['interval'] == interval) & (tracker['status'] != 'complete')].copy()
     
     tracker['expiry_dt'] = tracker['expiry'].apply(_parse_expiry_to_datetime)
     tracker = tracker.sort_values(['expiry_dt', 'symbol']).reset_index(drop=True)
@@ -269,6 +296,7 @@ def _forward_fetch_contract(conn, ib, row):
         )
 
     if pd.isna(earliest_ts):
+        print("Unable to determine earliest timestamp for %s. Skipping forward fetch." % tablename)
         return 0
 
     cursor = pd.to_datetime(row['last_fetched_end_date'], errors='coerce')
@@ -303,7 +331,7 @@ def _forward_fetch_contract(conn, ib, row):
                 bars['interval'] = interval.replace(' ', '')
                 bars['lastTradeDate'] = expiry
                 db.saveHistoryToDB(bars, conn, earliestTimestamp=earliest_ts, type='future')
-
+ 
         db.update_progress_tracker_fields(
             conn,
             tablename,
@@ -419,6 +447,7 @@ def main():
 
     with db.sqlite_connection(DB_NAME_FUTURES) as conn:
         _initialize_progress_tracker(conn, ib)
+        _set_active_contracts_in_progress_tracker(conn, ib)
         
         # get gaps metadata 
         gap_metadata = db.getTable(conn, GAP_DATES_TABLE)
@@ -427,8 +456,17 @@ def main():
         for interval in TRACKED_INTERVALS:
         # for interval in ['1 min']:
             print('%s: [yellow]Starting interval pass: %s[/yellow]' % (datetime.now().strftime('%H:%M:%S'), interval))
+            
             while True:
                 queue = _get_work_queue(conn, interval)
+                
+                # remove rows updated within the last 5 mins to avoid potential race conditions
+                five_mins_ago = pd.Timestamp.now() - pd.Timedelta(minutes=5)
+                queue = queue.loc[queue['updated_at'] < five_mins_ago].reset_index(drop=True)
+
+                # print(queue)
+                # exit() 
+                
                 if queue.empty:
                     break
 
@@ -444,7 +482,7 @@ def main():
 
 
                 ################## FORWARD FETCH
-                if row['status'] in ['not_started', 'forward_fetch_in_progress']:
+                if row['status'] in ['not_started', 'forward_fetch_in_progress', 'active']:
                     print('%s: [yellow]============================== Starting forward fetch for %s %s %s ==============================[/yellow]' % (datetime.now().strftime('%H:%M:%S'), row['symbol'], row['expiry'], row['interval']))
                     api_calls_since_refresh += _forward_fetch_contract(conn, ib, row)
 
@@ -459,17 +497,11 @@ def main():
                 if not refreshed_row.empty and refreshed_row.iloc[0]['status'] == 'gap_fill_in_progress':
                     print('%s: [yellow]============================== Starting gap fill for %s %s %s ==============================[/yellow]' % (datetime.now().strftime('%H:%M:%S'), refreshed_row.iloc[0]['symbol'], refreshed_row.iloc[0]['expiry'], refreshed_row.iloc[0]['interval']))
 
-                    # print(gap_metadata)
-                    # print(gap_metadata.loc[
-                    #     (gap_metadata['tablename'] == refreshed_row.iloc[0]['tablename'])].iloc[0])
-                    # exit() 
 
                     date_of_last_gap_date_polled = gap_metadata.loc[
                         (gap_metadata['tablename'] == refreshed_row.iloc[0]['tablename'])]['date_of_last_gap_date_polled'].iloc[0] if not gap_metadata.loc[
                         (gap_metadata['tablename'] == refreshed_row.iloc[0]['tablename'])]['date_of_last_gap_date_polled'].empty else None
-                    # print(refreshed_row)
-                    # print(date_of_last_gap_date_polled)
-                    # exit() 
+
 
                     api_calls_since_refresh += _verify_and_fill_gaps(conn, ib, refreshed_row.iloc[0], date_of_last_gap_date_polled)
 
