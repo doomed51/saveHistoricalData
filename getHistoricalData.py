@@ -55,7 +55,7 @@ _index = config._index
 currency_mapping = config.currency_mapping
 
 # load exchange lookup table from config
-exchange_mapping = config.exchange_mapping
+exchange_mapping = config.exchange_mapping_stocks
 
 ibkrThrottleTime = 10 # minimum seconds to wait between api requests to ibkr
 
@@ -287,6 +287,9 @@ def updateRecordHistory(ibkr, records, indicesWithOutdatedData= pd.DataFrame(), 
     ## get a list of missing intervals if any 
     missingIntervals = pd.DataFrame()
     missingIntervals = getMissingIntervals(records, type='index')
+
+    # build a cache for earliest available timestamps to avoid redundant calls to ibkr for duplicate symbols across intervals
+    earliestAvailableTimestamps_cache = {}
     
     ## add records for symbols newly added to the watchlist 
     if not newlyAddedIndices.empty:
@@ -375,7 +378,11 @@ def updateRecordHistory(ibkr, records, indicesWithOutdatedData= pd.DataFrame(), 
             endDate = None
 
             # earliestTimeStamp for DB save
-            earliestTimestamp = ib.getEarliestTimeStamp(ibkr, get_contract(symbol=row['symbol'], type='index' if row['symbol'] in _index else 'stock'))
+            if row['symbol'] in earliestAvailableTimestamps_cache:
+                earliestTimestamp = earliestAvailableTimestamps_cache[row['symbol']]
+            else:
+                earliestTimestamp = ib.getEarliestTimeStamp(ibkr, get_contract(symbol=row['symbol'], type='index' if row['symbol'] in _index else 'stock'))
+                earliestAvailableTimestamps_cache[row['symbol']] = earliestTimestamp
             if not earliestTimestamp: 
                 continue 
 
@@ -499,163 +506,181 @@ def getMissingIntervals(records, type = 'stock'):
     ## return the missing symbol-interval combos
     return missingCombos
 
-"""
-Updates a chunk of pre-histric data for existing records  
-__
-Logic:
-0. get records from the lookup table
-1. Select records with numMissingBusinessDays > 5
-2. Get history from ibkr
-3. Save history to db
-"""
 def updatePreHistoricData(ibkr):
+    """
+    Updates a chunk of pre-histric data for existing records  
+    __
+    Logic:
+    0. get records from the lookup table
+    1. Select records with numMissingBusinessDays > 5
+    2. Get history from ibkr
+    3. Save history to db
+    """
     print('%s: [yellow]Updating pre-history...\n[/yellow]'%(datetime.datetime.now().strftime("%H:%M:%S")))
     print('[green]----------------------------------------[/green]')
-    
-    lookback = 30 # number of days to look back
 
-    # read in the lookup table 
+    # read in the lookup table
     with db.sqlite_connection(_dbName_index) as conn:
         lookupTable = db.getLookup_symbolRecords(conn)
-    # Select records still missing history; include null metadata for newly discovered rows.
+
+    # select records still missing history; include null metadata for newly discovered rows
     lookupTable = lookupTable.loc[
         (lookupTable['numMissingBusinessDays'] > 2) | (lookupTable['numMissingBusinessDays'].isnull())
     ].reset_index(drop=True)
     lookupTable = lookupTable.loc[~lookupTable['symbol'].isin(config.delisted_symbols)]
-    # exit if nothing to update
 
     if lookupTable.empty:
         print('[green]All historic data has been loaded![/green]')
-        exit()
-    # format lookupTable
+        return
+
     lookupTable['interval'] = lookupTable['interval'].apply(lambda x: _addspace(x))
-    lookupTable.sort_values(by=['symbol'], inplace=True)
-    # Cache earliest-available timestamps so duplicate symbols across intervals call IBKR once.
+    lookupTable['firstRecordDate'] = pd.to_datetime(lookupTable['firstRecordDate'], errors='coerce')
+    lookupTable = lookupTable.loc[lookupTable['firstRecordDate'].notnull()].copy()
+    lookupTable.sort_values(by=['symbol', 'interval'], inplace=True)
+
+    if lookupTable.empty:
+        print('[yellow]No valid firstRecordDate values found in lookup table.[/yellow]')
+        return
+
+    # cache earliest-available timestamps so duplicate symbols across intervals call IBKR once
     symbol_earliest_ts_cache = {}
+    ibkr_call_count = 0
+    max_consecutive_calls = getattr(config, 'ibkr_max_consecutive_calls', 20)
 
-    # loop through each record in the lookup table
-    for index, row in lookupTable.iterrows():
-        if row['symbol'] not in symbol_earliest_ts_cache:
-            symbol_earliest_ts_cache[row['symbol']] = ib.getEarliestTimeStamp(
-                ibkr,
-                get_contract(symbol=row['symbol'], type='index' if row['symbol'] in _index else 'stock')
-            )
-
-        earliestAvailableTimestamp = symbol_earliest_ts_cache[row['symbol']]
-        if not earliestAvailableTimestamp:
-            continue
-        
-        # convert to datetime
-        earliestAvailableTimestamp = pd.to_datetime(earliestAvailableTimestamp)
-        numIterations = 4 #number of subsequent calls to ibkr for the same sybol-interval combo
-
-        ## set the lookback based on the history left in ibkr or the interval,
-        ## whichever is the more limiting factor
-        if (lookback > (row['firstRecordDate'] - earliestAvailableTimestamp).days):
-            # set lookback to the number of days left in ibkr
-            lookback = (row['firstRecordDate'] - earliestAvailableTimestamp).days
-            numIterations = 1 # only need the one iteration
-        elif row['interval'] == '1 min':
-            lookback = 5
-        elif row['interval'] == '1 day':
-            lookback = 100
-        else:
-            lookback = 30
-
-        # initiate 'enddate from the last time history was updated, manually set hour 
-        # to end of day so no data is missed (duplicates are handled later)
-        endDate = row['firstRecordDate']#-pd.offsets.BDay(1)
-        
-        ##exit while loop when lookback is larger than the avilable days in ibkr 
-        if 0 > (endDate - earliestAvailableTimestamp).days:
-            print('[red]No more data available[/red] for %s-%s'%(row['symbol'], row['interval']))
-            # update the lookup table 
-            with db.sqlite_connection(_dbName_index) as conn:
-                # set type 
-                if row['symbol'] in _index:
-                    type = 'index'
-                else:
-                    type = 'stock'
-                tablename = row['symbol']+'_'+type+'_'+row['interval'].replace(' ', '')
-                db._updateLookup_symbolRecords(conn, tablename, type, earliestAvailableTimestamp)
-                print('\n')
-            continue
-        
-        print('%s: Updating %s-%s, %s days from %s'%(datetime.datetime.now().strftime("%H:%M:%S"), row['symbol'], row['interval'], lookback*numIterations, endDate))
-        print('%s, Earliest available datapoint: %s'%(row['symbol'], earliestAvailableTimestamp))
-
-        ## initiate the history datafram that will hold the retrieved bars 
-        history = pd.DataFrame()
-
-        i=0 # call ibkr numIterations times 
-        while i < numIterations:
-            i+=1
-            
-            # print('%s: [yellow]Pausing %.2fs before next ibkr call...[/yellow]'%(datetime.datetime.now().strftime("%H:%M:%S"), ibkrThrottleTime/30))
-            # ## manual throttling of api requests 
-            # time.sleep(ibkrThrottleTime/6)
-            
-            # handle error on ib.getbars()
+    # process one symbol at a time; exhaust all intervals before moving to the next symbol
+    for symbol, symbol_rows in lookupTable.groupby('symbol', sort=True):
+        if symbol not in symbol_earliest_ts_cache:
             try:
-                currentIterationHistoricalBars = ib.getBars(ibkr, symbol=row['symbol'], lookback='%s D'%lookback, interval=row['interval'], endDate=endDate)
-            except:
-                print('[red]  Error retrieving data from IBKR![/red]\n')
-                continue
+                symbol_earliest_ts_cache[symbol] = ib.getEarliestTimeStamp(
+                    ibkr,
+                    get_contract(symbol=symbol, type='index' if symbol in _index else 'stock')
+                )
+            except Exception:
+                symbol_earliest_ts_cache[symbol] = pd.NaT
 
-            # skip to next if history is empty
-            if currentIterationHistoricalBars.empty:
-                i=numIterations ## quit out of the while loop since there is no data left
-                continue
-                        
-            ## concatenate history retrieved from ibkr 
-            history = pd.concat([history, currentIterationHistoricalBars], ignore_index=True)
-
-            ## update enddate for the next iteration
-            historyminDate = pd.to_datetime(history['date'].min(), errors='coerce')
-            if pd.isna(historyminDate):
-                break
-            endDate = historyminDate #- pd.offsets.BDay(lookback - 1)
-
-            # endDate = endDate.replace(hour = 20)
-            
-
-
-        # stop updating the symbol as all history has been saved
-        if history.empty:
-
-            # update the lookup table for the last time 
-            with db.sqlite_connection(_dbName_index) as conn:
-                # set type 
-                if row['symbol'] in _index:
-                    type = 'index'
-                else:
-                    type = 'stock'
-                tablename = row['symbol']+'_'+type+'_'+row['interval'].replace(' ', '')
-
-                # set the earliest available timestamp to the min(date) saved in the db
-                history = db.getPriceHistory(conn, row['symbol'], row['interval'].replace(' ', ''))
-
-                # set earliest timestamp to the min(date) record in the db 
-                earliestAvailableTimestamp = db._getFirstRecordDate(row, conn)
-
-                db._updateLookup_symbolRecords(conn, tablename, type, earliestAvailableTimestamp)
-                print('\n')
+        earliestAvailableTimestamp = pd.to_datetime(symbol_earliest_ts_cache[symbol], errors='coerce')
+        if pd.isna(earliestAvailableTimestamp):
+            print('[yellow]Could not determine earliest timestamp for %s. Skipping symbol.[/yellow]' % (symbol))
             continue
 
-        ## add interval column for easier lookup 
-        history['interval'] = row['interval'].replace(' ', '')
-        history['symbol'] = row['symbol']
+        print('%s: [cyan]Exhausting history for %s across %s interval(s)...[/cyan]' % (
+            datetime.datetime.now().strftime("%H:%M:%S"),
+            symbol,
+            len(symbol_rows)
+        ))
 
-        ## save history to db and update lookup metadata using the active cycle timestamp
-        with db.sqlite_connection(_dbName_index) as conn:
-            db.saveHistoryToDB(history, conn, earliestAvailableTimestamp)
-            type = 'index' if row['symbol'] in _index else 'stock'
-            tablename = row['symbol']+'_'+type+'_'+row['interval'].replace(' ', '')
-            db._updateLookup_symbolRecords(conn, tablename, type, earliestAvailableTimestamp)
+        for _, row in symbol_rows.iterrows():
+            interval = row['interval']
+            interval_no_space = interval.replace(' ', '')
+            endDate = pd.to_datetime(row['firstRecordDate'], errors='coerce')
 
-        ## manual throttling: pause before requesting next set of data
-        # print('%s: [yellow]Pausing %.2fs before next record...[/yellow]\n'%(datetime.datetime.now().strftime("%H:%M:%S"), ibkrThrottleTime))
-        # time.sleep(ibkrThrottleTime)
+            if pd.isna(endDate):
+                print('[yellow]Skipping %s-%s due to invalid firstRecordDate.[/yellow]' % (symbol, interval))
+                continue
+
+            if interval == '1 min':
+                base_lookback_days = 5
+            elif interval == '1 day':
+                base_lookback_days = 100
+            else:
+                base_lookback_days = 30
+
+            empty_retry_count = 0
+            max_empty_retries = 3
+            had_backward_progress = False
+
+            print('%s: Updating %s-%s from %s back to %s' % (
+                datetime.datetime.now().strftime("%H:%M:%S"),
+                symbol,
+                interval,
+                endDate,
+                earliestAvailableTimestamp
+            ))
+
+            while True:
+                remaining_days = (endDate - earliestAvailableTimestamp).days
+                if remaining_days <= 0:
+                    print('[green]Exhausted available history for %s-%s[/green]' % (symbol, interval))
+                    break
+
+                lookback_days = min(base_lookback_days, remaining_days)
+                if lookback_days <= 0:
+                    break
+
+                if ibkr_call_count and ibkr_call_count % max_consecutive_calls == 0:
+                    ibkr = ib.refreshConnection(ibkr)
+
+                try:
+                    currentIterationHistoricalBars = ib.getBars(
+                        ibkr,
+                        symbol=symbol,
+                        lookback='%s D' % lookback_days,
+                        interval=interval,
+                        endDate=endDate
+                    )
+                    ibkr_call_count += 1
+                except Exception:
+                    currentIterationHistoricalBars = pd.DataFrame()
+
+                if currentIterationHistoricalBars.empty:
+                    empty_retry_count += 1
+                    if empty_retry_count <= max_empty_retries:
+                        print('[yellow]Empty history for %s-%s. Retry %s/%s...[/yellow]' % (
+                            symbol,
+                            interval,
+                            empty_retry_count,
+                            max_empty_retries
+                        ))
+                        continue
+
+                    print('[yellow]No data returned after retries for %s-%s. Moving to next interval.[/yellow]' % (
+                        symbol,
+                        interval
+                    ))
+                    break
+
+                empty_retry_count = 0
+                chunk_min_date = pd.to_datetime(currentIterationHistoricalBars['date'].min(), errors='coerce')
+                if pd.isna(chunk_min_date):
+                    print('[yellow]Invalid date values returned for %s-%s. Moving to next interval.[/yellow]' % (
+                        symbol,
+                        interval
+                    ))
+                    break
+
+                # guard against non-progressing windows that can cause infinite loops
+                if chunk_min_date >= endDate:
+                    print('[yellow]No backward progress for %s-%s (chunk min: %s, endDate: %s). Moving to next interval.[/yellow]' % (
+                        symbol,
+                        interval,
+                        chunk_min_date,
+                        endDate
+                    ))
+                    break
+
+                history_chunk = currentIterationHistoricalBars.copy()
+                history_chunk['interval'] = interval_no_space
+                history_chunk['symbol'] = symbol
+
+                with db.sqlite_connection(_dbName_index) as conn:
+                    db.saveHistoryToDB(history_chunk, conn, earliestAvailableTimestamp)
+
+                had_backward_progress = True
+                endDate = chunk_min_date
+
+            # update lookup metadata with the actual first record date currently in DB
+            with db.sqlite_connection(_dbName_index) as conn:
+                type = 'index' if symbol in _index else 'stock'
+                tablename = symbol+'_'+type+'_'+interval_no_space
+                db_first_record_date = db._getFirstRecordDate(row, conn)
+                if pd.isna(pd.to_datetime(db_first_record_date, errors='coerce')):
+                    db_first_record_date = earliestAvailableTimestamp
+                db._updateLookup_symbolRecords(conn, tablename, type, db_first_record_date)
+
+            if had_backward_progress:
+                print('[green]Completed backfill pass for %s-%s[/green]' % (symbol, interval))
+            else:
+                print('[yellow]No new history saved for %s-%s in this pass.[/yellow]' % (symbol, interval))
 
 def _load_lookup_source_records(dbname):
     lookupTableName = config.lookupTableName
@@ -828,7 +853,7 @@ def get_contract(symbol, type='stock', currency='USD', exchange=None):
                 exchange = exchange_mapping.get(symbol, '')
             contract = Index(symbol, currency=currency, exchange=exchange)
         else: 
-            contract = Stock(symbol, currency=currency, exchange='SMART')
+            contract = Stock(symbol, currency=currency, exchange= exchange_mapping.get(symbol, 'SMART'))
     except Exception as e:
         print('\nCould not retrieve contract details for...%s!'%(symbol))
         return pd.DataFrame() 
@@ -851,8 +876,8 @@ def bulkUpdate():
             return
         starttime = datetime.datetime.now()
         
-        refreshLookupTable(ibkr, _dbName_index, fetchEarliestTimestamps=False)
-        ibkr = ib.refreshConnection(ibkr)        
+        # refreshLookupTable(ibkr, _dbName_index, fetchEarliestTimestamps=False)
+        # ibkr = ib.refreshConnection(ibkr)        
         updatePreHistoricData(ibkr)
         ibkr.disconnect()
 
@@ -877,9 +902,13 @@ if len(argv) > 1:
         updateHistoryFromCSV('data/FXB.csv', 'FXB', '1day')
         #print('error 11 - no csv file specified')
 else:
+
+    # print('\n\n*****!!!!!!!!!*****!!!!    SLEEPING FOR 2 HOURS BEFORE STARTING UPDATE...    !!!!*****!!!!!!!!!*****\n\n')
+    # time.sleep(7200)
+
     ## update existing records after EST market close or on weekends
     if (datetime.datetime.today().weekday() < 5 and datetime.datetime.now().hour >= 17) or (datetime.datetime.today().weekday() >= 5): #or (datetime.datetime.today().weekday() < 5 and datetime.datetime.now().hour<= 9):
         print('[green]Updating existing records...[/green]')
         updateRecords()
-    # updateRecords()
+    
     bulkUpdate()
