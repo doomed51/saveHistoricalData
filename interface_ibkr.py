@@ -208,16 +208,16 @@ def _getHistoricalBars(ibkrObj, symbol, currency, endDate, lookback, interval, w
 
     return contractHistory_df
 
-def getBars_futures(ibkr, contract, lookback, interval, endDate='', whatToShow='TRADES'):
+def getBars_futures(ibkr, contract, lookback, interval, endDate='', whatToShow='TRADES', useRTH=False):
     """
     Returns dataframe of historical data for futures
         by default, returns data for NG futures
     """
     # bars = _getHistoricalBars_futures(ibkr, symbol, exchange, lastTradeDate, currency, endDate, lookback, interval, whatToShow)
-    bars = _getHistoricalBars_futures(ibkr, contract, endDate, lookback, interval, whatToShow)
+    bars = _getHistoricalBars_futures(ibkr, contract, endDate, lookback, interval, whatToShow, useRTH)
     return bars
 
-def _getHistoricalBars_futures(ibkrObj, contract, endDate, lookback, interval, whatToShow):
+def _getHistoricalBars_futures(ibkrObj, contract, endDate, lookback, interval, whatToShow, useRTH=False):
     """
         Returns [DataFrame] of historical data for futures from IBKR
     """
@@ -253,7 +253,7 @@ def _getHistoricalBars_futures(ibkrObj, contract, endDate, lookback, interval, w
             durationStr=lookback,
             barSizeSetting=interval,
             whatToShow=whatToShow,
-            useRTH=False,
+            useRTH=useRTH,
             formatDate=1)
         
     except Exception as e:

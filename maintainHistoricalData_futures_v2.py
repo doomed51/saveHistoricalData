@@ -317,6 +317,7 @@ def _forward_fetch_contract(conn, ib, row):
             interval=interval,
             endDate=next_end,
             lookback='%s D' % chunk_days,
+            useRTH = True if interval in ['1 day'] else False,
         )
         call_count += 1
 
@@ -398,6 +399,7 @@ def _verify_and_fill_gaps(conn, ib, row, date_of_last_gap_date_polled):
             interval=_addspace(interval.replace(' ', '')),
             endDate=pd.to_datetime(gap_date) + pd.to_timedelta(1, unit='D'),
             lookback='5 D',
+            useRTH = True if interval in ['1 day'] else False,
         )
         call_count += 1
 
