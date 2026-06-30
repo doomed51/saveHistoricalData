@@ -536,18 +536,29 @@ def updatePreHistoricData(ibkr):
     lookupTable['interval'] = lookupTable['interval'].apply(lambda x: _addspace(x))
     lookupTable['firstRecordDate'] = pd.to_datetime(lookupTable['firstRecordDate'], errors='coerce')
     lookupTable = lookupTable.loc[lookupTable['firstRecordDate'].notnull()].copy()
-    lookupTable.sort_values(by=['symbol', 'interval'], inplace=True)
 
     if lookupTable.empty:
         print('[yellow]No valid firstRecordDate values found in lookup table.[/yellow]')
         return
 
-    # cache earliest-available timestamps so duplicate symbols across intervals call IBKR once
-    symbol_earliest_ts_cache = {}
-    ibkr_call_count = 0
-    max_consecutive_calls = getattr(config, 'ibkr_max_consecutive_calls', 20)
+    # sort list of symbols to process 
+    lookupTable.sort_values(by=['symbol', 'interval'], inplace=True)
+    # if high priority symbols exist, process them first
+    high_priority_symbols = lookupTable[lookupTable['symbol'].isin(config.HIGH_PRIORITY_SYMBOLS)]
+    
+    if not high_priority_symbols.empty:
+        high_priority_df = lookupTable[lookupTable['symbol'].isin(config.HIGH_PRIORITY_SYMBOLS)]
+        other_symbols_df = lookupTable[~lookupTable['symbol'].isin(config.HIGH_PRIORITY_SYMBOLS)]
+        lookupTable = pd.concat([high_priority_df, other_symbols_df], ignore_index=True)
 
-    # process one symbol at a time; exhaust all intervals before moving to the next symbol
+    # setup api configs 
+    symbol_earliest_ts_cache = {}                   # earliest available timestamp cache 
+    ibkr_call_count = 0                             # consecutive call counter for ibkr api
+    max_consecutive_calls = getattr(                # limit for concecutive calls to ibkr api
+        config, 'ibkr_max_consecutive_calls', 20)
+
+    # Process one symbol at a time; 
+    # exhaust all intervals before moving to the next symbol
     for symbol, symbol_rows in lookupTable.groupby('symbol', sort=True):
         if symbol not in symbol_earliest_ts_cache:
             try:
@@ -907,7 +918,7 @@ else:
     # time.sleep(7200)
 
     ## update existing records after EST market close or on weekends
-    if (datetime.datetime.today().weekday() < 5 and datetime.datetime.now().hour >= 17) or (datetime.datetime.today().weekday() >= 5): #or (datetime.datetime.today().weekday() < 5 and datetime.datetime.now().hour<= 9):
+    if (datetime.datetime.today().weekday() < 5 and datetime.datetime.now().hour >= 17) or (datetime.datetime.today().weekday() > 6): #or (datetime.datetime.today().weekday() < 5 and datetime.datetime.now().hour<= 9):
         print('[green]Updating existing records...[/green]')
         updateRecords()
     

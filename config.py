@@ -1,22 +1,23 @@
 
-###### Local library paths 
+#_____________________________________________________________________________________________________________ Local library paths 
 path_lib_analysis = '/workbench/analysis/venv'
 path_lib_analysis_backtests = '/workbench/analysis/venv/backtests'
 path_lib_analysis_strategies = '../workbench/analysis/venv/strategy_implementation'
 
-###### DATABASE locations
-dbname_stock = '/workbench/historicalData/venv/saveHistoricalData/data/historicalData_index.db'
-dbname_futures = '/workbench/historicalData/venv/saveHistoricalData/data/historicalData_futures.db'
-dbname_termstructure = '/workbench/historicalData/venv/saveHistoricalData/data/termstructure.db'
-dbname_rwtools_futures_vix_csv = '/workbench/historicalData/venv/saveHistoricalData/data/vix_chunks01.csv'
+#_____________________________________________________________________________________________________________ DATABASE locations
+dbname_stock = '/workbench/historicalData/saveHistoricalData/data/historicalData_index.db'
+dbname_futures = '/workbench/historicalData/saveHistoricalData/data/historicalData_futures.db'
+dbname_termstructure = '/workbench/historicalData/saveHistoricalData/data/termstructure.db'
+dbname_rwtools_futures_vix_csv = '/workbench/historicalData/saveHistoricalData/data/vix_chunks01.csv'
 
-###### Watchlist locations 
+#_____________________________________________________________________________________________________________ Watchlist locations 
 watchlist_main = 'tickerList.csv'
 watchlist_futures = 'futuresWatchlist.csv'
 lookupTableName = '00-lookup_symbolRecords'
 table_name_futures_pxhistory_metadata = '00-lookup_pxhistory_metadata'
 
-# Reference Lists
+#_____________________________________________________________________________________________________________ Lookup tables
+HIGH_PRIORITY_SYMBOLS = ['SPX', 'VIX', 'VIX3M', 'VVIX', 'AVGO']
 intervals = ['1 min', '5 mins', '30 mins', '1 day']
 _indexList = ['GVZ', 'INDU', 'NDX', 'VIX', 'VIX3M', 'VVIX', 'SPX', 'VIX1D', 'TSX', 'NDX']
 _index = ['GVZ', 'INDU', 'NDX', 'VIX', 'VIX3M', 'VVIX', 'SPX', 'VIX1D', 'TSX', 'NDX']
@@ -244,5 +245,5 @@ futures_symbol_metadata = {
     },
 }
 
-############### API thresholds and timeouts 
+#_____________________________________________________________________________________________________________ API thresholds and timeouts 
 ibkr_max_consecutive_calls = 50
