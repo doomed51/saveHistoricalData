@@ -281,8 +281,23 @@ def updateRecordHistory(ibkr, records, indicesWithOutdatedData= pd.DataFrame(), 
         3. Existing symbols in tickerlist.csv that have missing intervals
     
     """
-    print('%s: Checking if records need updating...'%(datetime.datetime.now().strftime("%H:%M:%S")))
-    # initialize connection object as empty until we need it
+    print('%s: Updating record history...'%(datetime.datetime.now().strftime("%H:%M:%S")))
+
+    # prioritize symbols 
+    high_priority_symbols = newlyAddedIndices[newlyAddedIndices['symbol'].isin(config.HIGH_PRIORITY_SYMBOLS)]
+    high_priority_symbols_indicieswithOutdatedData = indicesWithOutdatedData[indicesWithOutdatedData['symbol'].isin(config.HIGH_PRIORITY_SYMBOLS)]
+    
+    if not high_priority_symbols.empty:
+        high_priority_df = newlyAddedIndices[newlyAddedIndices['symbol'].isin(config.HIGH_PRIORITY_SYMBOLS)]
+        other_symbols_df = newlyAddedIndices[~newlyAddedIndices['symbol'].isin(config.HIGH_PRIORITY_SYMBOLS)]
+        newlyAddedIndices = pd.concat([high_priority_df, other_symbols_df], ignore_index=True)
+    
+    if not high_priority_symbols_indicieswithOutdatedData.empty:
+        high_priority_df = indicesWithOutdatedData[indicesWithOutdatedData['symbol'].isin(config.HIGH_PRIORITY_SYMBOLS)]
+        other_symbols_df = indicesWithOutdatedData[~indicesWithOutdatedData['symbol'].isin(config.HIGH_PRIORITY_SYMBOLS)]
+        indicesWithOutdatedData = pd.concat([high_priority_df, other_symbols_df], ignore_index=True)
+
+        
 
     ## get a list of missing intervals if any 
     missingIntervals = pd.DataFrame()
@@ -347,7 +362,7 @@ def updateRecordHistory(ibkr, records, indicesWithOutdatedData= pd.DataFrame(), 
     if not indicesWithOutdatedData.empty:
         print('%s: [yellow]Outdated records found. Updating...[/yellow]'%(datetime.datetime.now().strftime("%H:%M:%S")))
         pd.to_datetime(indicesWithOutdatedData['lastUpdateDate'], format='ISO8601')
-        indicesWithOutdatedData = indicesWithOutdatedData.sort_values(by=['symbol', 'interval']).reset_index(drop=True)
+        # indicesWithOutdatedData = indicesWithOutdatedData.sort_values(by=['symbol', 'interval']).reset_index(drop=True)
 
         ## regex to add a space between any non-digit and digit (adds a space to interval column)
         indicesWithOutdatedData['interval'].apply(lambda x: re.sub(r'(?<=\d)(?=[a-z])', ' ', x))
