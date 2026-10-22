@@ -193,7 +193,7 @@ def _getHistoricalBars(ibkrObj, symbol, currency, endDate, lookback, interval, w
             durationStr=lookback,
             barSizeSetting=interval,
             whatToShow=whatToShow,
-            useRTH=False,
+            useRTH=True if interval == '1 day' else False,
             formatDate=1, 
             keepUpToDate=keepUpToDate)
 
