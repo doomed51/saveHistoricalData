@@ -24,6 +24,8 @@ from sys import argv
 from numpy import histogram, indices, true_divide
 
 from pytz import timezone, utc
+from zoneinfo import ZoneInfo
+import pandas_market_calendars as market_calendars
 
 from pathlib import Path
 from requests.exceptions import HTTPError
@@ -58,6 +60,9 @@ currency_mapping = config.currency_mapping
 exchange_mapping = config.exchange_mapping_stocks
 
 ibkrThrottleTime = 10 # minimum seconds to wait between api requests to ibkr
+
+_EASTERN = ZoneInfo('America/New_York')
+_NYSE_CALENDAR = market_calendars.get_calendar('NYSE')
 
 records = pd.DataFrame()
 
@@ -119,6 +124,34 @@ def _countWorkdays(startDate, endDate, excluded=(6,7)):
         num = -int(np.busday_count(e, s + np.timedelta64(1, 'D')))
 
     return int(num)
+
+
+def _eastern_now():
+    return datetime.datetime.now(_EASTERN)
+
+
+def _is_nyse_trading_day(day):
+    day = pd.Timestamp(day).date()
+    sessions = _NYSE_CALENDAR.schedule(start_date=day, end_date=day)
+    return not sessions.empty
+
+
+def _is_after_hours_update_due(now=None):
+    now = now or _eastern_now()
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=_EASTERN)
+    now = now.astimezone(_EASTERN)
+    after_buffer = now.hour > 17 or (now.hour == 17 and now.minute >= 15)
+    return after_buffer and _is_nyse_trading_day(now.date())
+
+
+def _maybe_update_current_records(last_update_date, now=None):
+    now = now or _eastern_now()
+    if _is_after_hours_update_due(now) and last_update_date != now.date():
+        print('[green]Updating existing records...[/green]')
+        updateRecords()
+        return now.date()
+    return last_update_date
 
 """
 Save history to a CSV file 
@@ -534,7 +567,7 @@ def getMissingIntervals(records, type = 'stock'):
     ## return the missing symbol-interval combos
     return missingCombos
 
-def updatePreHistoricData(ibkr):
+def updatePreHistoricData(ibkr, should_yield=None):
     """
     Updates a chunk of pre-histric data for existing records  
     __
@@ -597,6 +630,8 @@ def updatePreHistoricData(ibkr):
     # Process one symbol at a time; 
     # exhaust all intervals before moving to the next symbol
     for symbol, symbol_rows in lookupTable.groupby('symbol', sort=True):
+        if should_yield and should_yield():
+            return True
         if symbol not in symbol_earliest_ts_cache:
             try:
                 symbol_earliest_ts_cache[symbol] = ib.getEarliestTimeStamp(
@@ -618,6 +653,8 @@ def updatePreHistoricData(ibkr):
         ))
 
         for _, row in symbol_rows.iterrows():
+            if should_yield and should_yield():
+                return True
             interval = row['interval']
             interval_no_space = interval.replace(' ', '')
             endDate = pd.to_datetime(row['firstRecordDate'], errors='coerce')
@@ -636,6 +673,7 @@ def updatePreHistoricData(ibkr):
             empty_retry_count = 0
             max_empty_retries = 3
             had_backward_progress = False
+            interrupted = False
             searched_for_prehistory = (endDate - earliestAvailableTimestamp).days > 0
 
             print('%s: Updating %s-%s from %s back to %s' % (
@@ -647,6 +685,10 @@ def updatePreHistoricData(ibkr):
             ))
 
             while True:
+                if should_yield and should_yield():
+                    interrupted = True
+                    break
+
                 remaining_days = (endDate - earliestAvailableTimestamp).days
                 if remaining_days <= 0:
                     print('[green]Exhausted available history for %s-%s[/green]' % (symbol, interval))
@@ -717,6 +759,10 @@ def updatePreHistoricData(ibkr):
                 had_backward_progress = True
                 endDate = chunk_min_date
 
+                if should_yield and should_yield():
+                    interrupted = True
+                    break
+
             # update lookup metadata with the actual first record date currently in DB
             with db.sqlite_connection(_dbName_index) as conn:
                 type = 'index' if symbol in _index else 'stock'
@@ -725,7 +771,7 @@ def updatePreHistoricData(ibkr):
                 if pd.isna(pd.to_datetime(db_first_record_date, errors='coerce')):
                     db_first_record_date = earliestAvailableTimestamp
                 db._updateLookup_symbolRecords(conn, tablename, type, db_first_record_date)
-                if searched_for_prehistory:
+                if searched_for_prehistory and not interrupted:
                     failed_runs, exhausted = db.recordPrehistoryAttempt(
                         conn,
                         symbol,
@@ -733,6 +779,9 @@ def updatePreHistoricData(ibkr):
                         had_backward_progress,
                         max_failures=3
                     )
+
+            if interrupted:
+                return True
 
             if had_backward_progress:
                 print('[green]Completed backfill pass for %s-%s[/green]' % (symbol, interval))
@@ -745,6 +794,8 @@ def updatePreHistoricData(ibkr):
                         failed_runs,
                         ' (marked exhausted)' if exhausted else ''
                     ))
+
+    return False
 
 def _load_lookup_source_records(dbname):
     lookupTableName = config.lookupTableName
@@ -926,12 +977,14 @@ def get_contract(symbol, type='stock', currency='USD', exchange=None):
 """
 function that calls updatePreHistoricData over the course of a night, pausing for 5 minutes between each iteration 
 """
-def bulkUpdate():    
+def bulkUpdate(last_current_update=None):
     i = 0
     numcycles=15
     cycletime_= []
     print('\n[green]Starting bulk update of pre-historic data...[/green]')
     while i < numcycles:
+        last_current_update = _maybe_update_current_records(last_current_update)
+
         ## connect to ibkr
         ibkr = ib.setupConnection()
 
@@ -942,8 +995,25 @@ def bulkUpdate():
         
         # refreshLookupTable(ibkr, _dbName_index, fetchEarliestTimestamps=False)
         # ibkr = ib.refreshConnection(ibkr)        
-        updatePreHistoricData(ibkr)
+        def should_yield_for_current_update():
+            now = _eastern_now()
+            return (
+                _is_after_hours_update_due(now)
+                and last_current_update != now.date()
+            )
+
+        interrupted = updatePreHistoricData(
+            ibkr,
+            should_yield=should_yield_for_current_update
+        )
         ibkr.disconnect()
+
+        # A request that crossed 5:15 p.m. has already been saved by the
+        # prehistory pass. Refresh current records before resuming that pass.
+        previous_update_date = last_current_update
+        last_current_update = _maybe_update_current_records(last_current_update)
+        if interrupted or last_current_update != previous_update_date:
+            continue
 
         cycletime = (datetime.datetime.now() - starttime).seconds
         # add cycle time to list
@@ -955,24 +1025,32 @@ def bulkUpdate():
         print('[green]----------------------------------------[/green]')
         if i != 14:
             print('%s: Pausing %.2f mins before next round\n'%(datetime.datetime.now().strftime("%H:%M:%S"), ibkrThrottleTime*10/60))
-            time.sleep(ibkrThrottleTime * 10)
+            remaining_pause = ibkrThrottleTime * 10
+            while remaining_pause > 0:
+                time.sleep(min(5, remaining_pause))
+                remaining_pause -= 5
+                previous_update_date = last_current_update
+                last_current_update = _maybe_update_current_records(last_current_update)
+                if last_current_update != previous_update_date:
+                    break
         i=i+1
 
-# if more than 0 args
-if len(argv) > 1:
-    if argv[1] == 'csv':
-        #update_vix_futures_history_from_rwtools(config.dbname_rwtools_futures_vix_csv)
-        # if no arg 2 , print 
-        updateHistoryFromCSV('data/FXB.csv', 'FXB', '1day')
-        #print('error 11 - no csv file specified')
-else:
+def main(args=None):
+    args = argv[1:] if args is None else args
+    if args:
+        if args[0] == 'csv':
+            updateHistoryFromCSV('data/FXB.csv', 'FXB', '1day')
+        return
 
-    # print('\n\n*****!!!!!!!!!*****!!!!    SLEEPING FOR 2 HOURS BEFORE STARTING UPDATE...    !!!!*****!!!!!!!!!*****\n\n')
-    # time.sleep(7200)
-
-    ## update existing records after EST market close or on weekends
-    if (datetime.datetime.today().weekday() < 5 and datetime.datetime.now().hour >= 17) or (datetime.datetime.today().weekday() >= 5):
+    now = _eastern_now()
+    last_current_update = None
+    if now.weekday() >= 5 or _is_after_hours_update_due(now):
         print('[green]Updating existing records...[/green]')
         updateRecords()
-    
-    bulkUpdate()
+        last_current_update = now.date()
+
+    bulkUpdate(last_current_update=last_current_update)
+
+
+if __name__ == '__main__':
+    main()
