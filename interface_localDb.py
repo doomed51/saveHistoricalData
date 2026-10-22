@@ -10,11 +10,9 @@ This module simplifies interacting with the local database of historical ohlc da
 
 """
 
-import sqlite3
 import sys
 import config
 import datetime 
-import re
 import pandas as pd
 import numpy as np
 
@@ -24,25 +22,18 @@ from utils import utils as ut
 from rich import print 
 from functools import lru_cache
 from typing import Optional
+from local_db_shared import (
+    _addspace,
+    _getFirstRecordDate,
+    _removeSpaces,
+    getLookup_exchange,
+    sqlite_connection,
+)
 
 """ Global vars """
 dbname_index = config.dbname_stock
 
 index_list = config._indexList # global reference list of index symbols, this is some janky ass shit .... 
-
-class sqlite_connection(object): 
-    """ Context manager for connecting to sqlite db """
-    
-    def __init__(self, db_name):
-        self.db_name = db_name
-    
-    def __enter__(self):
-        self.conn = sqlite3.connect(self.db_name)
-        return self.conn
-    
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.conn.commit()
-        self.conn.close()
 
 def _constructTableName(symbol, interval):
     """
@@ -93,15 +84,6 @@ def remove_duplicates_from_pxhistory_gaps_metadata(conn, tablename):
     cursor = conn.cursor()
     cursor.execute(sqlStatement)
     
-## adda space between num and alphabet
-def _addspace(myStr): 
-    return re.sub("[A-Za-z]+", lambda elm: " "+elm[0],myStr )
-
-## removes spaces from the passed in string
-def _removeSpaces(myStr):
-    ## remove spaces from mystr
-    return myStr.replace(" ", "")
-
 def _getDaysSinceLastUpdated(row, conn):
     maxtime = pd.read_sql('SELECT MAX(date) FROM '+ row['name'], conn)
     mytime = datetime.datetime.strptime(maxtime['MAX(date)'][0][:10], '%Y-%m-%d')
@@ -120,25 +102,6 @@ def _getLastUpdateDate(row, conn):
         maxtime = datetime.datetime.strptime(maxtime[:19], '%Y-%m-%d %H:%M:%S')
 
     return maxtime
-
-def _getFirstRecordDate(row, conn):
-    mintime = pd.read_sql('SELECT MIN(date) FROM '+ row['name'], conn)
-    mintime = mintime['MIN(date)'][0]
-
-    ## convert to datetime handling cases where datetime is formatted as:
-    #   1. yyyy-mm-dd
-    #   2. yyyy-mm-dd hh:mm:ss 
-    #   3. yyyy-mm-dd hh:mm:ss-##:##
-    if  19 >= len(mintime) > 10: 
-        mintime = datetime.datetime.strptime(mintime, '%Y-%m-%d %H:%M:%S')
-    elif len(mintime) > 19:
-        mintime = mintime[:19]
-        mintime = datetime.datetime.strptime(mintime, '%Y-%m-%d %H:%M:%S')
-    else:
-        mintime = datetime.datetime.strptime(mintime, '%Y-%m-%d')
-
-    return mintime
-
 
 def _update_symbol_metadata(conn, tableName, type='future', earliestTimestamp=None, numMissingDays=None):
     is_future = (type == 'future')
@@ -689,14 +652,6 @@ def futures_getCellValue(conn, symbol, interval='1day', lastTradeMonth='202308',
     value = pd.read_sql(sqlStatement, conn)
     # return val 
     return value[targetColumn][0]
-
-
-def getLookup_exchange(conn, symbol):
-    exchangeLookupTable = '00-lookup_exchangeMapping'
-    sql = 'SELECT exchange FROM \'%s\' WHERE symbol=\'%s\'' %(exchangeLookupTable, symbol)
-    exchange = pd.read_sql(sql, conn).values[0][0]
-
-    return exchange
 
 
 def _normalize_timestamp_scalar(ts):

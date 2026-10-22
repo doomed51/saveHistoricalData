@@ -2,6 +2,8 @@
 
 This Python repository downloads and stores IBKR historical equities and futures data in SQLite. Work from this directory (`saveHistoricalData`); see `README.md` for the script roles and setup.
 
+For changes to collection, storage, or term-structure flows, read `docs/architecture.md` for the component and data-flow diagrams. Update that document in the same change when the code changes a component, dependency, data path, or behavior shown there.
+
 ## Communication
 
 - Address the current request without assuming where the conversation is going. Avoid unsolicited opinions about importance and platitudes; support conclusions with evidence.

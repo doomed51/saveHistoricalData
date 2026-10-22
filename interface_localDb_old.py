@@ -10,39 +10,19 @@ This module simplifies interacting with the local database of historical ohlc da
 
 import config
 import datetime
-import re
-import sqlite3
 import pandas as pd
 from rich import print
+from local_db_shared import (
+    _addspace,
+    _getFirstRecordDate,
+    _removeSpaces,
+    getLookup_exchange,
+    sqlite_connection,
+)
 
 """ Global vars """
 dbname_stocks = config.dbname_stock ## stock data location
 index_list = config._index 
-
-"""
-    A context manager to help manage connections with the sqlite database 
-"""
-class sqlite_connection(object):
-    
-    def __init__(self, db_name):
-        self.db_name = db_name
-
-    def __enter__(self):
-        self.conn = sqlite3.connect(self.db_name)
-        return self.conn
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.conn.commit()
-        self.conn.close()
-
-## adda space between num and alphabet
-def _addspace(myStr): 
-    return re.sub("[A-Za-z]+", lambda elm: " "+elm[0],myStr )
-
-## removes spaces from the passed in string
-def _removeSpaces(myStr):
-    ## remove spaces from mystr
-    return myStr.replace(" ", "")
 
 """
 lambda function returns numbers of business days since a DBtable was updated
@@ -99,24 +79,6 @@ def construct_record_metadata(conn, table_names):
 
     return dict(zip(last_and_first_updates['name'], last_and_first_updates['first_record_date'])), dict(zip(last_and_first_updates['name'], last_and_first_updates['last_update'])), dict(zip(last_and_first_updates['name'], last_and_first_updates['numDaysSinceLastUpdate']))
     # return first_map, last_map, num_map
-
-def _getFirstRecordDate(row, conn):
-    mintime = pd.read_sql('SELECT MIN(date) FROM '+ row['name'], conn)
-    mintime = mintime['MIN(date)'][0]
-
-    ## convert to datetime handling cases where datetime is formatted as:
-    #   1. yyyy-mm-dd
-    #   2. yyyy-mm-dd hh:mm:ss 
-    #   3. yyyy-mm-dd hh:mm:ss-##:##
-    if  19 >= len(mintime) > 10: 
-        mintime = datetime.datetime.strptime(mintime, '%Y-%m-%d %H:%M:%S')
-    elif len(mintime) > 19:
-        mintime = mintime[:19]
-        mintime = datetime.datetime.strptime(mintime, '%Y-%m-%d %H:%M:%S')
-    else:
-        mintime = datetime.datetime.strptime(mintime, '%Y-%m-%d')
-
-    return mintime
 
 """
 constructs the appropriate tablename to call local DB 
@@ -404,6 +366,7 @@ def getTable(conn, tablename):
 """ 
 Returns the lookup table fo records history as df 
 """
+
 def getLookup_symbolRecords(conn):
     sqlStatement_selectRecordsTable = 'SELECT * FROM \'00-lookup_symbolRecords\''
     symbolRecords = pd.read_sql(sqlStatement_selectRecordsTable, conn)
@@ -419,12 +382,46 @@ def getLookup_symbolRecords(conn):
 
     return symbolRecords
 
-"""
-    returns exchange:symbol in database lookup tablee
-"""
-def getLookup_exchange(conn, symbol):
-    exchangeLookupTable = '00-lookup_exchangeMapping'
-    sql = 'SELECT exchange FROM \'%s\' WHERE symbol=\'%s\'' %(exchangeLookupTable, symbol)
-    exchange = pd.read_sql(sql, conn).values[0][0]
+_PREHISTORY_STATUS_TABLE = '00-lookup_prehistory_status'
 
-    return exchange
+
+def _ensure_prehistory_status_table(conn):
+    conn.execute(
+        'CREATE TABLE IF NOT EXISTS "%s" ('
+        'symbol TEXT NOT NULL, '
+        'interval TEXT NOT NULL, '
+        'failed_runs INTEGER NOT NULL DEFAULT 0, '
+        'exhausted INTEGER NOT NULL DEFAULT 0, '
+        'PRIMARY KEY (symbol, interval))' % _PREHISTORY_STATUS_TABLE
+    )
+
+
+def getExhaustedPrehistoryRows(conn):
+    """Return the symbol/interval pairs that prehistory has exhausted."""
+    _ensure_prehistory_status_table(conn)
+    rows = conn.execute(
+        'SELECT symbol, interval FROM "%s" WHERE exhausted = 1' % _PREHISTORY_STATUS_TABLE
+    ).fetchall()
+    return {(symbol, interval) for symbol, interval in rows}
+
+
+def recordPrehistoryAttempt(conn, symbol, interval, had_backward_progress, max_failures=3):
+    """Persist one prehistory pass and report its failure count and exhausted status."""
+    _ensure_prehistory_status_table(conn)
+    if had_backward_progress:
+        failed_runs = 0
+    else:
+        row = conn.execute(
+            'SELECT failed_runs FROM "%s" WHERE symbol = ? AND interval = ?' % _PREHISTORY_STATUS_TABLE,
+            (symbol, interval)
+        ).fetchone()
+        failed_runs = (row[0] if row else 0) + 1
+
+    exhausted = int(failed_runs >= max_failures)
+    conn.execute(
+        'INSERT INTO "%s" (symbol, interval, failed_runs, exhausted) VALUES (?, ?, ?, ?) '
+        'ON CONFLICT(symbol, interval) DO UPDATE SET '
+        'failed_runs = excluded.failed_runs, exhausted = excluded.exhausted' % _PREHISTORY_STATUS_TABLE,
+        (symbol, interval, failed_runs, exhausted)
+    )
+    return failed_runs, bool(exhausted)
