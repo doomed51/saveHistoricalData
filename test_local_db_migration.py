@@ -1,5 +1,6 @@
 """Contracts for migrating equities storage to the canonical SQLite interface."""
 
+from contextlib import redirect_stdout
 from io import StringIO
 import sqlite3
 import unittest
@@ -60,6 +61,27 @@ def write_snapshot(module, history, earliest_timestamp='2024-01-01'):
 
 
 class TestLocalDbMigration(unittest.TestCase):
+    def test_legacy_save_reports_history_and_lookup_progress(self):
+        conn = make_connection()
+        try:
+            for expected_lookup_message in (
+                'Adding new record to lookup table',
+                'Updating lookup table',
+            ):
+                output = StringIO()
+                with redirect_stdout(output):
+                    current_db.saveHistoryToDB_legacy(
+                        make_history('SPY'), conn, earliestTimestamp='2024-01-01'
+                    )
+                self.assertIn('Saving SPY-1day', output.getvalue())
+                self.assertIn(expected_lookup_message, output.getvalue())
+                self.assertIn('SPY-1day', output.getvalue())
+                self.assertIn('Updated!', output.getvalue())
+                if expected_lookup_message == 'Updating lookup table':
+                    self.assertIn('Done!', output.getvalue())
+        finally:
+            conn.close()
+
     def test_canonical_writer_matches_legacy_rows_and_lookup(self):
         for symbol, expiry, table_name in (
             ('SPY', None, 'SPY_stock_1day'),
