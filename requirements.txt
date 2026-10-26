@@ -6,3 +6,5 @@ ffn
 pytz
 seaborn
 holidays
+pandas_market_calendars
+yfinance
