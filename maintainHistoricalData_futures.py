@@ -19,7 +19,6 @@ import pandas as pd
 import numpy as np
 # import exchange_calendars as xcals
 import pandas_market_calendars as xcals
-# import interface_localDb_old as db
 import interface_localDB as db
 import interface_ibkr as ibkr
 import checkDataIntegrity as cdi
@@ -1362,4 +1361,3 @@ if __name__ == '__main__':
         # Refresh ib connection 
         if i%3 == 0:
             ib = ibkr.refreshConnection(ib)
-    

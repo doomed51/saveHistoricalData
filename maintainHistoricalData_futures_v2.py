@@ -465,9 +465,6 @@ def main():
                 # remove rows updated within the last 5 mins to avoid potential race conditions
                 five_mins_ago = pd.Timestamp.now() - pd.Timedelta(minutes=5)
                 queue = queue.loc[queue['updated_at'] < five_mins_ago].reset_index(drop=True)
-
-                # print(queue)
-                # exit() 
                 
                 if queue.empty:
                     break
