@@ -158,3 +158,10 @@ tests/
 !/test_stock_split_sync.py
 
 sandbox.ipynb
+n_testing.ipynb
+scrap.ipynb
+test.ipynb
+
+# local config 
+config.py
+
