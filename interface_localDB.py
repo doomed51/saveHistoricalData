@@ -516,6 +516,48 @@ def _batch_fetch_metadata(conn, table_names: list) -> pd.DataFrame:
         print(f'Error fetching metadata: {e}')
         return pd.DataFrame()
     
+def _append_history_without_duplicate_dates(history, conn, table_name):
+    """Append bars and retain the first row stored for each date."""
+    history.to_sql(table_name, conn, index=False, if_exists='append')
+    quoted_name = '"%s"' % table_name.replace('"', '""')
+    conn.execute(
+        'DELETE FROM {0} WHERE ROWID NOT IN '
+        '(SELECT MIN(ROWID) FROM {0} GROUP BY date)'.format(quoted_name)
+    )
+
+
+def saveHistoryToDB_legacy(history, conn, earliestTimestamp='', type=''):
+    """Save history with the lookup behavior used by the equities collector."""
+    print('%s: Saving %s-%s, dates %s to %s' % (
+        datetime.datetime.now().strftime('%H:%M:%S'), history['symbol'][0],
+        history['interval'][0], history['date'].min(), history['date'].max(),
+    ))
+    if type != 'future':
+        type = 'index' if history['symbol'][0] in config._index else 'stock'
+
+    if 'lastTradeDate' in history.columns:
+        table_name = (
+            history['symbol'][0] + '_' + history['lastTradeDate'][0] + '_'
+            + _removeSpaces(history['interval'][0])
+        )
+        type = 'future'
+    else:
+        table_name = history['symbol'][0] + '_' + type + '_' + history['interval'][0]
+
+    _append_history_without_duplicate_dates(history, conn, table_name)
+    refresh_lookup_from_history(conn, table_name, type, earliestTimestamp)
+    if 'lastTradeDate' in history.columns:
+        print(' %s: %s-%s-%s[green]...Updated![/green]' % (
+            datetime.datetime.now().strftime('%H:%M:%S'), history['symbol'][0],
+            history['lastTradeDate'][0], history['interval'][0],
+        ))
+    else:
+        print(' %s: %s-%s[green]...Updated![/green]\n' % (
+            datetime.datetime.now().strftime('%H:%M:%S'), history['symbol'][0],
+            history['interval'][0],
+        ))
+
+
 def saveHistoryToDB(history, conn, earliestTimestamp=None, type=''):
     """
     Save history to a sqlite3 database
@@ -542,9 +584,8 @@ def saveHistoryToDB(history, conn, earliestTimestamp=None, type=''):
             type='stock'
         tableName = history['symbol'][0]+'_'+type+'_'+history['interval'][0]
     print('%s: Saving %s to db, Range: %s - %s...'%(datetime.datetime.now().strftime("%H:%M:%S"), tableName, history['date'].min(), history['date'].max()))
-    history.to_sql(f"{tableName}", conn, index=False, if_exists='append')
-    _removeDuplicates(tableName, conn)
-    _update_symbol_metadata(conn, tableName, earliestTimestamp=earliestTimestamp)
+    _append_history_without_duplicate_dates(history, conn, tableName)
+    _update_symbol_metadata(conn, tableName, type=type, earliestTimestamp=earliestTimestamp)
 
 def save_table_to_db(conn, tablename, metadata_df, if_exists='append'):
     """
@@ -611,15 +652,219 @@ def update_gap_metadata(conn, tablename, last_polled_date):
     conn.commit()
 
 
-def getLookup_symbolRecords(conn):
+def getLookup_symbolRecords(conn, include_type=False):
     """ 
     Returns the lookup table fo records history as df 
     """
     sqlStatement_selectRecordsTable = 'SELECT * FROM \'00-lookup_symbolRecords\''
     symbolRecords = pd.read_sql(sqlStatement_selectRecordsTable, conn)
     # convert firstRecordDate column to datetime
-    symbolRecords['firstRecordDate'] = pd.to_datetime(symbolRecords['firstRecordDate'])
+    if include_type:
+        if symbolRecords.empty:
+            return symbolRecords
+        symbolRecords['firstRecordDate'] = pd.to_datetime(
+            symbolRecords['firstRecordDate'], format='ISO8601'
+        )
+        symbolRecords['type'] = symbolRecords['name'].str.split('_', expand=True)[1]
+        symbolRecords['type'] = symbolRecords['type'].apply(
+            lambda value: 'future' if value.isdigit() else value
+        )
+    else:
+        symbolRecords['firstRecordDate'] = pd.to_datetime(symbolRecords['firstRecordDate'])
     return symbolRecords
+
+
+def getHistoryFromCSV(filepath, symbol, interval):
+    """Read CSV history with the columns expected by the equities collector."""
+    history = pd.read_csv(filepath)
+    history.columns = history.columns.str.lower()
+    history['date'] = pd.to_datetime(
+        history['date'], format='mixed', dayfirst=False, yearfirst=True
+    )
+    history['symbol'] = symbol
+    history['interval'] = interval
+    if 'adj close' in history.columns:
+        history.drop(columns=['close'], inplace=True)
+        history.rename(columns={'adj close': 'close'}, inplace=True)
+    return history
+
+
+def refresh_lookup_from_history(conn, tablename, type, earliestTimestamp, numMissingDays=5):
+    """Refresh lookup metadata using the collector's existing missing-day rules."""
+    quoted_name = '"%s"' % tablename.replace('"', '""')
+    is_future = type == 'future'
+    columns = 'MIN(date), symbol, interval, lastTradeDate' if is_future else 'MIN(date), symbol, interval'
+    row = pd.read_sql('SELECT %s FROM %s' % (columns, quoted_name), conn).iloc[0]
+    first_date = pd.to_datetime(row['MIN(date)'], format='ISO8601').tz_localize(None)
+    interval = _removeSpaces(row['interval'])
+    symbol = row['symbol']
+    expiry = row['lastTradeDate'] if is_future else None
+
+    where = 'symbol = ? AND interval = ?'
+    keys = [symbol, interval]
+    if is_future:
+        where += ' AND lastTradeDate = ?'
+        keys.append(expiry)
+    lookup_name = '"%s"' % config.lookupTableName.replace('"', '""')
+    existing = conn.execute(
+        'SELECT firstRecordDate FROM %s WHERE %s' % (lookup_name, where), keys
+    ).fetchone()
+
+    if existing is None:
+        print(' Adding new record to lookup table...')
+        record = {
+            'firstRecordDate': first_date,
+            'symbol': symbol,
+            'interval': interval,
+            'name': tablename,
+        }
+        if is_future:
+            record['lastTradeDate'] = expiry
+        if earliestTimestamp:
+            record['numMissingBusinessDays'] = numMissingDays
+        pd.DataFrame([record]).to_sql(
+            config.lookupTableName, conn, index=False, if_exists='append'
+        )
+        return
+
+    print(' %s: Updating lookup table...' % datetime.datetime.now().strftime('%H:%M:%S'))
+    if earliestTimestamp:
+        numMissingDays = len(pd.bdate_range(earliestTimestamp, first_date))
+    conn.execute(
+        'UPDATE %s SET firstRecordDate = ? WHERE %s' % (lookup_name, where),
+        [str(first_date), *keys],
+    )
+    if earliestTimestamp or is_future:
+        conn.execute(
+            'UPDATE %s SET numMissingBusinessDays = ? WHERE %s' % (lookup_name, where),
+            [numMissingDays, *keys],
+        )
+    print('[green]  %s: Done! [/green]' % datetime.datetime.now().strftime('%H:%M:%S'))
+
+
+_PREHISTORY_STATUS_TABLE = '00-lookup_prehistory_status'
+
+
+def _ensure_prehistory_status_table(conn):
+    conn.execute(
+        'CREATE TABLE IF NOT EXISTS "%s" ('
+        'symbol TEXT NOT NULL, '
+        'interval TEXT NOT NULL, '
+        'failed_runs INTEGER NOT NULL DEFAULT 0, '
+        'exhausted INTEGER NOT NULL DEFAULT 0, '
+        'PRIMARY KEY (symbol, interval))' % _PREHISTORY_STATUS_TABLE
+    )
+
+
+def getExhaustedPrehistoryRows(conn):
+    """Return the symbol/interval pairs that prehistory has exhausted."""
+    _ensure_prehistory_status_table(conn)
+    rows = conn.execute(
+        'SELECT symbol, interval FROM "%s" WHERE exhausted = 1' % _PREHISTORY_STATUS_TABLE
+    ).fetchall()
+    return {(symbol, interval) for symbol, interval in rows}
+
+
+def recordPrehistoryAttempt(conn, symbol, interval, had_backward_progress, max_failures=3):
+    """Persist one prehistory pass and report its failure count and exhausted status."""
+    _ensure_prehistory_status_table(conn)
+    if had_backward_progress:
+        failed_runs = 0
+    else:
+        row = conn.execute(
+            'SELECT failed_runs FROM "%s" WHERE symbol = ? AND interval = ?' % _PREHISTORY_STATUS_TABLE,
+            (symbol, interval)
+        ).fetchone()
+        failed_runs = (row[0] if row else 0) + 1
+
+    exhausted = int(failed_runs >= max_failures)
+    conn.execute(
+        'INSERT INTO "%s" (symbol, interval, failed_runs, exhausted) VALUES (?, ?, ?, ?) '
+        'ON CONFLICT(symbol, interval) DO UPDATE SET '
+        'failed_runs = excluded.failed_runs, exhausted = excluded.exhausted' % _PREHISTORY_STATUS_TABLE,
+        (symbol, interval, failed_runs, exhausted)
+    )
+    return failed_runs, bool(exhausted)
+
+
+def construct_record_metadata(conn, table_names):
+    """Return the three metadata maps exposed by the original interface."""
+    queries = [
+        "SELECT '%s' AS name, MAX(date) AS last_update, MIN(date) AS first_record_date "
+        'FROM "%s"' % (name.replace("'", "''"), name.replace('"', '""'))
+        for name in table_names
+    ]
+    records = pd.read_sql(
+        'SELECT name, last_update, first_record_date FROM (%s) GROUP BY name'
+        % ' UNION ALL '.join(queries), conn
+    )
+    for column in ('first_record_date', 'last_update'):
+        records[column] = records[column].apply(
+            lambda value: datetime.datetime.strptime(value[:19], '%Y-%m-%d %H:%M:%S')
+            if len(value) > 10 else datetime.datetime.strptime(value, '%Y-%m-%d')
+        )
+    records['numDaysSinceLastUpdate'] = records['last_update'].apply(
+        lambda value: len(pd.bdate_range(value, datetime.datetime.now())) - 1
+    )
+    return (
+        dict(zip(records['name'], records['first_record_date'])),
+        dict(zip(records['name'], records['last_update'])),
+        dict(zip(records['name'], records['numDaysSinceLastUpdate'])),
+    )
+
+
+def getRecords_legacy(conn):
+    """Return record columns in the original interface's order and format."""
+    records = pd.DataFrame()
+    table_names = pd.read_sql(
+        "SELECT * FROM sqlite_master WHERE type='table' AND NOT name LIKE '00_%'",
+        conn,
+    )
+    table_names = table_names[~table_names['name'].str.contains('_corrupt')]
+    if table_names.empty:
+        return records
+    records[['symbol', 'type/expiry', 'interval']] = table_names['name'].str.split(
+        '_', expand=True
+    )
+    records['name'] = table_names['name']
+    first, last, age = construct_record_metadata(conn, table_names['name'])
+    records['firstRecordDate'] = records['name'].map(first)
+    records['lastUpdateDate'] = records['name'].map(last)
+    records['daysSinceLastUpdate'] = records['name'].map(age)
+    records['interval'] = records['interval'].apply(_addspace)
+    return records
+
+
+def construct_legacy_table_name(symbol, interval, lastTradeDate=''):
+    """Preserve the original interface's table-name selection."""
+    type_ = 'index' if symbol.upper() in config._index else 'stock'
+    if type_ == 'index':
+        return symbol + '_' + type_ + '_' + interval
+    if lastTradeDate:
+        return symbol + '_' + str(lastTradeDate) + '_' + interval
+    return symbol + '_stock_' + interval
+
+
+def format_price_history_legacy(pxHistory):
+    """Format prices with the original Date/Time column contract."""
+    pxHistory.rename(columns={'date': 'Date'}, inplace=True)
+    pxHistory.sort_values(by='Date', inplace=True)
+    pxHistory['Date'] = pd.to_datetime(pxHistory['Date'], format='ISO8601', utc=True)
+    pxHistory['Date'] = pxHistory['Date'].dt.tz_localize(None)
+    if pxHistory['interval'][0] in ['1min', '5mins', '15mins', '30mins', '1hour']:
+        pxHistory['Time'] = pxHistory['Date'].dt.time
+        pxHistory['Date'] = pxHistory['Date'].dt.date
+    return pxHistory
+
+
+def getPriceHistory_legacy(conn, symbol, interval, withpctchange=False, lastTradeDate=''):
+    """Read prices with the original interface's result columns."""
+    table_name = construct_legacy_table_name(symbol, interval, lastTradeDate)
+    history = getTable(conn, table_name)
+    history = format_price_history_legacy(history)
+    if withpctchange:
+        history['close_pctChange'] = history['close'].pct_change()
+    return history
 
 
 def listSymbols(conn):
@@ -791,3 +1036,146 @@ def update_progress_tracker_fields(conn, tablename_key, updates, tablename='00-p
     cursor = conn.cursor()
     cursor.execute(sql, values)
     conn.commit()
+
+
+def create_split_tables(conn):
+    """Create split-event and sync metadata without modifying price tables."""
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS "00-split_events" (
+            symbol TEXT NOT NULL,
+            split_date TEXT NOT NULL,
+            ratio REAL NOT NULL CHECK (ratio > 0),
+            source TEXT NOT NULL DEFAULT 'yfinance',
+            first_seen_utc TEXT NOT NULL,
+            last_seen_utc TEXT NOT NULL,
+            source_missing INTEGER NOT NULL DEFAULT 0 CHECK (source_missing IN (0, 1)),
+            PRIMARY KEY (symbol, split_date, source)
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS "00-split_sync" (
+            symbol TEXT PRIMARY KEY,
+            last_attempt_utc TEXT,
+            last_success_utc TEXT,
+            next_retry_utc TEXT,
+            last_error TEXT
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS "00-split_provider_state" (
+            source TEXT PRIMARY KEY,
+            rate_limit_count INTEGER NOT NULL DEFAULT 0,
+            last_rate_limit_utc TEXT,
+            next_allowed_utc TEXT
+        )
+    ''')
+    conn.execute('''
+        INSERT OR IGNORE INTO "00-split_provider_state" (source) VALUES ('yfinance')
+    ''')
+
+
+def _split_row_as_dict(cursor, row):
+    if row is None:
+        return None
+    return dict(zip((column[0] for column in cursor.description), row))
+
+
+def get_split_events(conn, symbol):
+    """Return stored Yahoo split events, including source discrepancy flags."""
+    cursor = conn.execute('''
+        SELECT symbol, split_date, ratio, source, first_seen_utc,
+               last_seen_utc, source_missing
+        FROM "00-split_events"
+        WHERE symbol = ?
+        ORDER BY split_date
+    ''', (symbol,))
+    return [_split_row_as_dict(cursor, row) for row in cursor.fetchall()]
+
+
+def get_split_sync_state(conn, symbol):
+    cursor = conn.execute('''
+        SELECT symbol, last_attempt_utc, last_success_utc, next_retry_utc, last_error
+        FROM "00-split_sync" WHERE symbol = ?
+    ''', (symbol,))
+    return _split_row_as_dict(cursor, cursor.fetchone())
+
+
+def get_split_provider_state(conn):
+    cursor = conn.execute('''
+        SELECT source, rate_limit_count, last_rate_limit_utc, next_allowed_utc
+        FROM "00-split_provider_state" WHERE source = 'yfinance'
+    ''')
+    return _split_row_as_dict(cursor, cursor.fetchone())
+
+
+def record_split_success(conn, symbol, events, checked_at):
+    """Replace Yahoo's observed event state atomically, retaining omissions."""
+    checked_at = checked_at.isoformat()
+    with conn:
+        conn.execute('''
+            UPDATE "00-split_events" SET source_missing = 1
+            WHERE symbol = ? AND source = 'yfinance'
+        ''', (symbol,))
+        for split_date, ratio in events:
+            conn.execute('''
+                INSERT INTO "00-split_events"
+                    (symbol, split_date, ratio, source, first_seen_utc,
+                     last_seen_utc, source_missing)
+                VALUES (?, ?, ?, 'yfinance', ?, ?, 0)
+                ON CONFLICT(symbol, split_date, source) DO UPDATE SET
+                    ratio = excluded.ratio,
+                    last_seen_utc = excluded.last_seen_utc,
+                    source_missing = 0
+            ''', (symbol, split_date, ratio, checked_at, checked_at))
+        conn.execute('''
+            INSERT INTO "00-split_sync"
+                (symbol, last_attempt_utc, last_success_utc, next_retry_utc, last_error)
+            VALUES (?, ?, ?, NULL, NULL)
+            ON CONFLICT(symbol) DO UPDATE SET
+                last_attempt_utc = excluded.last_attempt_utc,
+                last_success_utc = excluded.last_success_utc,
+                next_retry_utc = NULL,
+                last_error = NULL
+        ''', (symbol, checked_at, checked_at))
+
+
+def record_split_error(conn, symbol, attempted_at, error, next_retry_at):
+    """Record a failed check without changing stored split events."""
+    with conn:
+        conn.execute('''
+            INSERT INTO "00-split_sync"
+                (symbol, last_attempt_utc, next_retry_utc, last_error)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(symbol) DO UPDATE SET
+                last_attempt_utc = excluded.last_attempt_utc,
+                next_retry_utc = excluded.next_retry_utc,
+                last_error = excluded.last_error
+        ''', (symbol, attempted_at.isoformat(), next_retry_at.isoformat(), str(error)))
+
+
+def record_split_rate_limit(conn, symbol, attempted_at):
+    """Persist a provider-wide exponential cooldown and return its end time."""
+    state = get_split_provider_state(conn)
+    prior = state['last_rate_limit_utc']
+    recent = prior is not None and (
+        attempted_at - datetime.datetime.fromisoformat(prior)
+    ) <= datetime.timedelta(hours=24)
+    count = state['rate_limit_count'] + 1 if recent else 1
+    delay_seconds = min(60 * (2 ** min(count - 1, 5)), 1800)
+    retry_at = attempted_at + datetime.timedelta(seconds=delay_seconds)
+    with conn:
+        conn.execute('''
+            UPDATE "00-split_provider_state"
+            SET rate_limit_count = ?, last_rate_limit_utc = ?, next_allowed_utc = ?
+            WHERE source = 'yfinance'
+        ''', (count, attempted_at.isoformat(), retry_at.isoformat()))
+        conn.execute('''
+            INSERT INTO "00-split_sync"
+                (symbol, last_attempt_utc, next_retry_utc, last_error)
+            VALUES (?, ?, ?, 'Yahoo rate limited')
+            ON CONFLICT(symbol) DO UPDATE SET
+                last_attempt_utc = excluded.last_attempt_utc,
+                next_retry_utc = excluded.next_retry_utc,
+                last_error = excluded.last_error
+        ''', (symbol, attempted_at.isoformat(), retry_at.isoformat()))
+    return retry_at

@@ -42,8 +42,8 @@ import re
 import time
 
 import interface_ibkr as ib
-import interface_localDb_old as db
-import interface_localDB as db_new
+import interface_localDB as db
+import stock_split_sync
 
 ######### SET GLOBAL VARS #########
 
@@ -153,6 +153,22 @@ def _maybe_update_current_records(last_update_date, now=None):
         return now.date()
     return last_update_date
 
+
+def _maybe_sync_splits():
+    """Run one bounded Yahoo split batch without interrupting IBKR history."""
+    try:
+        result = stock_split_sync.run_split_sync_batch(
+            _dbName_index, _tickerFilepath
+        )
+    except Exception as exc:
+        print(f"[yellow]Split sync failed: {exc}[/yellow]")
+        return
+    if result["attempted"]:
+        print(
+            f"Split sync: {result['succeeded']} saved, "
+            f"{result['errors']} errors, rate limited: {result['rate_limited']}"
+        )
+
 """
 Save history to a CSV file 
 ### 
@@ -177,7 +193,7 @@ def updateHistoryFromCSV(filepath, symbol, interval):
     # convert date column to datetime
     pxHistory_raw['date'] = pd.to_datetime(pxHistory_raw['date'])
     with db.sqlite_connection(_dbName_index) as conn:
-        db.saveHistoryToDB(pxHistory_raw, conn)
+        db.saveHistoryToDB_legacy(pxHistory_raw, conn)
 
 """
      Loads vix futures data from futures data retreived from rwTools 
@@ -189,7 +205,7 @@ def update_vix_futures_history_from_rwtools(filepath):
     
     #get recs in db
     with db.sqlite_connection(config.dbname_futures) as conn:
-        db_recs = db.getRecords(conn)
+        db_recs = db.getRecords_legacy(conn)
         # select only 1day vix 
         db_recs = db_recs.loc[(db_recs['interval'] == '1 day') & (db_recs['symbol'] == 'VIX')].copy()
         # convert to datetime
@@ -225,7 +241,7 @@ def update_vix_futures_history_from_rwtools(filepath):
                     # get the missing data 
                     #new_data = raw_csv.loc[(raw_csv['expiry'] == expiry) & (raw_csv['date'] < lastDateSaved)].copy()
                     # add the new data to the db 
-                    db.saveHistoryToDB(additionalHistory.loc[(additionalHistory['date'] < lastDateSaved)].reset_index(drop=True)
+                    db.saveHistoryToDB_legacy(additionalHistory.loc[(additionalHistory['date'] < lastDateSaved)].reset_index(drop=True)
                                        , conn
                                        , type='future'
                                        )
@@ -275,7 +291,7 @@ def updateRecords(updateThresholdDays = 1):
     # get record metadata from db
     with db.sqlite_connection(_dbName_index) as conn:
         # records = db.getRecords(conn)
-        records = db_new.getRecords(conn)
+        records = db.getRecords(conn)
     
     if not records.empty: ## if database contains some records, check if any need to be updated
         symbolsWithOutdatedData = records.loc[records['daysSinceLastUpdate'] >= updateThresholdDays]
@@ -384,7 +400,7 @@ def updateRecordHistory(ibkr, records, symbolsWithOutdatedData= pd.DataFrame(), 
                 history['interval'] = _intvl.replace(' ', '')
                 history['symbol'] = newIndex
                 with db.sqlite_connection(_dbName_index) as conn:
-                    db.saveHistoryToDB(history, conn, earliestTimestamp=earliestTimestamp)
+                    db.saveHistoryToDB_legacy(history, conn, earliestTimestamp=earliestTimestamp)
 
                 print(' [green]Success![/green] New record Added for %s-%s..from %s to %s\n'%(newIndex, _intvl, history['date'].min(), history['date'].max()))
             
@@ -494,7 +510,7 @@ def updateRecordHistory(ibkr, records, symbolsWithOutdatedData= pd.DataFrame(), 
                 history.sort_values(by='date', inplace=True)
                 # save history to db
                 with db.sqlite_connection(_dbName_index) as conn:
-                    db.saveHistoryToDB(history, conn, earliestTimestamp)
+                    db.saveHistoryToDB_legacy(history, conn, earliestTimestamp)
                 
                 # sleep before next record
                 # print('%s: [yellow]Pausing %.2fs before next record...[/yellow]\n'%(datetime.datetime.now().strftime("%H:%M:%S"), ibkrThrottleTime/2))
@@ -530,7 +546,7 @@ def updateRecordHistory(ibkr, records, symbolsWithOutdatedData= pd.DataFrame(), 
             if not earliestTimestamp: 
                 continue 
             with db.sqlite_connection(_dbName_index) as conn:
-                db.saveHistoryToDB(history, conn, earliestTimestamp=earliestTimestamp)
+                db.saveHistoryToDB_legacy(history, conn, earliestTimestamp=earliestTimestamp)
 
             print('%s: [green]Missing interval %s-%s...updated![/green]'%(datetime.datetime.now().strftime("%H:%M:%S"), _tkr, _intvl))
 
@@ -582,7 +598,7 @@ def updatePreHistoricData(ibkr, should_yield=None):
 
     # read in the lookup table
     with db.sqlite_connection(_dbName_index) as conn:
-        lookupTable = db.getLookup_symbolRecords(conn)
+        lookupTable = db.getLookup_symbolRecords(conn, include_type=True)
         exhaustedPrehistoryRows = db.getExhaustedPrehistoryRows(conn)
 
     if exhaustedPrehistoryRows:
@@ -754,7 +770,7 @@ def updatePreHistoricData(ibkr, should_yield=None):
                 history_chunk['symbol'] = symbol
 
                 with db.sqlite_connection(_dbName_index) as conn:
-                    db.saveHistoryToDB(history_chunk, conn, earliestAvailableTimestamp)
+                    db.saveHistoryToDB_legacy(history_chunk, conn, earliestAvailableTimestamp)
 
                 had_backward_progress = True
                 endDate = chunk_min_date
@@ -770,7 +786,7 @@ def updatePreHistoricData(ibkr, should_yield=None):
                 db_first_record_date = db._getFirstRecordDate(row, conn)
                 if pd.isna(pd.to_datetime(db_first_record_date, errors='coerce')):
                     db_first_record_date = earliestAvailableTimestamp
-                db._updateLookup_symbolRecords(conn, tablename, type, db_first_record_date)
+                db.refresh_lookup_from_history(conn, tablename, type, db_first_record_date)
                 if searched_for_prehistory and not interrupted:
                     failed_runs, exhausted = db.recordPrehistoryAttempt(
                         conn,
@@ -800,10 +816,10 @@ def updatePreHistoricData(ibkr, should_yield=None):
 def _load_lookup_source_records(dbname):
     lookupTableName = config.lookupTableName
     with db.sqlite_connection(dbname) as conn:
-        records = db_new.getRecords(conn)
+        records = db.getRecords(conn)
         records['interval'] = records['interval'].str.replace(' ', '')
         records.rename(columns={'type/expiry': 'type'}, inplace=True)
-        lookupTableRecords = db.getLookup_symbolRecords(conn)
+        lookupTableRecords = db.getLookup_symbolRecords(conn, include_type=True)
     return lookupTableName, records, lookupTableRecords
 
 
@@ -983,6 +999,7 @@ def bulkUpdate(last_current_update=None):
     cycletime_= []
     print('\n[green]Starting bulk update of pre-historic data...[/green]')
     while i < numcycles:
+        _maybe_sync_splits()
         last_current_update = _maybe_update_current_records(last_current_update)
 
         ## connect to ibkr
@@ -1042,6 +1059,7 @@ def main(args=None):
             updateHistoryFromCSV('data/FXB.csv', 'FXB', '1day')
         return
 
+    _maybe_sync_splits()
     now = _eastern_now()
     last_current_update = None
     if now.weekday() >= 5 or _is_after_hours_update_due(now):
