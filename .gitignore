@@ -151,5 +151,10 @@ data/
 # test modules 
 test_*.py
 tests/
+!/test_local_db_migration.py
+!/test_prehistory_tracking.py
+!/test_local_db_shared.py
+!/test_yfinance_splits.py
+!/test_stock_split_sync.py
 
 sandbox.ipynb
