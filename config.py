@@ -5,8 +5,10 @@ path_lib_analysis_backtests = '/workbench/analysis/venv/backtests'
 path_lib_analysis_strategies = '../workbench/analysis/venv/strategy_implementation'
 
 #_____________________________________________________________________________________________________________ DATABASE locations
-dbname_stock = '/workbench/historicalData/saveHistoricalData/data/historicalData_index.db'
-dbname_futures = '/workbench/historicalData/saveHistoricalData/data/historicalData_futures.db'
+dbname_stock = 'X:/data/ibkr/historicalData_index.db'
+dbname_futures = 'X:/data/ibkr/historicalData_futures.db'
+# dbname_stock = '/workbench/historicalData/saveHistoricalData/data/historicalData_index.db'
+# dbname_futures = '/workbench/historicalData/saveHistoricalData/data/historicalData_futures.db'
 dbname_termstructure = '/workbench/historicalData/saveHistoricalData/data/termstructure.db'
 dbname_rwtools_futures_vix_csv = '/workbench/historicalData/saveHistoricalData/data/vix_chunks01.csv'
 
@@ -17,7 +19,7 @@ lookupTableName = '00-lookup_symbolRecords'
 table_name_futures_pxhistory_metadata = '00-lookup_pxhistory_metadata'
 
 #_____________________________________________________________________________________________________________ Lookup tables
-HIGH_PRIORITY_SYMBOLS = ['SPX', 'VIX', 'VIX3M', 'VVIX', 'AVGO']
+HIGH_PRIORITY_SYMBOLS = ['SPX', 'VIX', 'VIX3M', 'VVIX', 'AVGO', 'VWO', 'VEA', 'TLT', 'GLD', 'EMB', 'IEF', 'VTI', 'UVXY', 'VXX', 'SVXY']
 intervals = ['1 min', '5 mins', '30 mins', '1 day']
 _indexList = ['GVZ', 'INDU', 'NDX', 'VIX', 'VIX3M', 'VVIX', 'SPX', 'VIX1D', 'TSX', 'NDX']
 _index = ['GVZ', 'INDU', 'NDX', 'VIX', 'VIX3M', 'VVIX', 'SPX', 'VIX1D', 'TSX', 'NDX']
