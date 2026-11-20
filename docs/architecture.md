@@ -50,7 +50,7 @@ Split data is stored in the equities database in `00-split_events` (dates, ratio
 
 ### SPX tick history
 
-[`maintainSPXTicks.py`](../maintainSPXTicks.py) requests SPX index ticks with `reqHistoricalTicks` (`TRADES`, regular hours, 1,000 ticks per request) and stores them in a separate SQLite database, `X:/data/ibkr/historicalData_ticks.db` (`config.dbname_ticks`). The file uses WAL, `synchronous=NORMAL`, and a 5-second busy timeout, so research and monitor readers can query it while a collector writes. Read-only commands open a `mode=ro` URI with `PRAGMA query_only=ON`.
+[`maintainSPXTicks.py`](../maintainSPXTicks.py) requests SPX index ticks with `reqHistoricalTicks` (`TRADES`, regular hours, 1,000 ticks per request) and stores them in a separate SQLite database, `X:/data/ibkr/historicalData_ticks.db` (`config.dbname_ticks`). The file uses WAL, `synchronous=NORMAL`, and a 5-second busy timeout, so R/RSQLite readers can query it while a collector writes; an intended monitor reader could use the same path once wired. Read-only commands open a `mode=ro` URI with `PRAGMA query_only=ON`.
 
 [`interface_ticks.py`](../interface_ticks.py) owns the schema and queries:
 
@@ -99,7 +99,7 @@ A single-instance lock at `<db-path>.lock` stops two tick writers. It does not c
 
 ### Tick read access
 
-R with RSQLite and the monitor read the tick database directly. WAL permits reads during a collector run. Bound every query by date: a full three-year scan is about 17.7 million rows.
+R with RSQLite reads the tick database directly today; the realtime monitor is an intended reader once its tick read path is wired. WAL permits reads during a collector run. Bound every query by date: a full three-year scan is about 17.7 million rows.
 
 ```r
 library(DBI)
