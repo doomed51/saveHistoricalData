@@ -34,7 +34,7 @@ flowchart LR
     X --> K["Tick interface<br/>interface_ticks.py"]
     K <--> TX[("Ticks SQLite<br/>WAL")]
     TX --> R["R / RSQLite research"]
-    TX --> M["Realtime monitor<br/>bounded reads"]
+    TX -.-> M["Realtime monitor<br/>planned bounded reads"]
 ```
 
 ### Collection and storage
@@ -126,13 +126,16 @@ dbExecute(con, "ATTACH DATABASE 'X:/data/ibkr/historicalData_index.db' AS px")
 dbGetQuery(con, "
   SELECT t.date, t.price, b.close
     FROM SPX_index_ticks t
-    LEFT JOIN px.SPX_index_1min b ON b.date = t.date
+    LEFT JOIN px.SPX_index_1min b
+      ON b.date = substr(t.date, 1, 17) || '00'
    WHERE t.date >= '2026-11-18 09:30:00'
      AND t.date <  '2026-11-18 16:00:00'
 ")
 ```
 
-In Python, `interface_ticks.get_ticks(conn, start, end)` returns a sorted `date, price` DataFrame with parsed dates for bounded windows. The realtime monitor should use this helper or an equivalent bounded query, and must not load the full table for z-scores.
+Each tick maps to its containing minute bar, so the tick timestamp must be bucketed to the bar's minute. Bar dates are minute-aligned while ticks are event-driven; joining `b.date = t.date` directly would match only ticks that fall exactly on a bar timestamp.
+
+In Python, `interface_ticks.get_ticks(conn, start, end)` returns a sorted `date, price` DataFrame with parsed dates for bounded windows. The realtime monitor does not read ticks yet; it can use this helper or an equivalent bounded query when that read path is added, and it must not load the full table for z-scores.
 
 ## Historical data flow
 
@@ -152,6 +155,6 @@ The two futures maintenance scripts use different control flows. The v2 script p
 
 ## Derived data and consumers
 
-[`maintainTermStructure.py`](../maintainTermStructure.py) reads stored futures contracts, uses expiry and roll settings in [`config.py`](../config.py), builds term-structure rows, and saves them to a separate SQLite database. [`checkDataIntegrity.py`](../checkDataIntegrity.py) supplies missing-date checks used by futures and term-structure work. [`realtime_monitor.py`](../realtime_monitor.py) and [`backtest.py`](../backtest.py) are other data consumers outside the main historical collection flow. R/RSQLite research and the realtime monitor also read the tick database through bounded windows; see [Tick read access](#tick-read-access).
+[`maintainTermStructure.py`](../maintainTermStructure.py) reads stored futures contracts, uses expiry and roll settings in [`config.py`](../config.py), builds term-structure rows, and saves them to a separate SQLite database. [`checkDataIntegrity.py`](../checkDataIntegrity.py) supplies missing-date checks used by futures and term-structure work. [`realtime_monitor.py`](../realtime_monitor.py) and [`backtest.py`](../backtest.py) are other data consumers outside the main historical collection flow. R/RSQLite reads the tick database today through bounded windows; the realtime monitor is an intended tick reader and can use `interface_ticks.get_ticks` when that path is wired. See [Tick read access](#tick-read-access).
 
 Database and watchlist locations come from `config.py`. Its current equities, futures, and tick database paths point to `X:/data/ibkr`, while its term-structure path uses `/workbench/...`. Check these paths before running a script that can write data.
