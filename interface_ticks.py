@@ -11,12 +11,16 @@ transactions around page upserts and state changes.
 import os
 import pathlib
 import sqlite3
+from zoneinfo import ZoneInfo
 
 import pandas as pd
+import pandas_market_calendars as market_calendars
 
 import config
 
 SESSION_TABLE = '00-tick_sessions'
+_EASTERN = ZoneInfo('America/New_York')
+_NYSE_CALENDAR = market_calendars.get_calendar('NYSE')
 
 SESSION_COLUMNS = (
     'symbol',
@@ -136,6 +140,47 @@ def ensure_sessions(conn, sessions, symbol=config.tick_symbol):
             for session in sessions
         ],
     )
+
+
+def _calendar_et_text(timestamp):
+    """Format a calendar timestamp as naive Eastern text."""
+    return pd.Timestamp(timestamp).tz_convert(_EASTERN).strftime(
+        '%Y-%m-%d %H:%M:%S'
+    )
+
+
+def session_schedule(start_date, end_date):
+    """Return NYSE sessions in the inclusive ``[start_date, end_date]`` range.
+
+    Each session is a dict of ``session_date``, ``session_open``, and
+    ``session_close`` in naive Eastern time. Holidays and weekends are omitted,
+    and early closes use the calendar's shortened hours.
+    """
+    start = pd.Timestamp(start_date).normalize()
+    end = pd.Timestamp(end_date).normalize()
+    if end < start:
+        return []
+
+    # The calendar's end-date handling varies by version; pad the upper bound
+    # and filter here so the returned range is always inclusive.
+    schedule = _NYSE_CALENDAR.schedule(
+        start_date=start,
+        end_date=end + pd.Timedelta(days=1),
+    )
+
+    sessions = []
+    for session_date, row in schedule.iterrows():
+        day = pd.Timestamp(session_date).normalize()
+        if day < start or day > end:
+            continue
+        sessions.append(
+            {
+                'session_date': day.strftime('%Y-%m-%d'),
+                'session_open': _calendar_et_text(row['market_open']),
+                'session_close': _calendar_et_text(row['market_close']),
+            }
+        )
+    return sessions
 
 
 def _rows_to_dicts(cursor):
