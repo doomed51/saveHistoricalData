@@ -849,7 +849,7 @@ def _resolve_range(args):
 
 
 def _lock_path(db_path):
-    return db_path + '.lock'
+    return os.path.abspath(os.fspath(db_path)) + '.lock'
 
 
 @contextlib.contextmanager
@@ -1071,6 +1071,19 @@ def main(argv=None):
         raise ValueError('unknown command %r' % args.command)
     except Exception:
         logger.exception('%s failed', args.command)
+        return 1
+    except KeyboardInterrupt:
+        raise
+    except BaseException as exc:
+        # ``interface_ibkr`` helpers call ``exit()`` on connection and socket
+        # failures, which raises ``SystemExit`` and would otherwise terminate
+        # an unattended run with status 0.
+        detail = '' if getattr(exc, 'code', None) is None else (
+            ' (exit code %s)' % exc.code
+        )
+        logger.error(
+            '%s failed: %s%s', args.command, type(exc).__name__, detail
+        )
         return 1
 
 

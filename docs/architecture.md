@@ -95,7 +95,9 @@ Run the maintenance commands from this directory:
 - `--status` is read-only and reports status counts, complete-session bounds, total rows, and database size.
 - `--db-path` selects another database file. Tests and smoke runs must use a temporary path.
 
-A single-instance lock at `<db-path>.lock` stops two tick writers. It does not coordinate with the bar or futures collectors. IBKR's historical-data pacing budget is shared at the account level, so do not run `--backfill`, `--daily`, or `--repair` while `getHistoricalData.py` or a futures maintenance script is making requests. Run the initial backfill when those collectors are idle, and run `--daily` after the bar collector finishes. The log is appended to `logs/spx_ticks_YYYYMMDD.log` in Eastern time.
+Every command exits 1 and logs an error line when it fails, including a refused IBKR connection or a dropped socket, so an unattended scheduler does not treat a failed run as success.
+
+A single-instance lock at `<absolute db path>.lock` stops two tick writers, so relative and absolute spellings of the same database share one lock. It does not coordinate with the bar or futures collectors. IBKR's historical-data pacing budget is shared at the account level, so do not run `--backfill`, `--daily`, or `--repair` while `getHistoricalData.py` or a futures maintenance script is making requests. Run the initial backfill when those collectors are idle, and run `--daily` after the bar collector finishes. The log is appended to `logs/spx_ticks_YYYYMMDD.log` in Eastern time.
 
 ### Tick read access
 

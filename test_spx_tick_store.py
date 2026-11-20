@@ -1,4 +1,5 @@
 import os
+import pathlib
 import sqlite3
 import tempfile
 import unittest
@@ -408,6 +409,37 @@ class TestConnectionModes(unittest.TestCase):
                 writer.close()
 
             reader = connect_ticks(path, readonly=True)
+            try:
+                self.assertEqual(
+                    reader.execute('PRAGMA query_only').fetchone()[0], 1
+                )
+                rows = reader.execute(
+                    'SELECT date, price FROM "TEST_index_ticks"'
+                ).fetchall()
+                self.assertEqual(rows, [('2026-11-18 09:30:01', 100.0)])
+
+                with self.assertRaises(sqlite3.OperationalError):
+                    reader.execute(
+                        'INSERT INTO "TEST_index_ticks" (date, price)'
+                        ' VALUES (?, ?)',
+                        ('2026-11-18 09:30:02', 101.0),
+                    )
+            finally:
+                reader.close()
+
+    def test_readonly_connection_accepts_a_path_object(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, 'ticks.db')
+            writer = connect_ticks(path)
+            try:
+                ensure_schema(writer, symbol='TEST')
+                upsert_ticks(
+                    writer, [('2026-11-18 09:30:01', 100.0)], symbol='TEST'
+                )
+            finally:
+                writer.close()
+
+            reader = connect_ticks(pathlib.Path(path), readonly=True)
             try:
                 self.assertEqual(
                     reader.execute('PRAGMA query_only').fetchone()[0], 1

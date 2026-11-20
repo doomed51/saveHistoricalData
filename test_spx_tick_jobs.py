@@ -1,6 +1,7 @@
 import datetime
 import logging
 import os
+import pathlib
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
@@ -606,6 +607,23 @@ class TestWriteLock(unittest.TestCase):
         release_lock(again, self.path)
         self.assertFalse(os.path.exists(self.path))
 
+    def test_relative_and_absolute_spellings_share_a_lock_path(self):
+        absolute = os.path.join(self._dir.name, 'nested', 'ticks.db')
+        previous = os.getcwd()
+        os.chdir(self._dir.name)
+        self.addCleanup(os.chdir, previous)
+
+        self.assertEqual(
+            maintainSPXTicks._lock_path(os.path.join('nested', 'ticks.db')),
+            maintainSPXTicks._lock_path(absolute),
+        )
+        self.assertEqual(
+            maintainSPXTicks._lock_path(
+                pathlib.Path('.') / 'nested' / 'ticks.db'
+            ),
+            maintainSPXTicks._lock_path(absolute),
+        )
+
     def test_stale_lock_file_does_not_block_a_new_run(self):
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
         with open(self.path, 'w', encoding='utf-8'):
@@ -856,6 +874,33 @@ class TestCliBackfill(CliTestCase):
         self.assertEqual(code, 1)
         self.assertFalse(os.path.exists(self.db_path + '.lock'))
         self.assertEqual(fake.disconnects, 1)
+
+    def test_connection_exit_returns_one_and_logs_an_error(self):
+        argv = [
+            '--backfill',
+            '--start', '2026-11-16',
+            '--end', '2026-11-20',
+            '--db-path', self.db_path,
+        ]
+
+        with patch.object(
+            interface_ibkr, 'setupConnection', side_effect=SystemExit()
+        ), patch.object(
+            maintainSPXTicks, 'configure_logging', return_value=None
+        ), self.assertLogs(
+            maintainSPXTicks.LOGGER_NAME, level='ERROR'
+        ) as logged:
+            code = main(argv)
+
+        self.assertEqual(code, 1)
+        self.assertFalse(os.path.exists(self.db_path + '.lock'))
+        self.assertTrue(
+            any(
+                'backfill failed' in line and 'SystemExit' in line
+                for line in logged.output
+            ),
+            logged.output,
+        )
 
     def test_a_held_lock_aborts_before_connecting(self):
         handle = acquire_lock(self.db_path + '.lock')

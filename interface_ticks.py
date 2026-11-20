@@ -64,10 +64,11 @@ def _quote_identifier(name):
 
 
 def _readonly_uri(db_path):
-    if db_path.startswith('file:'):
-        separator = '&' if '?' in db_path else '?'
-        return db_path + separator + 'mode=ro'
-    return pathlib.Path(os.path.abspath(db_path)).as_uri() + '?mode=ro'
+    path = os.fspath(db_path)
+    if path.startswith('file:'):
+        separator = '&' if '?' in path else '?'
+        return path + separator + 'mode=ro'
+    return pathlib.Path(os.path.abspath(path)).as_uri() + '?mode=ro'
 
 
 def connect_ticks(db_path=config.dbname_ticks, readonly=False):
@@ -82,6 +83,7 @@ def connect_ticks(db_path=config.dbname_ticks, readonly=False):
             conn.execute('PRAGMA query_only=ON')
         return conn
 
+    db_path = os.fspath(db_path)
     if readonly:
         conn = sqlite3.connect(_readonly_uri(db_path), uri=True, isolation_level=None)
         conn.execute('PRAGMA query_only=ON')
@@ -404,6 +406,7 @@ def delete_invalid_rows(conn, symbol=config.tick_symbol, start_date=None,
 
 
 _UNEXPECTED_WINDOWS_TABLE = '_tick_delete_windows'
+_UNEXPECTED_WINDOWS_INDEX = '_tick_delete_windows_range'
 
 
 def delete_unexpected_rows(conn, sessions, symbol=config.tick_symbol,
@@ -445,6 +448,13 @@ def delete_unexpected_rows(conn, sessions, symbol=config.tick_symbol,
     try:
         conn.executemany(
             'INSERT INTO %s VALUES (?, ?)' % windows_table, windows
+        )
+        conn.execute(
+            'CREATE INDEX %s ON %s (window_open, window_close)'
+            % (
+                'temp.%s' % _quote_identifier(_UNEXPECTED_WINDOWS_INDEX),
+                _quote_identifier(_UNEXPECTED_WINDOWS_TABLE),
+            )
         )
         sql = (
             'DELETE FROM %s WHERE NOT EXISTS ('
