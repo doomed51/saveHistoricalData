@@ -34,7 +34,8 @@ _IBKR_REQUEST_TIMESTAMPS = deque()
 _IBKR_MIN_INTERVAL_BY_REQUEST = {
     'reqHistoricalData': 3,
     'reqHeadTimeStamp': 3,
-    'reqContractDetails': 3
+    'reqContractDetails': 3,
+    'reqHistoricalTicks': 3
 }
 
 
@@ -95,7 +96,7 @@ def _is_connection_error(exc):
 def _addspace(myStr): 
     return re.sub("[A-Za-z]+", lambda elm: " "+elm[0],myStr )
 
-def setupConnection():
+def setupConnection(clientId=10):
     """
     Setup connection to ibkr
     ###
@@ -106,7 +107,7 @@ def setupConnection():
     try:
         print('%s: [yellow]Connecting with IBKR...[/yellow]'%(datetime.datetime.now().strftime('%H:%M:%S')))
         ibkr = IB() 
-        ibkr.connect('127.0.0.1', 7496, clientId = 10)
+        ibkr.connect('127.0.0.1', 7496, clientId=clientId)
         print('%s: [green]  Success![/green]'%(datetime.datetime.now().strftime('%H:%M:%S')))
     except Exception as e:
         print('[red]  Could not connect with IBKR![/red]\n')
@@ -153,6 +154,28 @@ def getBars(ibkr, symbol='SPY', currency='USD', endDate='', lookback='10 D', int
     bars = _getHistoricalBars(ibkr, symbol, currency, endDate, lookback, interval, whatToShow, keepUpToDate=keepUpToDate)
     
     return bars
+
+def getHistoricalTicks(ibkr, contract, startDateTime, numberOfTicks=1000, whatToShow='TRADES', useRth=True):
+    """
+    Returns [list] of historical ticks from IBKR for the given contract
+        inputs:
+            ibkr connection object, contract, UTC start datetime in YYYYMMDD-HH:MM:SS form
+        outputs:
+            list of HistoricalTick objects as returned by IBKR
+    """
+    _exit_if_disconnected(ibkr, 'requesting historical ticks for contract %s'%contract)
+
+    _paceIbkrRequest(ibkr, 'reqHistoricalTicks')
+    ticks = ibkr.reqHistoricalTicks(
+        contract=contract,
+        startDateTime=startDateTime,
+        endDateTime='',
+        numberOfTicks=numberOfTicks,
+        whatToShow=whatToShow,
+        useRth=useRth,
+        ignoreSize=False)
+
+    return ticks
 
 def _getHistoricalBars(ibkrObj, symbol, currency, endDate, lookback, interval, whatToShow, **kwargs):
     """

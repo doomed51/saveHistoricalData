@@ -249,3 +249,22 @@ futures_symbol_metadata = {
 
 #_____________________________________________________________________________________________________________ API thresholds and timeouts 
 ibkr_max_consecutive_calls = 50
+
+#_____________________________________________________________________________________________________________ SPX tick history
+dbname_ticks = 'X:/data/ibkr/historicalData_ticks.db'
+tick_symbol = 'SPX'
+tick_exchange = 'CBOE'
+tick_currency = 'USD'
+tick_client_id = 11
+tick_backfill_years = 3
+tick_request_size = 1000
+tick_max_requests_per_session = 40
+tick_complete_tolerance_seconds = 60
+tick_start_tolerance_seconds = 300
+tick_max_attempts = 3
+tick_connection_retries = 3
+tick_gap_warning_seconds = 600
+tick_gap_error_seconds = 1800
+tick_density_baseline_sessions = 20
+tick_density_min_baseline = 5
+tick_density_warning_ratio = 0.5
