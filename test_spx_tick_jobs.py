@@ -1,10 +1,14 @@
 import datetime
+import logging
+import os
+import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pandas as pd
 
 import config
+import interface_ibkr
 import maintainSPXTicks
 from interface_ticks import (
     audit_sessions,
@@ -15,7 +19,15 @@ from interface_ticks import (
     session_schedule,
     upsert_ticks,
 )
-from maintainSPXTicks import run_backfill, run_daily, run_repair
+from maintainSPXTicks import (
+    acquire_lock,
+    main,
+    release_lock,
+    run_backfill,
+    run_daily,
+    run_repair,
+    status_summary,
+)
 
 SYMBOL = config.tick_symbol
 
@@ -545,6 +557,559 @@ class TestRunDaily(JobsTestCase):
         self._run_daily(collector, now_et)
 
         self.assertEqual(collector.collected_dates[-1], '2026-11-17')
+
+
+def _job_fixture(job='backfill', start_date='2026-11-16',
+                 end_date='2026-11-20'):
+    return {
+        'job': job,
+        'start_date': start_date,
+        'end_date': end_date,
+        'processed': 0,
+        'skipped': 0,
+        'stopped_early': False,
+        'status_counts': {},
+    }
+
+
+def _empty_findings():
+    return pd.DataFrame(
+        columns=['session_date', 'severity', 'finding', 'detail']
+    )
+
+
+class FakeIbkr:
+    def __init__(self):
+        self.disconnects = 0
+
+    def disconnect(self):
+        self.disconnects += 1
+
+
+class TestWriteLock(unittest.TestCase):
+    def setUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._dir.cleanup)
+        self.path = os.path.join(self._dir.name, 'nested', 'ticks.lock')
+
+    def test_lock_is_exclusive_and_reusable_after_release(self):
+        handle = acquire_lock(self.path)
+        try:
+            self.assertTrue(os.path.exists(self.path))
+            with self.assertRaises(RuntimeError):
+                acquire_lock(self.path)
+        finally:
+            release_lock(handle, self.path)
+
+        self.assertFalse(os.path.exists(self.path))
+        again = acquire_lock(self.path)
+        release_lock(again, self.path)
+        self.assertFalse(os.path.exists(self.path))
+
+    def test_stale_lock_file_does_not_block_a_new_run(self):
+        os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        with open(self.path, 'w', encoding='utf-8'):
+            pass
+
+        handle = acquire_lock(self.path)
+        release_lock(handle, self.path)
+
+        self.assertFalse(os.path.exists(self.path))
+
+
+class TestStatusSummary(unittest.TestCase):
+    def setUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._dir.cleanup)
+        self.db_path = os.path.join(self._dir.name, 'ticks.db')
+        self.conn = connect_ticks(self.db_path)
+        ensure_schema(self.conn, symbol=SYMBOL)
+        self.addCleanup(self.conn.close)
+
+    def test_reports_counts_bounds_rows_and_file_size(self):
+        for session_date, status in (
+            ('2026-11-16', 'complete'),
+            ('2026-11-17', 'complete'),
+            ('2026-11-18', 'partial'),
+            ('2026-11-19', 'failed'),
+            ('2026-11-20', 'pending'),
+            ('2026-11-23', 'unavailable'),
+        ):
+            _save_session(self.conn, session_date, status)
+        rows = (
+            _grid('2026-11-16')[:3]
+            + _grid('2026-11-17')[:2]
+            + [('2026-11-18 10:00:00', 100.0)]
+        )
+        upsert_ticks(self.conn, rows, symbol=SYMBOL)
+
+        summary = status_summary(self.conn)
+
+        self.assertEqual(summary['symbol'], SYMBOL)
+        self.assertEqual(
+            summary['status_counts'],
+            {
+                'complete': 2,
+                'partial': 1,
+                'failed': 1,
+                'pending': 1,
+                'unavailable': 1,
+            },
+        )
+        self.assertEqual(summary['sessions'], 6)
+        self.assertEqual(summary['earliest_complete'], '2026-11-16')
+        self.assertEqual(summary['latest_complete'], '2026-11-17')
+        self.assertEqual(summary['tick_rows'], len(rows))
+        self.assertGreater(summary['db_size_bytes'], 0)
+
+    def test_empty_schema_reports_zeroes(self):
+        summary = status_summary(self.conn)
+
+        self.assertEqual(summary['status_counts'], {})
+        self.assertEqual(summary['sessions'], 0)
+        self.assertIsNone(summary['earliest_complete'])
+        self.assertIsNone(summary['latest_complete'])
+        self.assertEqual(summary['tick_rows'], 0)
+        self.assertGreater(summary['db_size_bytes'], 0)
+
+    def test_memory_database_has_no_file_size(self):
+        conn = connect_ticks(':memory:')
+        self.addCleanup(conn.close)
+        ensure_schema(conn, symbol=SYMBOL)
+
+        summary = status_summary(conn)
+
+        self.assertIsNone(summary['db_size_bytes'])
+
+
+class CliTestCase(unittest.TestCase):
+    def setUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._dir.cleanup)
+        self.db_path = os.path.join(self._dir.name, 'ticks.db')
+        conn = connect_ticks(self.db_path)
+        try:
+            ensure_schema(conn, symbol=SYMBOL)
+        finally:
+            conn.close()
+        settings = patch.object(
+            maintainSPXTicks,
+            'configure_logging',
+            side_effect=self._keep_logs_out_of_the_repository,
+        )
+        settings.start()
+        self.addCleanup(settings.stop)
+
+    @staticmethod
+    def _keep_logs_out_of_the_repository(*args, **kwargs):
+        logger = logging.getLogger(maintainSPXTicks.LOGGER_NAME)
+        logger.handlers = [logging.NullHandler()]
+        logger.propagate = False
+        return None
+
+    def _seed_clean_session(self, session_date):
+        conn = connect_ticks(self.db_path)
+        try:
+            _save_session(conn, session_date, 'complete')
+            upsert_ticks(conn, _grid(session_date), symbol=SYMBOL)
+        finally:
+            conn.close()
+
+    def _run_backfill(self, argv, fixture=None):
+        fixture = fixture or _job_fixture()
+        calls = []
+
+        def fake_backfill(ibkr, conn, contract, start_date, end_date,
+                          max_runtime_minutes=None):
+            calls.append(
+                {
+                    'ibkr': ibkr,
+                    'conn': conn,
+                    'contract': contract,
+                    'start_date': start_date,
+                    'end_date': end_date,
+                    'max_runtime_minutes': max_runtime_minutes,
+                }
+            )
+            return dict(fixture, start_date=start_date, end_date=end_date)
+
+        fake = FakeIbkr()
+        with patch.object(
+            interface_ibkr, 'setupConnection', return_value=fake
+        ) as setup, patch.object(
+            maintainSPXTicks, 'run_backfill', fake_backfill
+        ), patch.object(maintainSPXTicks, 'Index') as index:
+            self.code = main(argv)
+        return calls, fake, setup, index
+
+
+class TestCliBackfill(CliTestCase):
+    def test_default_range_is_three_years_to_the_latest_completed_session(self):
+        argv = ['--backfill', '--db-path', self.db_path]
+
+        with patch.object(
+            maintainSPXTicks,
+            '_now_et',
+            return_value=datetime.datetime(2026, 11, 19, 10, 0),
+        ):
+            calls, _, setup, _ = self._run_backfill(argv)
+
+        self.assertEqual(self.code, 0)
+        self.assertEqual(calls[0]['start_date'], '2023-11-19')
+        self.assertEqual(calls[0]['end_date'], '2026-11-18')
+        setup.assert_called_once_with(clientId=config.tick_client_id)
+
+    def test_after_the_close_the_default_end_is_today(self):
+        argv = ['--backfill', '--db-path', self.db_path]
+
+        with patch.object(
+            maintainSPXTicks,
+            '_now_et',
+            return_value=datetime.datetime(2026, 11, 19, 16, 30),
+        ):
+            calls, _, _, _ = self._run_backfill(argv)
+
+        self.assertEqual(calls[0]['end_date'], '2026-11-19')
+
+    def test_explicit_range_and_runtime_override_the_defaults(self):
+        argv = [
+            '--backfill',
+            '--start', '2026-11-16',
+            '--end', '2026-11-20',
+            '--max-runtime-minutes', '1.5',
+            '--db-path', self.db_path,
+        ]
+
+        with patch.object(
+            maintainSPXTicks,
+            '_now_et',
+            return_value=datetime.datetime(2026, 11, 19, 10, 0),
+        ):
+            calls, _, _, _ = self._run_backfill(argv)
+
+        self.assertEqual(self.code, 0)
+        self.assertEqual(calls[0]['start_date'], '2026-11-16')
+        self.assertEqual(calls[0]['end_date'], '2026-11-20')
+        self.assertEqual(calls[0]['max_runtime_minutes'], 1.5)
+
+    def test_write_run_uses_client_id_db_path_and_releases_the_lock(self):
+        argv = [
+            '--backfill',
+            '--start', '2026-11-16',
+            '--end', '2026-11-20',
+            '--db-path', self.db_path,
+        ]
+        observed = {}
+
+        def fake_backfill(ibkr, conn, contract, start_date, end_date,
+                          max_runtime_minutes=None):
+            observed['db_file'] = conn.execute(
+                'PRAGMA database_list'
+            ).fetchone()[2]
+            observed['tables'] = [
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                )
+            ]
+            observed['lock_exists'] = os.path.exists(self.db_path + '.lock')
+            return _job_fixture(start_date=start_date, end_date=end_date)
+
+        fake = FakeIbkr()
+        with patch.object(
+            interface_ibkr, 'setupConnection', return_value=fake
+        ) as setup, patch.object(
+            maintainSPXTicks, 'run_backfill', fake_backfill
+        ), patch.object(maintainSPXTicks, 'Index') as index:
+            code = main(argv)
+
+        self.assertEqual(code, 0)
+        setup.assert_called_once_with(clientId=11)
+        index.assert_called_once_with(
+            config.tick_symbol, config.tick_exchange, config.tick_currency
+        )
+        self.assertEqual(observed['db_file'], self.db_path)
+        self.assertIn('SPX_index_ticks', observed['tables'])
+        self.assertIn('00-tick_sessions', observed['tables'])
+        self.assertTrue(observed['lock_exists'])
+        self.assertFalse(os.path.exists(self.db_path + '.lock'))
+        self.assertEqual(fake.disconnects, 1)
+
+    def test_failure_releases_the_lock_and_disconnects(self):
+        argv = [
+            '--backfill',
+            '--start', '2026-11-16',
+            '--end', '2026-11-20',
+            '--db-path', self.db_path,
+        ]
+        fake = FakeIbkr()
+
+        with patch.object(
+            interface_ibkr, 'setupConnection', return_value=fake
+        ), patch.object(
+            maintainSPXTicks,
+            'run_backfill',
+            side_effect=RuntimeError('request failed'),
+        ):
+            code = main(argv)
+
+        self.assertEqual(code, 1)
+        self.assertFalse(os.path.exists(self.db_path + '.lock'))
+        self.assertEqual(fake.disconnects, 1)
+
+    def test_a_held_lock_aborts_before_connecting(self):
+        handle = acquire_lock(self.db_path + '.lock')
+        self.addCleanup(release_lock, handle, self.db_path + '.lock')
+        argv = [
+            '--backfill',
+            '--start', '2026-11-16',
+            '--end', '2026-11-20',
+            '--db-path', self.db_path,
+        ]
+
+        with patch.object(
+            interface_ibkr, 'setupConnection', side_effect=AssertionError
+        ) as setup:
+            code = main(argv)
+
+        self.assertEqual(code, 1)
+        setup.assert_not_called()
+
+
+class TestCliReadOnly(CliTestCase):
+    def _spy_connect(self):
+        real_connect = maintainSPXTicks.connect_ticks
+        calls = {}
+
+        def spy(db_path=config.dbname_ticks, readonly=False):
+            calls['db_path'] = db_path
+            calls['readonly'] = readonly
+            return real_connect(db_path, readonly=readonly)
+
+        return spy, calls
+
+    def test_audit_reads_only_and_never_constructs_an_ibkr_connection(self):
+        self._seed_clean_session('2026-11-16')
+        spy, calls = self._spy_connect()
+        argv = [
+            '--audit',
+            '--start', '2026-11-16',
+            '--end', '2026-11-16',
+            '--db-path', self.db_path,
+        ]
+
+        with patch.object(
+            interface_ibkr, 'setupConnection', side_effect=AssertionError
+        ) as setup, patch.object(
+            maintainSPXTicks, 'Index', side_effect=AssertionError
+        ), patch.object(maintainSPXTicks, 'connect_ticks', spy):
+            code = main(argv)
+
+        self.assertEqual(code, 0)
+        setup.assert_not_called()
+        self.assertTrue(calls['readonly'])
+        self.assertEqual(calls['db_path'], self.db_path)
+
+    def test_status_reads_only_and_never_constructs_an_ibkr_connection(self):
+        spy, calls = self._spy_connect()
+        argv = ['--status', '--db-path', self.db_path]
+
+        with patch.object(
+            interface_ibkr, 'setupConnection', side_effect=AssertionError
+        ) as setup, patch.object(
+            maintainSPXTicks, 'Index', side_effect=AssertionError
+        ), patch.object(maintainSPXTicks, 'connect_ticks', spy):
+            code = main(argv)
+
+        self.assertEqual(code, 0)
+        setup.assert_not_called()
+        self.assertTrue(calls['readonly'])
+
+    def test_read_only_modes_do_not_create_a_missing_database(self):
+        missing = os.path.join(self._dir.name, 'missing.db')
+
+        with patch.object(
+            interface_ibkr, 'setupConnection', side_effect=AssertionError
+        ) as setup:
+            self.assertEqual(main(['--status', '--db-path', missing]), 1)
+            self.assertEqual(
+                main(
+                    [
+                        '--audit',
+                        '--start', '2026-11-16',
+                        '--end', '2026-11-16',
+                        '--db-path', missing,
+                    ]
+                ),
+                1,
+            )
+
+        setup.assert_not_called()
+        self.assertFalse(os.path.exists(missing))
+
+
+class TestCliAuditExitCode(CliTestCase):
+    def _audit(self, argv, findings):
+        with patch.object(
+            interface_ibkr, 'setupConnection', side_effect=AssertionError
+        ), patch.object(
+            maintainSPXTicks, 'audit_sessions', return_value=findings
+        ):
+            return main(
+                argv
+                + [
+                    '--start', '2026-11-16',
+                    '--end', '2026-11-16',
+                    '--db-path', self.db_path,
+                ]
+            )
+
+    def test_errors_fail_the_audit(self):
+        findings = _findings(('2026-11-16', 'error', 'failed'))
+
+        self.assertEqual(self._audit(['--audit'], findings), 1)
+
+    def test_warnings_fail_only_with_strict(self):
+        findings = _findings(('2026-11-16', 'warning', 'gap'))
+
+        self.assertEqual(self._audit(['--audit'], findings), 0)
+        self.assertEqual(self._audit(['--audit', '--strict'], findings), 1)
+
+    def test_informational_findings_never_fail_the_audit(self):
+        findings = _findings(('2026-11-16', 'info', 'unavailable'))
+
+        self.assertEqual(self._audit(['--audit'], findings), 0)
+        self.assertEqual(self._audit(['--audit', '--strict'], findings), 0)
+
+
+class TestCliRepair(CliTestCase):
+    def test_repair_audits_then_repairs_with_the_selection_flags(self):
+        findings = _findings(('2026-11-18', 'warning', 'low_density'))
+        recorded = {}
+
+        def fake_audit(conn, start_date, end_date,
+                       symbol=config.tick_symbol):
+            recorded['audit_dates'] = (start_date, end_date)
+            return findings
+
+        def fake_repair(ibkr, conn, contract, audit_findings,
+                        include_warnings=False, force_unavailable=False):
+            recorded['findings'] = audit_findings
+            recorded['include_warnings'] = include_warnings
+            recorded['force_unavailable'] = force_unavailable
+            recorded['lock_exists'] = os.path.exists(self.db_path + '.lock')
+            return {
+                'job': 'repair',
+                'start_date': '2026-11-18',
+                'end_date': '2026-11-18',
+                'sessions': ['2026-11-18'],
+                'processed': 1,
+                'status_counts': {'complete': 1},
+                'cleanup': {'invalid_rows': 0, 'unexpected_rows': 0},
+                'findings': _empty_findings(),
+            }
+
+        argv = [
+            '--repair',
+            '--start', '2026-11-16',
+            '--end', '2026-11-20',
+            '--include-warnings',
+            '--force-unavailable',
+            '--db-path', self.db_path,
+        ]
+        fake = FakeIbkr()
+        with patch.object(
+            interface_ibkr, 'setupConnection', return_value=fake
+        ) as setup, patch.object(
+            maintainSPXTicks, 'audit_sessions', fake_audit
+        ), patch.object(
+            maintainSPXTicks, 'run_repair', fake_repair
+        ):
+            code = main(argv)
+
+        self.assertEqual(code, 0)
+        setup.assert_called_once_with(clientId=config.tick_client_id)
+        self.assertEqual(recorded['audit_dates'], ('2026-11-16', '2026-11-20'))
+        self.assertIs(recorded['findings'], findings)
+        self.assertTrue(recorded['include_warnings'])
+        self.assertTrue(recorded['force_unavailable'])
+        self.assertTrue(recorded['lock_exists'])
+        self.assertFalse(os.path.exists(self.db_path + '.lock'))
+        self.assertEqual(fake.disconnects, 1)
+
+    def test_repair_returns_the_post_repair_audit_exit_code(self):
+        findings = _findings(('2026-11-18', 'warning', 'low_density'))
+        leftover = _findings(('2026-11-18', 'warning', 'gap'))
+        argv = [
+            '--repair',
+            '--start', '2026-11-16',
+            '--end', '2026-11-20',
+            '--db-path', self.db_path,
+        ]
+
+        def fake_repair(ibkr, conn, contract, audit_findings,
+                        include_warnings=False, force_unavailable=False):
+            return {
+                'job': 'repair',
+                'start_date': '2026-11-18',
+                'end_date': '2026-11-18',
+                'sessions': ['2026-11-18'],
+                'processed': 1,
+                'status_counts': {'complete': 1},
+                'cleanup': {'invalid_rows': 0, 'unexpected_rows': 0},
+                'findings': leftover,
+            }
+
+        with patch.object(
+            interface_ibkr, 'setupConnection', return_value=FakeIbkr()
+        ), patch.object(
+            maintainSPXTicks, 'audit_sessions', return_value=findings
+        ), patch.object(maintainSPXTicks, 'run_repair', fake_repair):
+            self.assertEqual(main(argv), 0)
+            self.assertEqual(main(argv + ['--strict']), 1)
+
+
+class TestCliLogging(unittest.TestCase):
+    def setUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._dir.cleanup)
+        self.db_path = os.path.join(self._dir.name, 'ticks.db')
+        self.log_directory = os.path.join(self._dir.name, 'logs')
+        conn = connect_ticks(self.db_path)
+        try:
+            ensure_schema(conn, symbol=SYMBOL)
+        finally:
+            conn.close()
+        directory = patch.object(
+            maintainSPXTicks, 'LOG_DIRECTORY', self.log_directory
+        )
+        directory.start()
+        self.addCleanup(directory.stop)
+        self.addCleanup(self._close_handlers)
+
+    @staticmethod
+    def _close_handlers():
+        logger = logging.getLogger(maintainSPXTicks.LOGGER_NAME)
+        for handler in list(logger.handlers):
+            handler.close()
+            logger.removeHandler(handler)
+
+    def test_cli_runs_append_to_a_daily_log_file(self):
+        argv = ['--status', '--db-path', self.db_path]
+        log_path = os.path.join(self.log_directory, 'spx_ticks_20261119.log')
+
+        with patch.object(
+            maintainSPXTicks,
+            '_now_et',
+            return_value=datetime.datetime(2026, 11, 19, 10, 0),
+        ):
+            self.assertEqual(main(argv), 0)
+            self.assertTrue(os.path.exists(log_path))
+            self.assertEqual(main(argv), 0)
+
+        with open(log_path, encoding='utf-8') as handle:
+            contents = handle.read()
+        self.assertEqual(contents.count('command=status'), 2)
 
 
 if __name__ == '__main__':

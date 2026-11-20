@@ -4,26 +4,37 @@ Provides the resumable session collector, the backfill and daily job
 orchestration, and the pure session and timestamp conversions they use.
 """
 
+import argparse
+import contextlib
 import datetime
+import logging
 import math
+import os
+import sys
 import time
 from zoneinfo import ZoneInfo
 
 import pandas as pd
+from ib_insync import Index
 
 import config
 import interface_ibkr
 from interface_ticks import (
     FINDING_COLUMNS,
+    SESSION_TABLE,
+    audit_exit_code,
     audit_sessions,
+    connect_ticks,
     delete_invalid_rows,
     delete_unexpected_rows,
+    ensure_schema,
     ensure_sessions,
     get_session,
     list_sessions,
     save_session,
     session_metrics,
     session_schedule,
+    tick_table,
     upsert_ticks,
 )
 
@@ -46,6 +57,10 @@ _INCOMPLETE_STATUSES = (
 )
 _DAILY_DISCOVERY_DAYS = 14
 _DAILY_PROCESS_DAYS = 7
+
+LOG_DIRECTORY = 'logs'
+LOGGER_NAME = 'spx_ticks'
+_LOG_FORMAT = '%(asctime)s %(levelname)s %(message)s'
 
 _ERROR = 'error'
 _WARNING = 'warning'
@@ -183,10 +198,13 @@ def _error_text(errors):
     return '; '.join('%s: %s' % (code, message) for code, message in errors)
 
 
+def _now_et():
+    """Return the current time as a naive Eastern datetime."""
+    return datetime.datetime.now(_EASTERN).replace(tzinfo=None)
+
+
 def _now_text():
-    return datetime.datetime.now(_EASTERN).replace(tzinfo=None).strftime(
-        _TIMESTAMP_FORMAT
-    )
+    return _now_et().strftime(_TIMESTAMP_FORMAT)
 
 
 def _parse_timestamp(value):
@@ -655,3 +673,406 @@ def run_repair(ibkr, conn, contract, findings, include_warnings=False,
         'cleanup': cleanup,
         'findings': audit_sessions(conn, start_date, end_date, symbol=symbol),
     }
+
+
+def acquire_lock(path):
+    """Take an exclusive non-blocking OS lock on ``path`` and return its handle.
+
+    The lock is held by the open file handle, not a PID check, so a lock file
+    left behind by a dead process never blocks a later run. Raises
+    ``RuntimeError`` while another live process holds it. The parent directory
+    is created when missing.
+    """
+    directory = os.path.dirname(os.path.abspath(path))
+    os.makedirs(directory, exist_ok=True)
+    handle = open(path, 'a+', encoding='utf-8')
+    try:
+        if os.name == 'nt':
+            import msvcrt
+
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        handle.close()
+        raise RuntimeError(
+            'another SPX tick process holds the lock at %s' % path
+        ) from exc
+    return handle
+
+
+def release_lock(handle, path):
+    """Release a lock from :func:`acquire_lock` and remove its file."""
+    try:
+        if os.name == 'nt':
+            import msvcrt
+
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    finally:
+        handle.close()
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+
+
+def _table_exists(conn, name):
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (name,),
+    ).fetchone() is not None
+
+
+def _database_size(conn):
+    """Return the main database file size, or ``None`` for an in-memory DB."""
+    for _, name, path in conn.execute('PRAGMA database_list'):
+        if name != 'main' or not path:
+            continue
+        try:
+            return os.path.getsize(path)
+        except OSError:
+            return None
+    return None
+
+
+def status_summary(conn, symbol=config.tick_symbol):
+    """Summarize stored state and coverage for one symbol.
+
+    Returns ``symbol``; ``status_counts`` (one entry per stored session
+    status); ``sessions`` (total state rows); ``earliest_complete`` and
+    ``latest_complete`` (``YYYY-MM-DD`` bounds of complete sessions);
+    ``tick_rows`` (every stored tick); and ``db_size_bytes`` (main database
+    file size, or ``None`` for an in-memory database).
+    """
+    status_counts = {}
+    earliest_complete = None
+    latest_complete = None
+    if _table_exists(conn, SESSION_TABLE):
+        for status, count in conn.execute(
+            'SELECT status, COUNT(*) FROM "%s"'
+            ' WHERE symbol = ? GROUP BY status ORDER BY status'
+            % SESSION_TABLE,
+            (symbol,),
+        ):
+            status_counts[status] = count
+        earliest_complete, latest_complete = conn.execute(
+            'SELECT MIN(session_date), MAX(session_date) FROM "%s"'
+            " WHERE symbol = ? AND status = 'complete'" % SESSION_TABLE,
+            (symbol,),
+        ).fetchone()
+
+    tick_rows = 0
+    table = tick_table(symbol)
+    if _table_exists(conn, table):
+        tick_rows = conn.execute(
+            'SELECT COUNT(*) FROM "%s"' % table
+        ).fetchone()[0]
+
+    return {
+        'symbol': symbol,
+        'status_counts': status_counts,
+        'sessions': sum(status_counts.values()),
+        'earliest_complete': earliest_complete,
+        'latest_complete': latest_complete,
+        'tick_rows': tick_rows,
+        'db_size_bytes': _database_size(conn),
+    }
+
+
+def configure_logging(log_directory=None, now_et=None):
+    """Configure console and append-only daily file logging for CLI runs.
+
+    The log file is ``<log_directory>/spx_ticks_YYYYMMDD.log`` in Eastern
+    time, and ``log_directory`` defaults to :data:`LOG_DIRECTORY`. Returns the
+    log file path. Existing handlers on this module's logger are closed first.
+    """
+    directory = LOG_DIRECTORY if log_directory is None else log_directory
+    moment = _now_et() if now_et is None else _et_naive(now_et)
+    os.makedirs(directory, exist_ok=True)
+    path = os.path.join(
+        directory, 'spx_ticks_%s.log' % moment.strftime('%Y%m%d')
+    )
+
+    logger = logging.getLogger(LOGGER_NAME)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    for handler in list(logger.handlers):
+        handler.close()
+        logger.removeHandler(handler)
+
+    formatter = logging.Formatter(_LOG_FORMAT)
+    console = logging.StreamHandler()
+    console.setFormatter(formatter)
+    logfile = logging.FileHandler(path, mode='a', encoding='utf-8')
+    logfile.setFormatter(formatter)
+    logger.addHandler(console)
+    logger.addHandler(logfile)
+    return path
+
+
+def _latest_completed_session(now_et=None):
+    """Return the latest NYSE session date whose close has been reached."""
+    moment = _now_et() if now_et is None else _et_naive(now_et)
+    start = moment.date() - datetime.timedelta(days=_DAILY_DISCOVERY_DAYS)
+    closed = [
+        session['session_date']
+        for session in session_schedule(
+            start.isoformat(), moment.date().isoformat()
+        )
+        if _parse_timestamp(session['session_close']) <= moment
+    ]
+    if not closed:
+        raise RuntimeError('no completed NYSE session in the recent calendar')
+    return closed[-1]
+
+
+def _resolve_range(args):
+    """Return the inclusive ``(start_date, end_date)`` for a CLI command."""
+    if args.start is not None:
+        start_date = args.start
+    else:
+        today = _now_et().date()
+        start_date = (
+            pd.Timestamp(today)
+            - pd.DateOffset(years=config.tick_backfill_years)
+        ).date().isoformat()
+    end_date = args.end if args.end is not None else _latest_completed_session()
+    return start_date, end_date
+
+
+def _lock_path(db_path):
+    return db_path + '.lock'
+
+
+@contextlib.contextmanager
+def _write_resources(db_path):
+    """Yield ``(ibkr, conn, contract)`` for a locked write-mode run.
+
+    The single-instance lock is taken before the database is opened, the
+    schema is ensured, and the IBKR connection uses ``config.tick_client_id``.
+    The connection, database, and lock are always released.
+    """
+    lock_path = _lock_path(db_path)
+    lock = acquire_lock(lock_path)
+    conn = None
+    ibkr = None
+    try:
+        conn = connect_ticks(db_path)
+        ensure_schema(conn)
+        ibkr = interface_ibkr.setupConnection(clientId=config.tick_client_id)
+        contract = Index(
+            config.tick_symbol, config.tick_exchange, config.tick_currency
+        )
+        yield ibkr, conn, contract
+    finally:
+        try:
+            if ibkr is not None:
+                try:
+                    ibkr.disconnect()
+                except Exception:
+                    logging.getLogger(LOGGER_NAME).exception(
+                        'IBKR disconnect failed'
+                    )
+            if conn is not None:
+                conn.close()
+        finally:
+            release_lock(lock, lock_path)
+
+
+def _read_audit(db_path, start_date, end_date):
+    conn = connect_ticks(db_path, readonly=True)
+    try:
+        return audit_sessions(conn, start_date, end_date)
+    finally:
+        conn.close()
+
+
+def _severity_counts(findings):
+    counts = {}
+    for severity in findings['severity']:
+        counts[severity] = counts.get(severity, 0) + 1
+    return counts
+
+
+def _log_job(logger, summary):
+    logger.info(
+        '%s %s..%s processed=%d skipped=%d stopped_early=%s statuses=%s',
+        summary['job'], summary['start_date'], summary['end_date'],
+        summary['processed'], summary['skipped'], summary['stopped_early'],
+        summary['status_counts'],
+    )
+
+
+def _log_status(logger, summary):
+    logger.info(
+        'status symbol=%s sessions=%d ticks=%d db_size_bytes=%s',
+        summary['symbol'], summary['sessions'], summary['tick_rows'],
+        summary['db_size_bytes'],
+    )
+    logger.info('status counts=%s', summary['status_counts'])
+    logger.info(
+        'status complete sessions: earliest=%s latest=%s',
+        summary['earliest_complete'], summary['latest_complete'],
+    )
+
+
+def _log_findings(logger, start_date, end_date, findings):
+    logger.info(
+        'audit %s..%s findings=%d severity=%s',
+        start_date, end_date, len(findings), _severity_counts(findings),
+    )
+    for row in findings.itertuples(index=False):
+        level = {
+            'error': logging.ERROR,
+            'warning': logging.WARNING,
+        }.get(row.severity, logging.INFO)
+        logger.log(
+            level, '%s %s: %s', row.session_date, row.finding, row.detail
+        )
+
+
+def _log_repair(logger, summary):
+    logger.info(
+        'repair %s..%s sessions=%s processed=%d statuses=%s cleanup=%s',
+        summary['start_date'], summary['end_date'], summary['sessions'],
+        summary['processed'], summary['status_counts'], summary['cleanup'],
+    )
+    _log_findings(
+        logger, summary['start_date'], summary['end_date'],
+        summary['findings'],
+    )
+
+
+def _iso_date(value):
+    try:
+        return datetime.date.fromisoformat(value).isoformat()
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            '%s is not a YYYY-MM-DD date' % value
+        ) from exc
+
+
+def _build_parser():
+    parser = argparse.ArgumentParser(
+        prog='maintainSPXTicks.py',
+        description='Maintain SPX historical ticks in SQLite.',
+    )
+    modes = parser.add_mutually_exclusive_group(required=True)
+    modes.add_argument(
+        '--backfill', dest='command', action='store_const', const='backfill',
+        help='collect every incomplete session in the date range',
+    )
+    modes.add_argument(
+        '--daily', dest='command', action='store_const', const='daily',
+        help='collect recently closed sessions in its own seven-day window',
+    )
+    modes.add_argument(
+        '--audit', dest='command', action='store_const', const='audit',
+        help='audit stored coverage without contacting IBKR',
+    )
+    modes.add_argument(
+        '--repair', dest='command', action='store_const', const='repair',
+        help='audit, then re-fetch the sessions that fail the audit',
+    )
+    modes.add_argument(
+        '--status', dest='command', action='store_const', const='status',
+        help='report stored status counts without contacting IBKR',
+    )
+    parser.add_argument(
+        '--include-warnings', action='store_true',
+        help='repair warning findings as well as errors',
+    )
+    parser.add_argument(
+        '--force-unavailable', action='store_true',
+        help='repair sessions that are unavailable after their retries',
+    )
+    parser.add_argument(
+        '--strict', action='store_true',
+        help='fail an audit on warnings as well as errors',
+    )
+    parser.add_argument(
+        '--start', type=_iso_date,
+        help='inclusive start date (default: %d years ago)'
+        % config.tick_backfill_years,
+    )
+    parser.add_argument(
+        '--end', type=_iso_date,
+        help='inclusive end date (default: latest completed NYSE session)',
+    )
+    parser.add_argument(
+        '--max-runtime-minutes', type=float,
+        help='stop a backfill before the next session after this many minutes',
+    )
+    parser.add_argument(
+        '--db-path', default=config.dbname_ticks,
+        help='tick database path (default: %(default)s)',
+    )
+    return parser
+
+
+def main(argv=None):
+    """Run one maintenance command and return a process exit code."""
+    args = _build_parser().parse_args(argv)
+    configure_logging()
+    logger = logging.getLogger(LOGGER_NAME)
+    logger.info('command=%s db=%s', args.command, args.db_path)
+    try:
+        if args.command == 'status':
+            conn = connect_ticks(args.db_path, readonly=True)
+            try:
+                summary = status_summary(conn)
+            finally:
+                conn.close()
+            _log_status(logger, summary)
+            return 0
+
+        if args.command == 'audit':
+            start_date, end_date = _resolve_range(args)
+            findings = _read_audit(args.db_path, start_date, end_date)
+            _log_findings(logger, start_date, end_date, findings)
+            return audit_exit_code(findings, strict=args.strict)
+
+        if args.command == 'daily':
+            with _write_resources(args.db_path) as (ibkr, conn, contract):
+                summary = run_daily(ibkr, conn, contract)
+            _log_job(logger, summary)
+            return 0
+
+        if args.command == 'backfill':
+            start_date, end_date = _resolve_range(args)
+            with _write_resources(args.db_path) as (ibkr, conn, contract):
+                summary = run_backfill(
+                    ibkr, conn, contract, start_date, end_date,
+                    max_runtime_minutes=args.max_runtime_minutes,
+                )
+            _log_job(logger, summary)
+            return 0
+
+        if args.command == 'repair':
+            start_date, end_date = _resolve_range(args)
+            with _write_resources(args.db_path) as (ibkr, conn, contract):
+                findings = audit_sessions(conn, start_date, end_date)
+                summary = run_repair(
+                    ibkr, conn, contract, findings,
+                    include_warnings=args.include_warnings,
+                    force_unavailable=args.force_unavailable,
+                )
+            _log_repair(logger, summary)
+            return audit_exit_code(summary['findings'], strict=args.strict)
+
+        raise ValueError('unknown command %r' % args.command)
+    except Exception:
+        logger.exception('%s failed', args.command)
+        return 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())
