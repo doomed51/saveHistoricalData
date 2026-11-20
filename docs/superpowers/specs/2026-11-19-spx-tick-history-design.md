@@ -1,7 +1,7 @@
 # SPX tick history — design
 
 Date: 2026-11-19
-Status: draft for approval
+Status: approved 2026-11-19
 Scope: add SPX-only historical tick collection to the existing IBKR/SQLite data system.
 
 ## 1. Intent
