@@ -3,6 +3,8 @@ import sqlite3
 import tempfile
 import unittest
 
+import pandas as pd
+
 from interface_ticks import (
     connect_ticks,
     ensure_schema,
@@ -357,9 +359,10 @@ class TestTickQueries(unittest.TestCase):
         )
 
         self.assertEqual(list(ticks.columns), ['date', 'price'])
+        self.assertTrue(pd.api.types.is_datetime64_any_dtype(ticks['date']))
         self.assertEqual(
             ticks['date'].tolist(),
-            ['2026-11-18 09:30:00', '2026-11-18 12:00:00'],
+            [pd.Timestamp('2026-11-18 09:30:00'), pd.Timestamp('2026-11-18 12:00:00')],
         )
         self.assertEqual(ticks['price'].tolist(), [100.0, 101.0])
 
@@ -373,6 +376,7 @@ class TestTickQueries(unittest.TestCase):
 
         self.assertTrue(ticks.empty)
         self.assertEqual(list(ticks.columns), ['date', 'price'])
+        self.assertTrue(pd.api.types.is_datetime64_any_dtype(ticks['date']))
 
 
 class TestConnectionModes(unittest.TestCase):

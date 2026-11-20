@@ -239,10 +239,15 @@ def session_metrics(conn, symbol, session_open, session_close):
 
 
 def get_ticks(conn, start, end, symbol=config.tick_symbol):
-    """Return ticks in ``[start, end)`` as a ``date, price`` DataFrame, sorted by date."""
-    return pd.read_sql_query(
+    """Return ticks in ``[start, end)`` as a ``date, price`` DataFrame.
+
+    ``date`` is parsed to naive datetime values and rows are sorted ascending.
+    """
+    ticks = pd.read_sql_query(
         'SELECT date, price FROM %s WHERE date >= ? AND date < ? ORDER BY date ASC'
         % _quote_identifier(tick_table(symbol)),
         conn,
         params=(start, end),
+        parse_dates=['date'],
     )
+    return ticks
