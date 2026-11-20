@@ -577,9 +577,10 @@ def run_repair(ibkr, conn, contract, findings, include_warnings=False,
     Sessions are selected from ``findings``, an :func:`audit_sessions` frame:
     errors always, warnings when ``include_warnings`` is set, and the
     informational ``unavailable`` finding when ``force_unavailable`` is set.
-    Inside the selected range, non-positive prices and rows outside every
-    expected session window are deleted first; a session's valid rows are left
-    in place. The selected sessions are then collected again oldest-first
+    Inside the selected range, invalid prices (non-positive, non-finite, or
+    NULL) and rows outside every expected session window are deleted first; a
+    session's valid rows are left in place. The selected sessions are then
+    collected again oldest-first
     through :func:`collect_session` with ``force=True`` and ``resume=False``,
     so an interrupted repair resumes through the normal collector path.
 

@@ -380,14 +380,18 @@ def _day_after_text(value):
 
 def delete_invalid_rows(conn, symbol=config.tick_symbol, start_date=None,
                         end_date=None):
-    """Delete non-positive prices and return the number of rows removed.
+    """Delete invalid prices and return the number of rows removed.
 
-    Only rows with ``price <= 0`` are deleted. ``start_date`` and ``end_date``
-    are inclusive ``YYYY-MM-DD`` bounds; with neither bound every non-positive
-    row is removed. Rows with a valid price are never touched.
+    Rows are invalid when their price is non-positive, above the largest
+    finite double, or NULL; these are exactly the rows the audit's
+    ``invalid_price`` finding counts. ``start_date`` and ``end_date`` are
+    inclusive ``YYYY-MM-DD`` bounds; with neither bound every invalid row is
+    removed. Rows with a valid price are never touched.
     """
-    sql = 'DELETE FROM %s WHERE price <= 0' % _quote_identifier(
-        tick_table(symbol)
+    sql = (
+        'DELETE FROM %s WHERE (price <= 0'
+        ' OR price > 1.7976931348623157e308 OR price IS NULL)'
+        % _quote_identifier(tick_table(symbol))
     )
     params = []
     if start_date is not None:

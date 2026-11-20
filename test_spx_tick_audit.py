@@ -500,6 +500,26 @@ class TestDeleteInvalidRows(AuditTestCase):
         self.assertEqual(removed, 0)
         self.assertEqual(len(self._prices()), len(rows))
 
+    def test_deletes_non_finite_prices_inside_the_range(self):
+        rows = _grid('2026-11-16')
+        upsert_ticks(self.conn, rows, symbol=SYMBOL)
+        self.conn.execute(
+            'INSERT INTO "TEST_index_ticks" (date, price) VALUES (?, ?)',
+            ('2026-11-16 10:00:01', float('inf')),
+        )
+
+        removed = delete_invalid_rows(
+            self.conn,
+            symbol=SYMBOL,
+            start_date='2026-11-16',
+            end_date='2026-11-16',
+        )
+
+        self.assertEqual(removed, 1)
+        self.assertEqual(
+            list(self._prices()), [row[0] for row in rows]
+        )
+
 
 class TestDeleteUnexpectedRows(AuditTestCase):
     def setUp(self):
