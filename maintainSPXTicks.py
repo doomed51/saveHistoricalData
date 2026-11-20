@@ -1,19 +1,23 @@
 """SPX historical tick maintenance.
 
-Provides the resumable session collector plus the pure session and timestamp
-conversions it uses.
+Provides the resumable session collector, the backfill and daily job
+orchestration, and the pure session and timestamp conversions they use.
 """
 
 import datetime
 import math
+import time
 from zoneinfo import ZoneInfo
 
 import config
 import interface_ibkr
 from interface_ticks import (
+    ensure_sessions,
     get_session,
+    list_sessions,
     save_session,
     session_metrics,
+    session_schedule,
     upsert_ticks,
 )
 
@@ -27,6 +31,15 @@ _RECONNECT_ERROR_CODES = frozenset({502, 504, 1100, 1101})
 _NO_DATA_ERROR_CODES = frozenset({162})
 _IGNORED_ERROR_CODES = frozenset({2104, 2106, 2158})
 _COMPLETE_SESSIONS = frozenset({'complete', 'unavailable'})
+_INCOMPLETE_STATUSES = (
+    'pending',
+    'retry',
+    'failed',
+    'in_progress',
+    'partial',
+)
+_DAILY_DISCOVERY_DAYS = 14
+_DAILY_PROCESS_DAYS = 7
 
 
 class FatalTickError(RuntimeError):
@@ -363,3 +376,161 @@ def collect_session(ibkr, conn, contract, session, force=False, resume=True,
         cursor = next_cursor
 
     return _finalize(conn, state, requests)
+
+
+def _date_text(value):
+    """Return a date-like value as ``YYYY-MM-DD`` text."""
+    if isinstance(value, datetime.datetime):
+        return value.date().isoformat()
+    if isinstance(value, datetime.date):
+        return value.isoformat()
+    return str(value)
+
+
+def _select_sessions(conn, start_date, end_date, closed_before=None):
+    """Return ``(candidates, skipped)`` for one inclusive date range.
+
+    Candidates are incomplete sessions in ascending session order. Completed
+    and unavailable sessions are counted as skipped. ``closed_before`` keeps
+    only sessions whose close has been reached.
+    """
+    states = list_sessions(conn, start_date=start_date, end_date=end_date)
+    if closed_before is not None:
+        states = [
+            state
+            for state in states
+            if _parse_timestamp(state['session_close']) <= closed_before
+        ]
+    skipped = sum(
+        1 for state in states if state['status'] in _COMPLETE_SESSIONS
+    )
+    candidates = [
+        state
+        for state in states
+        if state['status'] in _INCOMPLETE_STATUSES
+    ]
+    return candidates, skipped
+
+
+def _collect_sessions(ibkr, conn, contract, sessions, deadline=None):
+    """Collect sessions in order, stopping before the next one on expiry.
+
+    Returns ``(processed, statuses, stopped_early)``. A ``KeyboardInterrupt``
+    during a session stops the run cleanly; the collector's per-page
+    checkpoint leaves that session ``in_progress``.
+    """
+    processed = 0
+    statuses = []
+    stopped_early = False
+
+    for session in sessions:
+        if deadline is not None and time.monotonic() >= deadline:
+            stopped_early = True
+            break
+        try:
+            state = collect_session(
+                ibkr, conn, contract, session, force=False, resume=True
+            )
+        except KeyboardInterrupt:
+            stopped_early = True
+            break
+        statuses.append(state['status'])
+        processed += 1
+
+    return processed, statuses, stopped_early
+
+
+def _job_summary(job, start_date, end_date, processed, skipped, statuses,
+                 stopped_early):
+    counts = {}
+    for status in statuses:
+        counts[status] = counts.get(status, 0) + 1
+    return {
+        'job': job,
+        'start_date': _date_text(start_date),
+        'end_date': _date_text(end_date),
+        'processed': processed,
+        'skipped': skipped,
+        'stopped_early': stopped_early,
+        'status_counts': counts,
+    }
+
+
+def run_backfill(ibkr, conn, contract, start_date, end_date,
+                 max_runtime_minutes=None):
+    """Ensure and collect every incomplete session in an inclusive range.
+
+    Expected rows are created first without changing existing statuses, then
+    incomplete sessions are collected oldest-first. ``complete`` and
+    ``unavailable`` sessions are skipped. The run stops before the next session
+    when ``max_runtime_minutes`` is exhausted.
+
+    The summary is ``job``, ``start_date``, ``end_date``, ``processed``,
+    ``skipped``, ``stopped_early``, and ``status_counts`` (one count per
+    status returned by the processed sessions).
+    """
+    deadline = None
+    if max_runtime_minutes is not None:
+        deadline = time.monotonic() + max_runtime_minutes * 60.0
+
+    ensure_sessions(conn, session_schedule(start_date, end_date))
+    sessions, skipped = _select_sessions(conn, start_date, end_date)
+    processed, statuses, stopped_early = _collect_sessions(
+        ibkr, conn, contract, sessions, deadline
+    )
+    return _job_summary(
+        'backfill',
+        start_date,
+        end_date,
+        processed,
+        skipped,
+        statuses,
+        stopped_early,
+    )
+
+
+def run_daily(ibkr, conn, contract, now_et=None):
+    """Collect recently closed incomplete sessions.
+
+    Session discovery covers 14 calendar days, while processing covers the
+    last 7 calendar days and only sessions whose close has been reached. A
+    session that is still open today is skipped; after 16:00 ET the just-closed
+    session is included. ``now_et`` is a naive Eastern datetime and defaults to
+    the current Eastern time.
+
+    The summary has the same shape as :func:`run_backfill`, with the process
+    window as ``start_date`` and ``end_date``.
+    """
+    if now_et is None:
+        moment = datetime.datetime.now(_EASTERN).replace(tzinfo=None)
+    else:
+        moment = _et_naive(now_et)
+    today = moment.date()
+
+    discovery_start = today - datetime.timedelta(
+        days=_DAILY_DISCOVERY_DAYS - 1
+    )
+    ensure_sessions(
+        conn,
+        session_schedule(discovery_start.isoformat(), today.isoformat()),
+    )
+
+    process_start = today - datetime.timedelta(days=_DAILY_PROCESS_DAYS - 1)
+    sessions, skipped = _select_sessions(
+        conn,
+        process_start.isoformat(),
+        today.isoformat(),
+        closed_before=moment,
+    )
+    processed, statuses, stopped_early = _collect_sessions(
+        ibkr, conn, contract, sessions
+    )
+    return _job_summary(
+        'daily',
+        process_start.isoformat(),
+        today.isoformat(),
+        processed,
+        skipped,
+        statuses,
+        stopped_early,
+    )
