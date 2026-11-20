@@ -154,8 +154,12 @@ tests/
 !/test_local_db_migration.py
 !/test_prehistory_tracking.py
 !/test_local_db_shared.py
+!/test_spx_tick_*.py
 !/test_yfinance_splits.py
 !/test_stock_split_sync.py
+
+# isolated worktrees
+.worktrees/
 
 sandbox.ipynb
 n_testing.ipynb
