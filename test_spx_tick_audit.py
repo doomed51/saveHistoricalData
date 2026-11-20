@@ -6,9 +6,12 @@ from interface_ticks import (
     audit_exit_code,
     audit_sessions,
     connect_ticks,
+    delete_invalid_rows,
+    delete_unexpected_rows,
     ensure_schema,
     save_session,
     session_max_gap_seconds,
+    session_schedule,
     upsert_ticks,
 )
 
@@ -427,6 +430,125 @@ class TestDensityFindings(AuditTestCase):
         findings = self.audit('2027-04-05', '2027-04-13')
 
         self.assertNotIn('low_density', _finding_names(findings, '2027-04-13'))
+
+
+class TestDeleteInvalidRows(AuditTestCase):
+    def _seed_prices(self):
+        upsert_ticks(
+            self.conn,
+            [
+                ('2026-11-16 10:00:00', 100.0),
+                ('2026-11-16 10:00:01', -1.0),
+                ('2026-11-16 10:00:02', 0.0),
+                ('2026-11-17 10:00:00', -5.0),
+                ('2026-11-17 10:00:01', 101.0),
+                ('2026-11-18 10:00:00', -7.0),
+            ],
+            symbol=SYMBOL,
+        )
+
+    def _prices(self):
+        return dict(
+            self.conn.execute(
+                'SELECT date, price FROM "TEST_index_ticks" ORDER BY date'
+            ).fetchall()
+        )
+
+    def test_deletes_only_non_positive_prices_inside_the_inclusive_range(self):
+        self._seed_prices()
+
+        removed = delete_invalid_rows(
+            self.conn,
+            symbol=SYMBOL,
+            start_date='2026-11-16',
+            end_date='2026-11-17',
+        )
+
+        self.assertEqual(removed, 3)
+        self.assertEqual(
+            self._prices(),
+            {
+                '2026-11-16 10:00:00': 100.0,
+                '2026-11-17 10:00:01': 101.0,
+                '2026-11-18 10:00:00': -7.0,
+            },
+        )
+
+    def test_without_bounds_deletes_every_non_positive_row(self):
+        self._seed_prices()
+
+        self.assertEqual(delete_invalid_rows(self.conn, symbol=SYMBOL), 4)
+        self.assertEqual(
+            self._prices(),
+            {
+                '2026-11-16 10:00:00': 100.0,
+                '2026-11-17 10:00:01': 101.0,
+            },
+        )
+
+    def test_deletes_nothing_when_every_price_is_valid(self):
+        rows = _grid('2026-11-16')
+        upsert_ticks(self.conn, rows, symbol=SYMBOL)
+
+        removed = delete_invalid_rows(
+            self.conn,
+            symbol=SYMBOL,
+            start_date='2026-11-16',
+            end_date='2026-11-16',
+        )
+
+        self.assertEqual(removed, 0)
+        self.assertEqual(len(self._prices()), len(rows))
+
+
+class TestDeleteUnexpectedRows(AuditTestCase):
+    def setUp(self):
+        super().setUp()
+        self.sessions = session_schedule('2026-11-16', '2026-11-20')
+
+    def _seed(self):
+        rows = _grid('2026-11-16') + _grid('2026-11-17')
+        upsert_ticks(self.conn, rows, symbol=SYMBOL)
+        upsert_ticks(
+            self.conn,
+            [
+                ('2026-11-15 12:00:00', 100.0),
+                ('2026-11-16 09:29:59', 100.0),
+                ('2026-11-18 07:00:00', 100.0),
+                ('2026-11-21 12:00:00', 100.0),
+            ],
+            symbol=SYMBOL,
+        )
+        return rows
+
+    def _dates(self):
+        return [
+            row[0]
+            for row in self.conn.execute(
+                'SELECT date FROM "TEST_index_ticks" ORDER BY date'
+            )
+        ]
+
+    def test_removes_rows_outside_all_windows_and_keeps_edge_rows(self):
+        rows = self._seed()
+
+        removed = delete_unexpected_rows(
+            self.conn, self.sessions, symbol=SYMBOL
+        )
+
+        self.assertEqual(removed, 4)
+        self.assertEqual(self._dates(), [row[0] for row in rows])
+        self.assertIn('2026-11-16 09:30:00', self._dates())
+        self.assertIn('2026-11-16 16:00:00', self._dates())
+        self.assertNotIn('2026-11-16 09:29:59', self._dates())
+
+    def test_empty_sessions_removes_nothing(self):
+        rows = self._seed()
+
+        self.assertEqual(
+            delete_unexpected_rows(self.conn, [], symbol=SYMBOL), 0
+        )
+        self.assertEqual(len(self._dates()), len(rows) + 4)
 
 
 class TestAuditExitCode(unittest.TestCase):

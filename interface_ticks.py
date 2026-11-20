@@ -366,6 +366,107 @@ def _timestamp_text(value):
     return pd.Timestamp(value).strftime('%Y-%m-%d %H:%M:%S')
 
 
+def _day_start_text(value):
+    """Return a date-like value as midnight ``YYYY-MM-DD HH:MM:SS`` text."""
+    return _timestamp_text(pd.Timestamp(value).normalize())
+
+
+def _day_after_text(value):
+    """Return the midnight text of the day after a date-like value."""
+    return _timestamp_text(
+        pd.Timestamp(value).normalize() + pd.Timedelta(days=1)
+    )
+
+
+def delete_invalid_rows(conn, symbol=config.tick_symbol, start_date=None,
+                        end_date=None):
+    """Delete non-positive prices and return the number of rows removed.
+
+    Only rows with ``price <= 0`` are deleted. ``start_date`` and ``end_date``
+    are inclusive ``YYYY-MM-DD`` bounds; with neither bound every non-positive
+    row is removed. Rows with a valid price are never touched.
+    """
+    sql = 'DELETE FROM %s WHERE price <= 0' % _quote_identifier(
+        tick_table(symbol)
+    )
+    params = []
+    if start_date is not None:
+        sql += ' AND date >= ?'
+        params.append(_day_start_text(start_date))
+    if end_date is not None:
+        sql += ' AND date < ?'
+        params.append(_day_after_text(end_date))
+    return conn.execute(sql, params).rowcount
+
+
+_UNEXPECTED_WINDOWS_TABLE = '_tick_delete_windows'
+
+
+def _delete_unexpected_rows(conn, sessions, symbol=config.tick_symbol,
+                            start_date=None, end_date=None):
+    """Delete rows outside every supplied session window.
+
+    ``start_date`` and ``end_date`` optionally restrict the deletion to an
+    inclusive ``YYYY-MM-DD`` range, so rows for other dates survive. With a
+    bounded range and no expected sessions, every row in the range is
+    unexpected and removed. Returns the number of rows removed; an unbounded
+    call with no sessions removes nothing.
+    """
+    windows = [
+        (session['session_open'], session['session_close'])
+        for session in sessions
+    ]
+    bounded = start_date is not None and end_date is not None
+    ticks = _quote_identifier(tick_table(symbol))
+    if not windows:
+        if not bounded:
+            return 0
+        return conn.execute(
+            'DELETE FROM %s WHERE date >= ? AND date < ?' % ticks,
+            (_day_start_text(start_date), _day_after_text(end_date)),
+        ).rowcount
+
+    windows_table = 'temp.%s' % _quote_identifier(_UNEXPECTED_WINDOWS_TABLE)
+    conn.execute('DROP TABLE IF EXISTS %s' % windows_table)
+    conn.execute(
+        'CREATE TEMP TABLE %s ('
+        ' window_open TEXT NOT NULL, window_close TEXT NOT NULL)'
+        % windows_table
+    )
+    try:
+        conn.executemany(
+            'INSERT INTO %s VALUES (?, ?)' % windows_table, windows
+        )
+        sql = (
+            'DELETE FROM %s WHERE NOT EXISTS ('
+            ' SELECT 1 FROM %s WHERE %s.date >= window_open'
+            ' AND %s.date <= window_close)'
+            % (ticks, windows_table, ticks, ticks)
+        )
+        params = []
+        if start_date is not None:
+            sql += ' AND %s.date >= ?' % ticks
+            params.append(_day_start_text(start_date))
+        if end_date is not None:
+            sql += ' AND %s.date < ?' % ticks
+            params.append(_day_after_text(end_date))
+        return conn.execute(sql, params).rowcount
+    finally:
+        conn.execute('DROP TABLE IF EXISTS %s' % windows_table)
+
+
+def delete_unexpected_rows(conn, sessions, symbol=config.tick_symbol):
+    """Delete rows outside all supplied session windows and return the count.
+
+    Rows outside every ``[session_open, session_close]`` window are removed,
+    including rows on non-trading dates; rows on a window's open or close edge
+    are preserved. Callers must supply a window for every date range that has
+    to survive, because dates without a supplied window are treated as
+    unexpected. An empty ``sessions`` list removes nothing.
+    """
+    return _delete_unexpected_rows(conn, sessions, symbol=symbol)
+
+
 def _session_minutes(session_open, session_close):
     seconds = (
         pd.Timestamp(session_close) - pd.Timestamp(session_open)

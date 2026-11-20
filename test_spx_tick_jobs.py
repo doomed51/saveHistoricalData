@@ -2,16 +2,20 @@ import datetime
 import unittest
 from unittest.mock import patch
 
+import pandas as pd
+
 import config
 import maintainSPXTicks
 from interface_ticks import (
+    audit_sessions,
     connect_ticks,
     ensure_schema,
     get_session,
     save_session,
     session_schedule,
+    upsert_ticks,
 )
-from maintainSPXTicks import run_backfill, run_daily
+from maintainSPXTicks import run_backfill, run_daily, run_repair
 
 SYMBOL = config.tick_symbol
 
@@ -33,13 +37,42 @@ def _dates(sessions):
     return [session['session_date'] for session in sessions]
 
 
+def _grid(session_date, step_seconds=300, start='09:30:00', end='16:00:00',
+          price=100.0):
+    """Return ``(date, price)`` rows every ``step_seconds`` in the window."""
+    moment = pd.Timestamp('%s %s' % (session_date, start))
+    last = pd.Timestamp('%s %s' % (session_date, end))
+    rows = []
+    while moment <= last:
+        rows.append((moment.strftime('%Y-%m-%d %H:%M:%S'), price))
+        moment += pd.Timedelta(seconds=step_seconds)
+    return rows
+
+
+def _findings(*rows):
+    return pd.DataFrame(
+        [
+            {
+                'session_date': session_date,
+                'severity': severity,
+                'finding': finding,
+                'detail': '',
+            }
+            for session_date, severity, finding in rows
+        ],
+        columns=['session_date', 'severity', 'finding', 'detail'],
+    )
+
+
 class RecordingCollector:
     """Stand-in for ``collect_session`` that records calls and returns state."""
 
-    def __init__(self, status='complete', interrupt_on=None, events=None):
+    def __init__(self, status='complete', interrupt_on=None, events=None,
+                 probe=None):
         self.status = status
         self.interrupt_on = interrupt_on
         self.events = events if events is not None else []
+        self.probe = probe
         self.calls = []
 
     def __call__(self, ibkr, conn, contract, session, force=False, resume=True):
@@ -51,6 +84,8 @@ class RecordingCollector:
             }
         )
         self.events.append(('collect', session['session_date']))
+        if self.probe is not None:
+            self.probe(session)
         if self.interrupt_on is not None and len(self.calls) == self.interrupt_on:
             raise KeyboardInterrupt
         result = dict(session)
@@ -225,6 +260,220 @@ class TestRunBackfill(JobsTestCase):
         self.assertEqual(summary['processed'], 1)
         self.assertTrue(summary['stopped_early'])
         self.assertEqual(summary['status_counts'], {'complete': 1})
+
+
+class TestRunRepair(JobsTestCase):
+    def _seed(self, session_date, rows, status='complete'):
+        _save_session(self.conn, session_date, status)
+        if rows:
+            upsert_ticks(self.conn, rows, symbol=SYMBOL)
+
+    def _repair(self, collector, findings, **kwargs):
+        with patch.object(maintainSPXTicks, 'collect_session', collector):
+            return run_repair(
+                object(), self.conn, object(), findings, **kwargs
+            )
+
+    def _tick_dates(self):
+        return [
+            row[0]
+            for row in self.conn.execute(
+                'SELECT date FROM "SPX_index_ticks" ORDER BY date'
+            )
+        ]
+
+    def _seed_week(self):
+        self._seed('2026-11-16', _grid('2026-11-16'))
+        self._seed('2026-11-17', _grid('2026-11-17'))
+        self._seed('2026-11-18', _grid('2026-11-18'))
+        self._seed(
+            '2026-11-19',
+            _grid('2026-11-19', step_seconds=240, start='09:36:00'),
+        )
+        self._seed('2026-11-20', [], status='unavailable')
+        self.conn.execute(
+            'INSERT INTO "SPX_index_ticks" (date, price) VALUES (?, ?)',
+            ('2026-11-18 10:00:01', -1.0),
+        )
+
+    def test_error_sessions_are_repaired_oldest_first_with_force(self):
+        self._seed_week()
+        findings = audit_sessions(
+            self.conn, '2026-11-16', '2026-11-20', symbol=SYMBOL
+        )
+
+        collector = RecordingCollector()
+        summary = self._repair(collector, findings)
+
+        self.assertEqual(collector.collected_dates, ['2026-11-18'])
+        for call in collector.calls:
+            self.assertTrue(call['force'])
+            self.assertFalse(call['resume'])
+        self.assertEqual(summary['job'], 'repair')
+        self.assertEqual(summary['sessions'], ['2026-11-18'])
+        self.assertEqual(summary['start_date'], '2026-11-18')
+        self.assertEqual(summary['end_date'], '2026-11-18')
+        self.assertEqual(summary['processed'], 1)
+        self.assertEqual(summary['status_counts'], {'complete': 1})
+        self.assertEqual(summary['cleanup'], {
+            'invalid_rows': 1,
+            'unexpected_rows': 0,
+        })
+        self.assertTrue(summary['findings'].empty)
+        self.assertEqual(
+            list(summary['findings'].columns),
+            ['session_date', 'severity', 'finding', 'detail'],
+        )
+
+    def test_warnings_and_unavailable_are_opt_in(self):
+        findings = _findings(
+            ('2026-11-16', 'error', 'failed'),
+            ('2026-11-17', 'warning', 'retry'),
+            ('2026-11-18', 'warning', 'late_start'),
+            ('2026-11-19', 'warning', 'gap'),
+            ('2026-11-20', 'warning', 'low_density'),
+            ('2026-11-23', 'info', 'unavailable'),
+            ('2026-11-24', 'info', 'no_rows_unavailable'),
+        )
+
+        default = RecordingCollector()
+        default_summary = self._repair(default, findings)
+        warnings = RecordingCollector()
+        warnings_summary = self._repair(
+            warnings, findings, include_warnings=True
+        )
+        unavailable = RecordingCollector()
+        unavailable_summary = self._repair(
+            unavailable, findings, force_unavailable=True
+        )
+
+        self.assertEqual(default_summary['sessions'], ['2026-11-16'])
+        self.assertEqual(
+            warnings_summary['sessions'],
+            [
+                '2026-11-16',
+                '2026-11-17',
+                '2026-11-18',
+                '2026-11-19',
+                '2026-11-20',
+            ],
+        )
+        self.assertEqual(
+            unavailable_summary['sessions'], ['2026-11-16', '2026-11-23']
+        )
+        for collector in (default, warnings, unavailable):
+            for call in collector.calls:
+                self.assertTrue(call['force'])
+                self.assertFalse(call['resume'])
+
+    def test_cleanup_precedes_refetch_without_deleting_valid_rows(self):
+        self._seed('2026-11-16', _grid('2026-11-16'))
+        self._seed('2026-11-17', _grid('2026-11-17'))
+        self._seed('2026-11-18', _grid('2026-11-18'))
+        self._seed('2026-11-19', _grid('2026-11-19'))
+        self._seed('2026-11-20', _grid('2026-11-20'))
+        upsert_ticks(
+            self.conn,
+            [
+                ('2026-11-18 07:00:00', 100.0),
+                ('2026-11-21 12:00:00', 100.0),
+            ],
+            symbol=SYMBOL,
+        )
+        self.conn.execute(
+            'INSERT INTO "SPX_index_ticks" (date, price) VALUES (?, ?)',
+            ('2026-11-18 10:00:01', -1.0),
+        )
+        findings = audit_sessions(
+            self.conn, '2026-11-16', '2026-11-21', symbol=SYMBOL
+        )
+        expected_rows = [
+            row[0]
+            for session_date in (
+                '2026-11-16',
+                '2026-11-17',
+                '2026-11-18',
+                '2026-11-19',
+                '2026-11-20',
+            )
+            for row in _grid(session_date)
+        ]
+
+        seen = {}
+
+        def probe(session):
+            seen['dates'] = self._tick_dates()
+
+        collector = RecordingCollector(probe=probe)
+        summary = self._repair(collector, findings)
+
+        self.assertEqual(collector.collected_dates, ['2026-11-18'])
+        self.assertEqual(seen['dates'], expected_rows)
+        self.assertEqual(
+            summary['sessions'], ['2026-11-18', '2026-11-21']
+        )
+        self.assertEqual(summary['processed'], 1)
+        self.assertEqual(summary['cleanup'], {
+            'invalid_rows': 1,
+            'unexpected_rows': 2,
+        })
+        self.assertEqual(self._tick_dates(), expected_rows)
+
+    def test_weekend_only_selection_clears_the_range(self):
+        upsert_ticks(
+            self.conn, [('2026-11-21 12:00:00', 100.0)], symbol=SYMBOL
+        )
+        findings = _findings(('2026-11-21', 'error', 'unexpected_rows'))
+
+        collector = RecordingCollector()
+        summary = self._repair(collector, findings)
+
+        self.assertEqual(summary['sessions'], ['2026-11-21'])
+        self.assertEqual(summary['processed'], 0)
+        self.assertEqual(summary['status_counts'], {})
+        self.assertEqual(summary['cleanup'], {
+            'invalid_rows': 0,
+            'unexpected_rows': 1,
+        })
+        self.assertEqual(self._tick_dates(), [])
+        self.assertTrue(summary['findings'].empty)
+
+    def test_cleanup_stays_inside_the_selected_range(self):
+        outside_rows = _grid('2026-11-13') + [('2026-11-14 12:00:00', 100.0)]
+        upsert_ticks(self.conn, outside_rows, symbol=SYMBOL)
+        upsert_ticks(
+            self.conn, [('2026-11-18 07:00:00', 100.0)], symbol=SYMBOL
+        )
+        findings = _findings(('2026-11-18', 'error', 'unexpected_rows'))
+
+        collector = RecordingCollector()
+        summary = self._repair(collector, findings)
+
+        self.assertEqual(summary['cleanup'], {
+            'invalid_rows': 0,
+            'unexpected_rows': 1,
+        })
+        self.assertEqual(self._tick_dates(), [row[0] for row in outside_rows])
+
+    def test_no_findings_is_a_no_op(self):
+        empty = pd.DataFrame(
+            columns=['session_date', 'severity', 'finding', 'detail']
+        )
+
+        collector = RecordingCollector()
+        summary = self._repair(collector, empty)
+
+        self.assertEqual(collector.calls, [])
+        self.assertEqual(summary['sessions'], [])
+        self.assertEqual(summary['processed'], 0)
+        self.assertEqual(summary['status_counts'], {})
+        self.assertEqual(summary['start_date'], None)
+        self.assertEqual(summary['end_date'], None)
+        self.assertTrue(summary['findings'].empty)
+        self.assertEqual(
+            list(summary['findings'].columns),
+            ['session_date', 'severity', 'finding', 'detail'],
+        )
 
 
 class TestRunDaily(JobsTestCase):

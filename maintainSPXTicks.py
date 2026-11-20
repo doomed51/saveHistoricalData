@@ -9,9 +9,15 @@ import math
 import time
 from zoneinfo import ZoneInfo
 
+import pandas as pd
+
 import config
 import interface_ibkr
 from interface_ticks import (
+    FINDING_COLUMNS,
+    _delete_unexpected_rows,
+    audit_sessions,
+    delete_invalid_rows,
     ensure_sessions,
     get_session,
     list_sessions,
@@ -40,6 +46,11 @@ _INCOMPLETE_STATUSES = (
 )
 _DAILY_DISCOVERY_DAYS = 14
 _DAILY_PROCESS_DAYS = 7
+
+_ERROR = 'error'
+_WARNING = 'warning'
+_INFO = 'info'
+_UNAVAILABLE_FINDING = 'unavailable'
 
 
 class FatalTickError(RuntimeError):
@@ -534,3 +545,112 @@ def run_daily(ibkr, conn, contract, now_et=None):
         statuses,
         stopped_early,
     )
+
+
+def _repair_session_dates(findings, include_warnings=False,
+                          force_unavailable=False):
+    """Return the session dates a repair must revisit, oldest first.
+
+    Error findings always qualify. Warning findings qualify only with
+    ``include_warnings``, and the informational ``unavailable`` finding only
+    with ``force_unavailable``.
+    """
+    if findings is None or len(findings) == 0:
+        return []
+
+    severities = findings['severity']
+    selected = severities == _ERROR
+    if include_warnings:
+        selected = selected | (severities == _WARNING)
+    if force_unavailable:
+        selected = selected | (
+            (severities == _INFO)
+            & (findings['finding'] == _UNAVAILABLE_FINDING)
+        )
+    return sorted(set(findings.loc[selected, 'session_date']))
+
+
+def run_repair(ibkr, conn, contract, findings, include_warnings=False,
+               force_unavailable=False):
+    """Repair audited sessions with targeted cleanup and a forced re-fetch.
+
+    Sessions are selected from ``findings``, an :func:`audit_sessions` frame:
+    errors always, warnings when ``include_warnings`` is set, and the
+    informational ``unavailable`` finding when ``force_unavailable`` is set.
+    Inside the selected range, non-positive prices and rows outside every
+    expected session window are deleted first; a session's valid rows are left
+    in place. The selected sessions are then collected again oldest-first
+    through :func:`collect_session` with ``force=True`` and ``resume=False``,
+    so an interrupted repair resumes through the normal collector path.
+
+    The summary has ``job``, ``start_date``, ``end_date`` (the earliest and
+    latest selected session dates), ``sessions`` (every selected session date,
+    including a non-trading date that only needed cleanup), ``processed``
+    (sessions re-fetched), ``status_counts``, ``cleanup`` (removed
+    ``invalid_rows`` and ``unexpected_rows`` counts), and ``findings`` (the
+    post-repair audit of the selected range). A selection with nothing to
+    revisit returns an empty summary and empty findings.
+    """
+    selected = _repair_session_dates(
+        findings, include_warnings, force_unavailable
+    )
+    if not selected:
+        return {
+            'job': 'repair',
+            'start_date': None,
+            'end_date': None,
+            'sessions': [],
+            'processed': 0,
+            'status_counts': {},
+            'cleanup': {'invalid_rows': 0, 'unexpected_rows': 0},
+            'findings': pd.DataFrame(columns=list(FINDING_COLUMNS)),
+        }
+
+    start_date = selected[0]
+    end_date = selected[-1]
+    symbol = config.tick_symbol
+    cleanup = {
+        'invalid_rows': delete_invalid_rows(
+            conn, symbol=symbol, start_date=start_date, end_date=end_date
+        ),
+        # The sweep is bounded to the audited range so dates outside it keep
+        # their rows even though no window is supplied for them.
+        'unexpected_rows': _delete_unexpected_rows(
+            conn,
+            session_schedule(start_date, end_date),
+            symbol=symbol,
+            start_date=start_date,
+            end_date=end_date,
+        ),
+    }
+
+    expected = {
+        session['session_date']: session
+        for session in session_schedule(start_date, end_date)
+    }
+    processed = 0
+    statuses = []
+    for session_date in selected:
+        session = expected.get(session_date)
+        if session is None:
+            continue
+        state = collect_session(
+            ibkr, conn, contract, session, force=True, resume=False
+        )
+        statuses.append(state['status'])
+        processed += 1
+
+    counts = {}
+    for status in statuses:
+        counts[status] = counts.get(status, 0) + 1
+
+    return {
+        'job': 'repair',
+        'start_date': start_date,
+        'end_date': end_date,
+        'sessions': list(selected),
+        'processed': processed,
+        'status_counts': counts,
+        'cleanup': cleanup,
+        'findings': audit_sessions(conn, start_date, end_date, symbol=symbol),
+    }
