@@ -570,6 +570,40 @@ class TestDeleteUnexpectedRows(AuditTestCase):
         )
         self.assertEqual(len(self._dates()), len(rows) + 4)
 
+    def test_date_bounds_protect_rows_outside_the_requested_range(self):
+        sessions = session_schedule('2026-11-16', '2026-11-17')
+        protected = ('2026-11-13 10:00:00', 100.0)
+        upsert_ticks(
+            self.conn,
+            _grid('2026-11-16') + _grid('2026-11-17'),
+            symbol=SYMBOL,
+        )
+        upsert_ticks(
+            self.conn,
+            [
+                protected,
+                ('2026-11-15 12:00:00', 100.0),
+                ('2026-11-16 07:00:00', 100.0),
+                ('2026-11-18 07:00:00', 100.0),
+            ],
+            symbol=SYMBOL,
+        )
+
+        removed = delete_unexpected_rows(
+            self.conn,
+            sessions,
+            symbol=SYMBOL,
+            start_date='2026-11-16',
+            end_date='2026-11-17',
+        )
+
+        self.assertEqual(removed, 1)
+        dates = self._dates()
+        self.assertIn(protected[0], dates)
+        self.assertIn('2026-11-15 12:00:00', dates)
+        self.assertIn('2026-11-18 07:00:00', dates)
+        self.assertNotIn('2026-11-16 07:00:00', dates)
+
 
 class TestAuditExitCode(unittest.TestCase):
     def findings(self, *pairs):

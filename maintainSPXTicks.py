@@ -15,9 +15,9 @@ import config
 import interface_ibkr
 from interface_ticks import (
     FINDING_COLUMNS,
-    _delete_unexpected_rows,
     audit_sessions,
     delete_invalid_rows,
+    delete_unexpected_rows,
     ensure_sessions,
     get_session,
     list_sessions,
@@ -616,7 +616,7 @@ def run_repair(ibkr, conn, contract, findings, include_warnings=False,
         ),
         # The sweep is bounded to the audited range so dates outside it keep
         # their rows even though no window is supplied for them.
-        'unexpected_rows': _delete_unexpected_rows(
+        'unexpected_rows': delete_unexpected_rows(
             conn,
             session_schedule(start_date, end_date),
             symbol=symbol,

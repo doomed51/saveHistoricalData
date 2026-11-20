@@ -406,15 +406,20 @@ def delete_invalid_rows(conn, symbol=config.tick_symbol, start_date=None,
 _UNEXPECTED_WINDOWS_TABLE = '_tick_delete_windows'
 
 
-def _delete_unexpected_rows(conn, sessions, symbol=config.tick_symbol,
-                            start_date=None, end_date=None):
-    """Delete rows outside every supplied session window.
+def delete_unexpected_rows(conn, sessions, symbol=config.tick_symbol,
+                           start_date=None, end_date=None):
+    """Delete rows outside all supplied session windows and return the count.
 
-    ``start_date`` and ``end_date`` optionally restrict the deletion to an
-    inclusive ``YYYY-MM-DD`` range, so rows for other dates survive. With a
-    bounded range and no expected sessions, every row in the range is
-    unexpected and removed. Returns the number of rows removed; an unbounded
-    call with no sessions removes nothing.
+    Rows outside every ``[session_open, session_close]`` window are removed,
+    including rows on non-trading dates; rows on a window's open or close edge
+    are preserved. ``start_date`` and ``end_date`` optionally restrict the
+    deletion to an inclusive ``YYYY-MM-DD`` range, so rows for other dates
+    survive; with a bounded range and no expected sessions, every row in the
+    range is unexpected and removed. Without bounds every date lacking a
+    supplied window is treated as unexpected, so an unbounded call must supply
+    a window for every date that has to survive. A bounded call with no
+    sessions removes every row in the range; an unbounded call with no sessions
+    removes nothing.
     """
     windows = [
         (session['session_open'], session['session_close'])
@@ -457,18 +462,6 @@ def _delete_unexpected_rows(conn, sessions, symbol=config.tick_symbol,
         return conn.execute(sql, params).rowcount
     finally:
         conn.execute('DROP TABLE IF EXISTS %s' % windows_table)
-
-
-def delete_unexpected_rows(conn, sessions, symbol=config.tick_symbol):
-    """Delete rows outside all supplied session windows and return the count.
-
-    Rows outside every ``[session_open, session_close]`` window are removed,
-    including rows on non-trading dates; rows on a window's open or close edge
-    are preserved. Callers must supply a window for every date range that has
-    to survive, because dates without a supplied window are treated as
-    unexpected. An empty ``sessions`` list removes nothing.
-    """
-    return _delete_unexpected_rows(conn, sessions, symbol=symbol)
 
 
 def _session_minutes(session_open, session_close):
